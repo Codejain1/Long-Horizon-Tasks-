@@ -252,7 +252,8 @@ Wedge: **coding agents first** (verifiable outcomes, real token pain). Expand to
 | Purpose | Domains | Credential |
 |---|---|---|
 | Model calls (mini-SWE-agent → `claude-sonnet-5`; later Claude Code headless) | `api.anthropic.com` | `ANTHROPIC_API_KEY` |
-| Patch evaluation (sb-cli) | the sb-cli API host (to confirm when installing sb-cli) | `SWEBENCH_API_KEY` |
+| Patch evaluation (sb-cli) | `api.swebench.com` | `SWEBENCH_API_KEY` |
 | SWE-bench Verified dataset | `huggingface.co` and its CDN hosts (`*.hf.co`) | none (optional `HF_TOKEN` for rate limits) |
+| Task environments (Docker, the approved default) | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` (SWE-bench images on Docker Hub) | none |
 | Task repositories at their base commits | `github.com`, `codeload.github.com` | none (optional GitHub token for rate limits) |
 | Python packages (harness, task repo dependencies) | `pypi.org`, `files.pythonhosted.org` | none |

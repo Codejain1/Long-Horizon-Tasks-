@@ -7,3 +7,4 @@ dist/
 build/
 .horizon/
 *.db
+bench/runs/

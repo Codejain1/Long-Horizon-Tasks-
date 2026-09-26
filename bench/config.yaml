@@ -1,0 +1,39 @@
+# Phase 1 benchmark harness (docs/PROJECT.md §18).
+# Dry run is the default: a mock model, stub task repos, a mock evaluator. No paid or network calls.
+
+# THE switch for real runs. true = real model calls (needs ANTHROPIC_API_KEY) and sb-cli evaluation
+# (needs SWEBENCH_API_KEY). Leave false until the owner enables real runs.
+real_runs: false
+
+model:
+  name: anthropic/claude-sonnet-5
+  # USD per million tokens. Used for the per-task cost cap and all reports (claude-sonnet-5 list prices;
+  # cache write = 5-minute TTL, 1.25x input; cache read = 0.1x input).
+  prices: {input: 2.00, output: 10.00, cache_write: 2.50, cache_read: 0.20}
+
+limits:
+  step_limit: 50          # agent steps (model calls) per task
+  cost_limit_usd: 1.00    # per task
+  command_timeout_s: 60
+
+dataset:
+  name: princeton-nlp/SWE-bench_Verified
+  split: test
+
+selection:
+  seed: 20260926
+  n_tasks: 50
+  smoke_n: 10             # the smoke run is the first smoke_n tasks of the list
+  take_all: [">4 hours"]
+  weights: {"1-4 hours": 0.40, "15 min - 1 hour": 0.35, "<15 min fix": 0.25}
+  task_list: bench/tasks/swebench_verified_50.json
+
+execution:
+  environment: auto       # auto = docker if the daemon answers, else local checkout; stub in dry run
+  repeats: 3
+
+evaluation:
+  subset: swe-bench_verified
+  split: test
+
+output_dir: bench/runs

@@ -42,9 +42,20 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - reliability demo in `demo/reliability/`: 4 tasks, `run.sh`, `report.py`, and a README.
   - Tests: 157 pass on SQLite and Postgres. `run.sh` is tested end to end with a fake `claude` binary that runs the project's real hooks. No real Claude Code session was run from here; the owner runs `demo/reliability/run.sh`.
 
+- **Session 2 — Phase 1: benchmark harness (dry run).** In `src/horizon/bench/` and `bench/`; CLI `horizon-bench select | run | evaluate | report`.
+  - **Task selection:** fixed seed; every >4 h task, then 40/35/25% across the other buckets; stratified by repo within each bucket; the first 10 are a stratified smoke set.
+  - **Runner:** mini-SWE-agent's `DefaultAgent` with its SWE-bench templates, a 50-step cap and a $1 cap. Environments are Docker when the daemon answers, otherwise a local checkout at the base commit, and a stub repo in dry run.
+  - **Records:** one JSONL record per task run (schema v1) with success, tokens (input / output / cache write / cache read), cost, steps and wall time, plus `preds.json`, trajectories and run metadata.
+  - **Evaluation:** sb-cli for real runs, a mock evaluator in dry run.
+  - **Reports:** per run and across repeats (mean and stdev of the success rate).
+  - **Dry run is the default:** mock model, stub repos, mock evaluator, and a test that blocks all network access during a dry run. `real_runs: true` in `bench/config.yaml` is the one switch.
+  - A dry-run `--stage full --repeats 2` (100 task runs) takes seconds.
+  - Tests: 20 new; 177 pass in total on SQLite and Postgres.
+  - **Not done:** the committed 50-task list (`bench/tasks/swebench_verified_50.json`). `huggingface.co` is blocked in this session. See open question 26.
+
 ## In progress
 
-- Nothing.
+- Nothing. The only remaining Phase 1 step is generating and committing the task list once `huggingface.co` is reachable.
 
 ## Decisions made
 
@@ -121,6 +132,19 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - `cdn-lfs.huggingface.co` and `cdn-lfs-us-1.huggingface.co` (the older LFS CDN, used when Xet is off).
     - This model has no Google Cloud Storage source in fastembed 0.8.
 22. **Stop hook is quiet.** It triggers only when an active task has an unrecorded outcome: a test run from **this session**, after the task started, that no `record_outcome` has used. It nudges at most **once per test run** and never loops.
+
+**Phase 1 decisions (defaults chosen under the decision rule)**
+- **The harness lives in the same package** (`horizon.bench`, CLI `horizon-bench`) with an optional `[bench]` extra (mini-swe-agent, sb-cli, datasets), so the MCP server doesn't depend on litellm.
+- **Built on the Phase 2 branch and PR (#3):** this session is limited to that branch.
+- **Cost comes from `model.prices` in `bench/config.yaml`** ($2 / $10 / $2.50 / $0.20 per MTok for input / output / cache write / cache read, the `claude-sonnet-5` list prices). litellm 1.102 does list the model at the same prices; its figure is recorded as `litellm_cost_usd` for cross-checking. One source drives both the cap and the reports.
+- **The caps are mini-SWE-agent's own `step_limit` and `cost_limit`.** Both are checked before each call, so a task can overrun $1 by at most one call.
+- **mini-SWE-agent's stock SWE-bench prompts and settings** (`swebench.yaml`) are used unchanged, apart from the caps. This keeps the baseline standard and comparable.
+- **Local fallback:** `git clone` at `base_commit`, then `pip install -e . pytest` into a venv. This is best effort, and the result is recorded per task (`env_setup`). The SWE-bench per-repo install specs are not used.
+- **Dry run without a committed list** uses a synthetic 500-task pool shaped like SWE-bench Verified (same bucket sizes and repo mix). Real runs refuse to start without the committed list and both API keys.
+- **Mock model:** tokens imitate a SWE-bench trajectory with a growing, mostly cached prompt. Every 4th task never submits, so the caps get exercised. The **mock evaluator** is deterministic with some per-repeat variance, and reports are marked "DRY RUN".
+- **Repeats:** the full stage defaults to 3 repeats (`execution.repeats`) and the smoke stage to 1.
+- **Result records are the world-model log format** (open question 17): one JSON line per task run, `schema_version: 1`.
+- **`PROJECT.md` §18 domain table updated:** the sb-cli host is `api.swebench.com`, and a row was added for Docker Hub (`registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`) for the task images.
 
 **Phase 2 decisions (defaults chosen under the decision rule)**
 - **Package and SDK:** package `horizon` in `src/`, with the CLI `horizon`. The MCP Python SDK is 2.x (`MCPServer`), since 2.2 is current.
@@ -226,9 +250,22 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 24. **(Resolved: keep the fallback; domains listed in round 4.) Embedding model download.** `huggingface.co` must be reachable wherever the server runs, or it falls back to the weaker hash embedder. [Fallback with a warning. `huggingface.co` is already on the §18 domain list.]
 25. **(Resolved: keep it, but quiet.) Stop-hook pushiness.** Blocking a stop once to ask for `record_outcome` could annoy users. [Enabled. Removing the `Stop` hook from `.claude/settings.json` turns it off.]
 
+### Raised in Phase 1 (the default used is in brackets)
+
+26. **(Blocks the committed task list.) `huggingface.co` is blocked in the cloud session**, so `horizon-bench select` can't read SWE-bench Verified. [Everything else is built and tested on a synthetic pool. Allowing `huggingface.co` and `*.hf.co` (the same domains as the fastembed download) unblocks it: then run `horizon-bench select` and commit `bench/tasks/swebench_verified_50.json`.]
+27. **Verify on the first real smoke run:**
+    - litellm's Anthropic usage fields: the harness assumes `prompt_tokens` includes cache reads and writes;
+    - the key sb-cli uses for resolved ids in its report: the harness reads `resolved_ids`, falling back to `resolved`.
+    [Both are handled defensively, and the smoke run exists to catch exactly this.]
+28. **Real-run spend.** The caps bound the worst case at $10 for the smoke run and $150 for the full 50 × 3. [No real runs until the owner sets `real_runs: true` and provides the keys.]
+
 ## Next step
 
-1. Review and merge the Phase 2 PR.
-2. Build **Phase 1 — benchmark harness + baseline** (`docs/PROJECT.md` §18) with the approved defaults: dry-run mode, no paid calls.
-3. When credits exist, run a few real Claude Code tasks with Horizon installed and check `horizon stats` to measure host invocation reliability. This is the Phase 2 risk check.
+1. **Owner:**
+   - allow `huggingface.co` and `*.hf.co` in the environment's network settings;
+   - optionally run `demo/reliability/run.sh` to measure how reliably Claude Code calls the tools.
+2. Run `horizon-bench select` and commit the 50-task list. Review and merge PR #3.
+3. When credits and keys exist, set `real_runs: true` in `bench/config.yaml`:
+   - smoke run first (`horizon-bench run --stage smoke`, at most $10);
+   - then the full baseline (`--stage full`, 3 repeats, at most $150).
 4. Then **Phase 3 — task state checkpoint references and rollback rules.**

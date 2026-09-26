@@ -55,5 +55,4 @@ Decision text written by the host (`situation`, `chosen`, `alternatives`, `reaso
 
 `demo/reliability/` runs 4 small tasks as real Claude Code sessions and reports how often each tool was called at the right moment. See its README.
 
-
 `horizon stats` prints tool call counts and errors, tasks by status, and `outcome_recording_rate`. That rate is the share of real test runs (captured by the hook) that were followed by a `record_outcome` call. It is the Phase 2 reliability metric (`PROJECT.md` §14: "rate of reliable MCP invocation by the host").
