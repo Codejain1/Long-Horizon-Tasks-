@@ -28,7 +28,7 @@ _SCHEMA = {
         """CREATE TABLE IF NOT EXISTS test_captures (
             id TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, command TEXT NOT NULL,
             runner TEXT NOT NULL, passed INTEGER NOT NULL, failed INTEGER NOT NULL,
-            total INTEGER NOT NULL, created_at TEXT NOT NULL, consumed_by TEXT)""",
+            total INTEGER NOT NULL, created_at TEXT NOT NULL, consumed_by TEXT, nudged_at TEXT)""",
         """CREATE TABLE IF NOT EXISTS tool_calls (
             id INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL, task_id TEXT,
             ok INTEGER NOT NULL, error TEXT, created_at TEXT NOT NULL)""",
@@ -41,7 +41,8 @@ _SCHEMA = {
         """CREATE TABLE IF NOT EXISTS test_captures (
             id TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, command TEXT NOT NULL,
             runner TEXT NOT NULL, passed INTEGER NOT NULL, failed INTEGER NOT NULL,
-            total INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL, consumed_by TEXT)""",
+            total INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL, consumed_by TEXT,
+            nudged_at TIMESTAMPTZ)""",
         """CREATE TABLE IF NOT EXISTS tool_calls (
             id BIGSERIAL PRIMARY KEY, tool TEXT NOT NULL, task_id TEXT,
             ok BOOLEAN NOT NULL, error TEXT, created_at TIMESTAMPTZ NOT NULL)""",
@@ -58,6 +59,14 @@ class TaskStore:
         self.db = db
         for stmt in _SCHEMA[db.kind] + _INDEXES:
             db.execute(stmt)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Additive column migrations for stores created by earlier versions."""
+        if self.db.kind == "postgres":
+            self.db.execute("ALTER TABLE test_captures ADD COLUMN IF NOT EXISTS nudged_at TIMESTAMPTZ")
+        elif "nudged_at" not in {r[1] for r in self.db.fetchall("PRAGMA table_info(test_captures)")}:
+            self.db.execute("ALTER TABLE test_captures ADD COLUMN nudged_at TEXT")
 
     # --- tasks -----------------------------------------------------------------
 
@@ -106,20 +115,24 @@ class TaskStore:
 
     def pending_captures(self, cwd: str, since: datetime | None = None) -> list[TestCapture]:
         """Unconsumed captures for a directory, newest first."""
-        sql = ("SELECT id, session_id, cwd, command, runner, passed, failed, total, created_at, consumed_by"
-               " FROM test_captures WHERE cwd = %s AND consumed_by IS NULL")
+        sql = ("SELECT id, session_id, cwd, command, runner, passed, failed, total, created_at, consumed_by,"
+               " nudged_at FROM test_captures WHERE cwd = %s AND consumed_by IS NULL")
         params: tuple = (cwd,)
         if since is not None:
             sql += " AND created_at >= %s"
             params += (ts(self.db, since),)
         rows = self.db.fetchall(sql + " ORDER BY created_at DESC", params)
         keys = ("id", "session_id", "cwd", "command", "runner", "passed", "failed", "total",
-                "created_at", "consumed_by")
+                "created_at", "consumed_by", "nudged_at")
         return [TestCapture.model_validate(dict(zip(keys, r))) for r in rows]
 
     def consume_captures(self, capture_ids: list[str], episode_id: str) -> None:
         for cid in capture_ids:
             self.db.execute("UPDATE test_captures SET consumed_by = %s WHERE id = %s", (episode_id, cid))
+
+    def mark_nudged(self, capture_ids: list[str]) -> None:
+        for cid in capture_ids:
+            self.db.execute("UPDATE test_captures SET nudged_at = %s WHERE id = %s", (ts(self.db, now()), cid))
 
     # --- invocation log --------------------------------------------------------
 

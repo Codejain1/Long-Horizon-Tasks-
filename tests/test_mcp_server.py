@@ -149,7 +149,8 @@ async def test_simulated_claude_code_session(settings, project_dir):
                 "tool_response": {"stdout": "==== 2 failed, 6 passed in 0.3s ====", "stderr": ""},
             }, env)
             # The model tries to stop without recording: the Stop hook blocks once.
-            blocked = run_hook_cli("stop", {"cwd": project_dir, "stop_hook_active": False}, env)
+            blocked = run_hook_cli("stop", {"cwd": project_dir, "session_id": "s1", "stop_hook_active": False},
+                                   env)
             assert blocked["decision"] == "block"
             # The model self-reports all green; the captured counts win.
             out = payload(await client.call_tool("record_outcome", {

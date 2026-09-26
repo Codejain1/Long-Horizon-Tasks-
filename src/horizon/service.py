@@ -25,12 +25,20 @@ from horizon.models import (
     TaskState,
     TestResults,
 )
+from horizon.redact import MAX_CONDITION_VALUE, MAX_NOTE, MAX_OPTION, MAX_SITUATION, redact, redact_list
 from horizon.taskstate.store import TaskStore
 
 log = logging.getLogger(__name__)
 
 RECENT_PROGRESS = 5
 RECENT_DECISIONS = 10
+
+
+def redact_conditions(conditions: list[Condition] | None) -> list[Condition] | None:
+    if conditions is None:
+        return None
+    return [c.model_copy(update={"value": redact(c.value, MAX_CONDITION_VALUE)}) if isinstance(c.value, str) else c
+            for c in conditions]
 
 
 class ToolInputError(ValueError):
@@ -113,10 +121,10 @@ class Platform:
             task = self.tasks.create(TaskState(
                 team_id=self.settings.team_id,
                 project_id=project_id,
-                goal=goal,
-                constraints=constraints or [],
-                plan=plan or [],
-                open_issues=open_issues or [],
+                goal=goal,  # verbatim (PROJECT.md §8); everything else is redacted
+                constraints=redact_list(constraints, MAX_NOTE) or [],
+                plan=redact_list(plan, MAX_NOTE) or [],
+                open_issues=redact_list(open_issues, MAX_NOTE) or [],
                 cwd=self.cwd,
             ))
             return {
@@ -134,6 +142,9 @@ class Platform:
         conditions: list[Condition] | None = None,
         token_budget: int | None = None,
     ) -> dict:
+        situation = redact(situation, MAX_SITUATION)
+        conditions = redact_conditions(conditions)
+
         def run() -> dict:
             task = self._task(task_id)
             slice_, status = self._call_memory(lambda m: m.recall(
@@ -186,6 +197,15 @@ class Platform:
         open_issues: list[str] | None = None,
         task_complete: bool = False,
     ) -> dict:
+        # Store decision summaries, never raw code (PROJECT.md §12).
+        situation = redact(situation, MAX_SITUATION)
+        chosen = redact(chosen, MAX_OPTION)
+        alternatives = redact_list(alternatives, MAX_OPTION)
+        reason = redact(reason, MAX_NOTE)
+        progress_note = redact(progress_note, MAX_NOTE)
+        open_issues = redact_list(open_issues, MAX_NOTE)
+        conditions = redact_conditions(conditions)
+
         def run() -> dict:
             task = self._task(task_id)
             tests, signal, captures = self._resolve_tests(task, tests_passed, tests_failed, signal_type)

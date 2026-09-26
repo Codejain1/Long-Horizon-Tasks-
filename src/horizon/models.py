@@ -178,3 +178,4 @@ class TestCapture(BaseModel):
     total: int
     created_at: datetime = Field(default_factory=now)
     consumed_by: str | None = None  # episode id that used it
+    nudged_at: datetime | None = None  # when the Stop hook asked for record_outcome about it

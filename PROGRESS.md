@@ -35,6 +35,13 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - a simulated Claude Code session (stdio server + hook subprocesses sharing one store).
   - **Real Claude Code check:** `claude mcp list` shows the server as `√ Connected`. No model calls were made.
 
+- **Session 2 — Phase 2 follow-ups** (owner round 4):
+  - redaction of decision text (`src/horizon/redact.py`);
+  - quiet Stop hook, with a `nudged_at` column on `test_captures` plus an additive migration;
+  - `MEMROUTER.md` lists `host` as a prediction source;
+  - reliability demo in `demo/reliability/`: 4 tasks, `run.sh`, `report.py`, and a README.
+  - Tests: 157 pass on SQLite and Postgres. `run.sh` is tested end to end with a fake `claude` binary that runs the project's real hooks. No real Claude Code session was run from here; the owner runs `demo/reliability/run.sh`.
+
 ## In progress
 
 - Nothing.
@@ -99,6 +106,22 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - Per-token prices go in config if litellm lacks `claude-sonnet-5`.
 15. **Decision rule** added to `CLAUDE.md`: choose reasonable defaults and log them, and stop only for credentials or money, hard-to-reverse changes, contradictions with the docs, or true blockers.
 
+**Owner decisions, round 4** (answers to Phase 2 questions)
+16. **Defaults approved:** open questions 4, 5, 14, 18 and 19 keep the defaults used in Phase 2.
+17. **Phase 1 is next:** build the harness (dry run, no paid calls).
+18. **Reliability measurement:** Claude Code cloud sessions run on the owner's subscription, so no API credits are needed. A demo repo with 3–5 small tasks and a script measure how reliably the tools get called. Built as `demo/reliability/` (4 tasks).
+19. **`host` is a valid fourth prediction source.** `MEMROUTER.md` §4 and §5 are updated.
+20. **Basic redaction:** strip code blocks and code-like lines from decision descriptions and cap their length. We promise not to store raw code.
+    - Built as `src/horizon/redact.py`. It covers `situation`, `chosen`, `alternatives`, `reason`, `progress_note`, `open_issues`, `plan`, `constraints` and string condition values.
+    - The caps are: situation 500 characters, options 200, notes 300, condition values 100.
+    - The **goal stays verbatim** (`PROJECT.md` §8). It is the one host-written field that is not redacted.
+21. **Embedding fallback stays.** To download `BAAI/bge-small-en-v1.5`, fastembed 0.8 pulls the Hugging Face repo `Qdrant/bge-small-en-v1.5-onnx-Q` through `huggingface_hub` with `hf_xet`. The domains to allow are:
+    - `huggingface.co` (API and file resolution);
+    - `*.hf.co` (file CDN and Xet storage: `cas-bridge.xethub.hf.co`, `cas-server.xethub.hf.co`, `transfer.xethub.hf.co`, `cdn-lfs.hf.co`);
+    - `cdn-lfs.huggingface.co` and `cdn-lfs-us-1.huggingface.co` (the older LFS CDN, used when Xet is off).
+    - This model has no Google Cloud Storage source in fastembed 0.8.
+22. **Stop hook is quiet.** It triggers only when an active task has an unrecorded outcome: a test run from **this session**, after the task started, that no `record_outcome` has used. It nudges at most **once per test run** and never loops.
+
 **Phase 2 decisions (defaults chosen under the decision rule)**
 - **Package and SDK:** package `horizon` in `src/`, with the CLI `horizon`. The MCP Python SDK is 2.x (`MCPServer`), since 2.2 is current.
 - **SQLite backend alongside Postgres:** makes local Claude Code prototyping zero-setup. Both run the same tests. Postgres + pgvector remains the hosted store.
@@ -152,8 +175,8 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 ### Build-order details
 
 3. **Memory in Phases 4 and 5.** Proposal: Phases 4 and 5 use the Phase 2 basic similarity recall for "memory feeds Jev evidence" and "memory lookup". Full simulation reuse, predictor trust and the Jev attention filter arrive in Phase 6. OK?
-4. **(Default used in Phase 2: same Postgres, separate tables, failure-isolated code path.) Task state and memory storage.** Task state must keep working if memrouter is down (MEMROUTER §11). Should it be a separate service or database, or the same Postgres with separate tables and a failure-isolated code path?
-5. **(Default used in Phase 2: stdio without auth, static dev key for HTTP.) When does API key auth start?** Key, credits and usage endpoints are Phase 7. Should Phases 2–6 use stdio locally with no auth, plus a single static dev key for HTTP?
+4. **(Resolved: owner approved the default — same Postgres, separate tables, failure-isolated code path.) Task state and memory storage.** Task state must keep working if memrouter is down (MEMROUTER §11). Should it be a separate service or database, or the same Postgres with separate tables and a failure-isolated code path?
+5. **(Resolved: owner approved the default — stdio without auth, static dev key for HTTP.) When does API key auth start?** Key, credits and usage endpoints are Phase 7. Should Phases 2–6 use stdio locally with no auth, plus a single static dev key for HTTP?
 
 ### Phase 1: benchmark harness
 
@@ -181,27 +204,27 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 
 ### Memrouter spec gaps
 
-14. **(Default used: ratio 1.) Surprise when predicted and actual are both 0.** With `max(actual, ε)`, the ratio comes out as 0 instead of 1 (for example, a predicted cost of $0 when the actual cost is $0). Should this case count as a ratio of 1?
+14. **(Resolved: owner approved ratio 1.) Surprise when predicted and actual are both 0.** With `max(actual, ε)`, the ratio comes out as 0 instead of 1 (for example, a predicted cost of $0 when the actual cost is $0). Should this case count as a ratio of 1?
 15. **Decay maths is undefined.** No formulas are given for how `strength` and `stability` change per recall or per "usage opportunity", and "helpful" isn't defined.
 16. **Undefined terms.** "Condition match" scoring for mixed operators is not defined. Neither is who classifies a failure as "severe".
 
 ### Outcomes, privacy and data
 
 17. **Undefined specs.** "Heavy testing" and the world-model logging format are both undefined. The logging format is needed from Phase 1/2 ("from day one"). Proposal: Phase 1 writes one JSON Lines record per task run with a versioned schema, and the Phase 2 episode format builds on it.
-18. **(Default used: counts only for test results; see below.) Raw code could be stored.** Test output and `testResults` can contain code, stack traces and file paths. What sanitisation or redaction is required?
+18. **(Resolved: counts only for test results, plus redaction of decision text; see round 4.) Raw code could be stored.** Test output and `testResults` can contain code, stack traces and file paths. What sanitisation or redaction is required?
 
 ### Host integration
 
-19. **(Default used: Claude Code only.) Which hosts first?** Should Phase 2 target Claude Code only, or also Codex and Cursor? What target invocation rate counts as "reliable"?
+19. **(Resolved: Claude Code only.) Which hosts first?** Should Phase 2 target Claude Code only, or also Codex and Cursor? What target invocation rate counts as "reliable"?
 
 ### Raised in Phase 2 (non-blocking; the default used is in brackets)
 
-20. **Phase 1 was skipped.** The harness isn't in the repo yet, but this session was asked to build Phase 2. §13 says to benchmark after every phase, so Phase 2 has no benchmark run. [Built Phase 2 as asked. Phase 1 is still to do, dry run first, with no paid calls.]
-21. **Real host invocation rate is not measured yet.** This needs real Claude Code sessions, which cost API usage. [The machinery is in place: hooks plus `horizon stats` → `outcome_recording_rate`. The owner runs a few real tasks when ready.]
-22. **`predicted.source`.** MEMROUTER §4 lists `jev | sim | memory`. Phase 2 adds `host`. Should the fallback prediction be tagged `memory`? [Today a missing prediction keeps `source: "host"`, and the fallback is marked by `lowConfidence`.]
-23. **Situation text can still contain code.** `situation`, `chosen` and `reason` are free text from the host. [No redaction yet. The tool descriptions ask for short summaries.]
-24. **Embedding model download.** `huggingface.co` must be reachable wherever the server runs, or it falls back to the weaker hash embedder. [Fallback with a warning. `huggingface.co` is already on the §18 domain list.]
-25. **Stop-hook pushiness.** Blocking a stop once to ask for `record_outcome` could annoy users. [Enabled. Removing the `Stop` hook from `.claude/settings.json` turns it off.]
+20. **(Resolved: build Phase 1 next, dry run, no paid calls.) Phase 1 was skipped.** The harness isn't in the repo yet, but this session was asked to build Phase 2. §13 says to benchmark after every phase, so Phase 2 has no benchmark run. [Built Phase 2 as asked. Phase 1 is still to do, dry run first, with no paid calls.]
+21. **(Resolved: cloud Claude Code sessions run on the owner's subscription; reliability demo built in `demo/reliability/`.) Real host invocation rate is not measured yet.** This needs real Claude Code sessions, which cost API usage. [The machinery is in place: hooks plus `horizon stats` → `outcome_recording_rate`. The owner runs a few real tasks when ready.]
+22. **(Resolved: `host` approved as a fourth source; `MEMROUTER.md` updated.) `predicted.source`.** MEMROUTER §4 lists `jev | sim | memory`. Phase 2 adds `host`. Should the fallback prediction be tagged `memory`? [Today a missing prediction keeps `source: "host"`, and the fallback is marked by `lowConfidence`.]
+23. **(Resolved: basic redaction built.) Situation text can still contain code.** `situation`, `chosen` and `reason` are free text from the host. [No redaction yet. The tool descriptions ask for short summaries.]
+24. **(Resolved: keep the fallback; domains listed in round 4.) Embedding model download.** `huggingface.co` must be reachable wherever the server runs, or it falls back to the weaker hash embedder. [Fallback with a warning. `huggingface.co` is already on the §18 domain list.]
+25. **(Resolved: keep it, but quiet.) Stop-hook pushiness.** Blocking a stop once to ask for `record_outcome` could annoy users. [Enabled. Removing the `Stop` hook from `.claude/settings.json` turns it off.]
 
 ## Next step
 

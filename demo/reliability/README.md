@@ -1,0 +1,42 @@
+# Horizon reliability demo
+
+This demo measures whether Claude Code calls Horizon's tools unprompted (`PROJECT.md` §14: "rate of reliable MCP invocation by the host"). It uses 4 small tasks on a tiny Python package (`project/`). Each task starts with failing tests.
+
+## Run it headless (recommended)
+
+```bash
+uv venv -p 3.12 && uv pip install -e ".[dev,embeddings]"   # from the repo root, once
+demo/reliability/run.sh /tmp/horizon-run1
+```
+
+For each task, `run.sh`:
+1. copies `project/` to `OUT/project` and runs `horizon install-claude-code`, which declares Horizon in `.mcp.json` and installs the hooks and the CLAUDE.md snippet;
+2. runs one fresh `claude -p` session with the prompt from `tasks.json`, logging the transcript to `OUT/logs/<task>.jsonl`;
+3. runs that task's tests again itself (`OUT/logs/<task>.check.txt`).
+
+At the end it prints the report and writes `OUT/report.json`. The sessions use your normal Claude Code login. No Anthropic API key is needed.
+
+## Run it by hand (for example in a cloud session)
+
+```bash
+demo/reliability/run.sh --setup-only /tmp/horizon-manual
+cd /tmp/horizon-manual/project && claude     # approve the horizon MCP server once
+# paste each prompt from TASKS.md into a fresh session
+.venv/bin/python demo/reliability/report.py /tmp/horizon-manual   # from the repo root
+```
+
+Without transcripts, the report shows only the Horizon-side numbers.
+
+## What the report measures
+
+| Per task | Meaning |
+|---|---|
+| `started_before_edit` | `start_task` was called before the first file edit |
+| `recalled_before_edit` | `recall_context` was called before the first file edit |
+| `recorded_after_last_test` | `record_outcome` came after the last test run |
+| `task_complete_sent` | the final `record_outcome` set `task_complete` |
+| `tests_pass_after` | the task's tests pass after the session |
+
+`rates` gives the share of tasks meeting each criterion. `horizon_db` holds the server-side counts, including `outcome_recording_rate`: the share of hook-captured test runs that `record_outcome` used.
+
+Run it 2–3 times to see the variance. Compare runs with and without the hooks (delete `.claude/settings.json` after setup) to see how much the hooks add.

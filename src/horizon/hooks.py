@@ -3,7 +3,8 @@
 - SessionStart: remind the model of the workflow and surface any active task.
 - PostToolUse (Bash): capture real test counts from test commands, so
   record_outcome uses them instead of the model's own summary (PROJECT.md §9).
-- Stop: if tests ran but record_outcome wasn't called, block once and ask for it.
+- Stop: only when a task has an unrecorded outcome (a test run no record_outcome used),
+  block once and ask for it. Each test run is nudged about at most once.
 
 Hooks read JSON on stdin and write JSON on stdout. They must never break the
 host session: any internal error exits 0 with no output.
@@ -79,20 +80,22 @@ def post_tool_use(payload: dict, store: TaskStore, settings: Settings) -> dict |
 
 
 def stop(payload: dict, store: TaskStore, settings: Settings) -> dict | None:
+    """Quiet by design: speaks only when an active task has an unrecorded outcome, i.e. a test run
+    from this session that no record_outcome has used, and only once per test run."""
     if payload.get("stop_hook_active"):
         return None  # already blocked once this turn; never loop
     cwd = project_dir(payload)
+    session = payload.get("session_id")
     for task in store.active(settings.team_id, cwd=cwd):
-        pending = store.pending_captures(cwd, since=task.created_at)
+        pending = [c for c in store.pending_captures(cwd, since=task.created_at)
+                   if c.nudged_at is None and (session is None or c.session_id in (None, session))]
         if pending:
+            store.mark_nudged([c.id for c in pending])
             latest = pending[0]
             return {
                 "decision": "block",
-                "reason": (
-                    f"Tests ran ({latest.passed} passed, {latest.failed} failed) but record_outcome "
-                    f"has not been called for task {task.id}. Call record_outcome now with the decision "
-                    "you tested, then finish."
-                ),
+                "reason": (f"Unrecorded outcome for task {task.id} (tests: {latest.passed} passed, "
+                           f"{latest.failed} failed). Call record_outcome, then finish."),
             }
     return None
 

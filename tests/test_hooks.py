@@ -59,25 +59,66 @@ def test_post_tool_use_without_task_asks_for_start_task(settings, project_dir):
     assert "start_task" in out["hookSpecificOutput"]["additionalContext"]
 
 
-def test_stop_blocks_once_until_outcome_recorded(platform, settings, project_dir):
+def test_stop_is_quiet_unless_an_outcome_is_unrecorded(platform, settings, project_dir):
+    # No task, no tests: silent.
+    assert hook("stop", {"cwd": project_dir, "session_id": "s1"}, settings) is None
+    # Tests ran but there is no active task: still silent (nothing to record against).
+    hook("post-tool-use", bash_payload(project_dir), settings)
+    assert hook("stop", {"cwd": project_dir, "session_id": "s1"}, settings) is None
+    # A task started after that run doesn't inherit it.
+    platform.start_task("x")
+    assert hook("stop", {"cwd": project_dir, "session_id": "s1"}, settings) is None
+
+
+def test_stop_blocks_once_per_unrecorded_outcome(platform, settings, project_dir):
     task_id = platform.start_task("x")["task_id"]
-    assert hook("stop", {"cwd": project_dir}, settings) is None  # nothing pending
+    assert hook("stop", {"cwd": project_dir, "session_id": "s1"}, settings) is None  # nothing pending
 
     hook("post-tool-use", bash_payload(project_dir), settings)
-    out = hook("stop", {"cwd": project_dir, "stop_hook_active": False}, settings)
-    assert out["decision"] == "block" and task_id in out["reason"]
-    # Never loop: once Claude is continuing because of this hook, let it stop.
-    assert hook("stop", {"cwd": project_dir, "stop_hook_active": True}, settings) is None
+    out = hook("stop", {"cwd": project_dir, "session_id": "s1", "stop_hook_active": False}, settings)
+    assert out["decision"] == "block" and task_id in out["reason"] and "Unrecorded outcome" in out["reason"]
+    # Never loop within a turn, and never nag twice about the same test run.
+    assert hook("stop", {"cwd": project_dir, "session_id": "s1", "stop_hook_active": True}, settings) is None
+    assert hook("stop", {"cwd": project_dir, "session_id": "s1"}, settings) is None
 
+    # A new unrecorded test run gets one new nudge; recording clears it.
+    hook("post-tool-use", bash_payload(project_dir), settings)
     platform.record_outcome(task_id, "s", "c")
-    assert hook("stop", {"cwd": project_dir}, settings) is None
+    assert hook("stop", {"cwd": project_dir, "session_id": "s1"}, settings) is None
+
+
+def test_stop_ignores_test_runs_from_other_sessions(platform, settings, project_dir):
+    platform.start_task("x")
+    hook("post-tool-use", bash_payload(project_dir), settings)  # session s1
+    assert hook("stop", {"cwd": project_dir, "session_id": "s2"}, settings) is None
+    assert hook("stop", {"cwd": project_dir, "session_id": "s1"}, settings)["decision"] == "block"
+
+
+def test_migrates_captures_table_from_first_phase2_schema(tmp_path, settings):
+    import dataclasses
+    import sqlite3
+
+    from horizon.taskstate.store import TaskStore
+    from horizon.db import connect
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("""CREATE TABLE test_captures (id TEXT PRIMARY KEY, session_id TEXT, cwd TEXT, command TEXT NOT NULL,
+        runner TEXT NOT NULL, passed INTEGER NOT NULL, failed INTEGER NOT NULL, total INTEGER NOT NULL,
+        created_at TEXT NOT NULL, consumed_by TEXT)""")
+    con.commit()
+    con.close()
+    store = TaskStore(connect(f"sqlite:///{path}"))
+    old = dataclasses.replace(settings, db_url=f"sqlite:///{path}")
+    hook("post-tool-use", bash_payload("/p"), old)
+    assert store.pending_captures("/p")[0].nudged_at is None
 
 
 def test_claude_project_dir_wins_over_cwd(platform, settings, project_dir, monkeypatch, tmp_path):
     platform.start_task("x")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", project_dir)
     hook("post-tool-use", bash_payload(str(tmp_path)), settings)  # e.g. after `cd sub/`
-    assert hook("stop", {"cwd": str(tmp_path)}, settings)["decision"] == "block"
+    assert hook("stop", {"cwd": str(tmp_path), "session_id": "s1"}, settings)["decision"] == "block"
 
 
 def test_hooks_never_raise(settings):
