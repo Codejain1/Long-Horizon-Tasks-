@@ -164,7 +164,7 @@ Full spec in `MEMROUTER.md`. Summary of decisions:
 
 Benchmark after every phase; cut anything that doesn't move success rate or cost.
 
-1. **Benchmark harness + baseline** — plain host agent on a coding benchmark subset (e.g. ~50 SWE-bench Lite tasks); record success, tokens, cost, steps, time.
+1. **Benchmark harness + baseline** — mini-SWE-agent + `claude-sonnet-5` on 50 fixed SWE-bench Verified tasks; record success, tokens, cost, steps, time. Full spec in §18.
 2. **MCP skeleton + host integration + basic memory** — `start_task`, `recall_context`, `record_outcome`, hooks, instruction snippets. Prove the host calls us reliably. *Prototype this early.* Includes memrouter build step 1 (`MEMROUTER.md` §16): episodes, write path, basic similarity recall — because `recall_context` and `record_outcome` need it.
 3. **Task state + checkpoint references + rollback rules.**
 4. **Decision layer** — crucial-decision detection, Jev scoring, weights, thresholds.
@@ -192,7 +192,6 @@ Wedge: **coding agents first** (verifiable outcomes, real token pain). Expand to
 - Decision service: exact Jev questions, weights, thresholds, crucial-decision detection.
 - Consequence checking: spike format, measurements, structured result schema.
 - Outcome layer: what "heavy testing" includes; scoring of results.
-- Benchmark harness: tasks, baseline agent, measurements.
 - MCP tool schemas and hook set.
 - Data logging format for the future world model.
 
@@ -218,6 +217,42 @@ Wedge: **coding agents first** (verifiable outcomes, real token pain). Expand to
 - **MCP server:** official MCP Python SDK. **Streamable HTTP** transport for the hosted server (authenticated by platform API key); **stdio** for local development.
 - **Account API:** FastAPI for API keys, credits and usage endpoints.
 - **Storage:** Postgres + pgvector.
-- **Embeddings:** behind an interface; default is a small open-source model run locally.
+- **Embeddings:** behind an interface; default is `BAAI/bge-small-en-v1.5` via fastembed (small, CPU-only, no PyTorch), run locally.
+- **Benchmark:** mini-SWE-agent as the baseline agent; SWE-bench Verified tasks; patches evaluated with sb-cli (SWE-bench cloud evaluation). See §18.
 - **Tests:** pytest.
 - **Runtime:** Docker for local and cloud runs; everything containerised. Hosting provider decided at launch.
+
+## 18. Phase 1 spec: benchmark harness
+
+**Baseline**
+- **Agent:** mini-SWE-agent (simple, standard open-source SWE-bench baseline).
+- **Model:** `claude-sonnet-5` via the Anthropic API.
+- **Later:** add Claude Code headless as a second baseline, since that is our real host.
+- **Rule:** the baseline and every later platform run use the **same agent and model**, so differences come from the platform only.
+
+**Tasks**
+- **SWE-bench Verified** (human-validated), not Lite.
+- 50 tasks chosen with a **fixed random seed**, **stratified across repos**, and **weighted toward the longer difficulty buckets** (long tasks are where the platform should win).
+- The task list is **committed to the repo**; every run uses the same set.
+
+**Budget and execution**
+- Per-task cap: **50 agent steps** and **$1**.
+- Order: a **10-task smoke run** first, then the full 50.
+- The full baseline runs **3 times** to measure variance.
+- Agent runs execute in the cloud session. Patches are evaluated with **sb-cli** (SWE-bench cloud evaluation), not local Docker images.
+- Recorded per task: success, tokens, cost, steps, wall-clock time.
+
+**Dry run first (no API credits yet)**
+- The harness is built in full, including a **dry-run mode with a mock model**. Dry run makes no paid API calls and no network calls to the model or evaluator.
+- Real-run settings live in config and are switched on with **one flag**. Dry run is the default.
+- No real runs are executed until the owner enables them.
+
+**What real runs need** (to configure in the environment later)
+
+| Purpose | Domains | Credential |
+|---|---|---|
+| Model calls (mini-SWE-agent → `claude-sonnet-5`; later Claude Code headless) | `api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| Patch evaluation (sb-cli) | the sb-cli API host (to confirm when installing sb-cli) | `SWEBENCH_API_KEY` |
+| SWE-bench Verified dataset | `huggingface.co` and its CDN hosts (`*.hf.co`) | none (optional `HF_TOKEN` for rate limits) |
+| Task repositories at their base commits | `github.com`, `codeload.github.com` | none (optional GitHub token for rate limits) |
+| Python packages (harness, task repo dependencies) | `pypi.org`, `files.pythonhosted.org` | none |

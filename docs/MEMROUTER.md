@@ -52,6 +52,7 @@ Episode {
   actual:    { success, tokens, costUsd, latencyMs, testResults, signalType: "auto" | "implicit" | "human" },
                              // actual.success = test pass rate, 0..1
   surprise,                  // signed, -1..1 (see §5)
+  lowConfidence: boolean,    // true when no success probability was predicted (§5)
   severity: "normal" | "severe",
   provenance: { agentId, taskId, createdAt },
   archivedAt?,               // set when moved to cold storage by the sleep job (§7)
@@ -87,6 +88,10 @@ PredictorStats {                // tracks whose forecasts can be trusted
 
 Storage: Postgres + pgvector to start (nodes, links, weights, embeddings). Move to a graph database only if link traversal becomes a bottleneck. Archived episodes live in **cold storage**: kept permanently as world-model training data, excluded from retrieval.
 
+Cold storage is a separate Postgres table, `episodes_archive`, in the same database for now. A periodic job exports episodes to **Parquet** files for world-model training. Move the archive to object storage only when size requires it.
+
+Embeddings sit behind an embedding interface so the model can be swapped. The default is **`BAAI/bge-small-en-v1.5` via fastembed**, which is small, CPU-only and needs no PyTorch.
+
 ## 5. Write path (after every outcome)
 
 1. **Record episode** with predicted vs actual outcome, conditions, provenance.
@@ -101,8 +106,13 @@ Storage: Postgres + pgvector to start (nodes, links, weights, embeddings). Move 
    ```
    - `predicted_score` assumes the prediction expects to land on budget (efficiency = 1).
    - The weights (0.6 / 0.4) are configurable defaults (§14).
+
+   **Edge cases:**
+   - **Actual value is 0:** that metric's ratio is 1. Computed as `min(1, predicted / max(actual, ε))`.
+   - **Predicted value missing:** drop that metric from the efficiency average. If all three are missing, score on success only by renormalising the weights: `outcome_score = success`, `predicted_score = predicted_success_probability`.
+   - **No success probability:** use memrouter's historical success rate for similar episodes (basic similarity recall, §6 step 2). If there are none, use 0.5. Mark the episode `lowConfidence` and halve its learning rate in step 3.
 3. **Update links** among memories that were recalled for this decision:
-   `Δweight = learningRate × surprise × signalWeight`
+   `Δweight = learningRate × surprise × signalWeight` (× 0.5 if the episode is `lowConfidence`)
    - The **sign** of `surprise` sets the direction (better than predicted → strengthen, worse → weaken); its **magnitude** sets the size.
    - `signalWeight`: human > auto > implicit (e.g. 1.0 / 0.7 / 0.4).
    - Expected outcomes barely change weights; surprising ones change them a lot.
@@ -129,7 +139,7 @@ Runs periodically offline (e.g. nightly or after N episodes):
 - **Replay** recent episodes, grouped by situation and conditions.
 - **Extract** new lessons and strategies where episodes agree; attach evidence links.
 - **Merge** duplicates; strengthen lessons confirmed by new episodes.
-- **Archive** low-value episodes whose lessons are already consolidated: move them to cold storage (excluded from retrieval, kept as world-model training data; evidence references stay valid). **Episodes are never deleted.**
+- **Archive** low-value episodes whose lessons are already consolidated: move them to cold storage, `episodes_archive` (excluded from retrieval, kept as world-model training data; evidence references stay valid). **Episodes are never deleted.**
 - **Prune** weak links and stale entries in the retrieval index. Pruning applies only to links and the index, never to episodes.
 - **Refresh** predictor calibration stats.
 
@@ -212,6 +222,11 @@ Inspection is served by `show_memories` and `delete_memory` (`PROJECT.md` §11).
 | New semantic link weight | 0.1 |
 | Learning rate | 0.2 |
 | Surprise weights (success / efficiency) | 0.6 / 0.4 |
+| Surprise ε (floor on actual values) | 1e-9 |
+| Fallback success probability (no history) | 0.5 |
+| Learning-rate multiplier for low-confidence episodes | 0.5 |
+| Embedding model | `BAAI/bge-small-en-v1.5` (fastembed, 384 dims) |
+| Parquet export cadence | with each consolidation run |
 | Signal weights (human / auto / implicit) | 1.0 / 0.7 / 0.4 |
 | Link prune threshold | 0.05 |
 | Consolidation cadence | nightly or every 200 episodes |
