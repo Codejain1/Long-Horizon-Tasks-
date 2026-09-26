@@ -1,8 +1,7 @@
 # Long-Horizon Agent Platform — Master Project Document
 
 > **This is the source of truth.** It consolidates every decision made so far.
-> - `MEMROUTER.md` holds the detailed memory spec and remains valid.
-> - `ARCHITECTURE.md` is older; where it conflicts with this file, **this file wins**.
+> - `MEMROUTER.md` holds the detailed memory spec and remains valid; where it conflicts with this file, **this file wins**.
 >
 > Status: design complete for the core; several component specs still to write (see §15).
 
@@ -102,7 +101,8 @@ Open experiment: on a sample of ties, run all options for real, then compare Jev
 
 Full spec in `MEMROUTER.md`. Summary of decisions:
 - **Memory types:** episodes (decision records) → consolidated into lessons and strategies by a periodic **"sleep" job**.
-- **Link learning:** Hebbian, driven by **surprise** (predicted vs actual), weighted human > auto > implicit.
+- **Episodes are never deleted.** The sleep job archives low-value episodes to cold storage: excluded from retrieval, kept as world-model training data. Pruning applies only to links and the retrieval index.
+- **Link learning:** Hebbian, driven by **surprise** = signed prediction error (`outcome_score − predicted_score`, range −1 to 1; formula in `MEMROUTER.md` §5), weighted human > auto > implicit.
 - **Routing:** similarity + condition match → **spreading activation** through links → Jev as **attention filter** within a token budget.
 - **Decay:** usage-based with **spaced repetition**; pruning of weak links; nothing permanent.
 - **Conditions + reconsolidation:** outcomes carry conditions (stack, scale…); contradictions refine conditions instead of just weakening.
@@ -165,11 +165,11 @@ Full spec in `MEMROUTER.md`. Summary of decisions:
 Benchmark after every phase; cut anything that doesn't move success rate or cost.
 
 1. **Benchmark harness + baseline** — plain host agent on a coding benchmark subset (e.g. ~50 SWE-bench Lite tasks); record success, tokens, cost, steps, time.
-2. **MCP skeleton + host integration** — `start_task`, `recall_context`, `record_outcome`, hooks, instruction snippets. Prove the host calls us reliably. *Prototype this early.*
+2. **MCP skeleton + host integration + basic memory** — `start_task`, `recall_context`, `record_outcome`, hooks, instruction snippets. Prove the host calls us reliably. *Prototype this early.* Includes memrouter build step 1 (`MEMROUTER.md` §16): episodes, write path, basic similarity recall — because `recall_context` and `record_outcome` need it.
 3. **Task state + checkpoint references + rollback rules.**
 4. **Decision layer** — crucial-decision detection, Jev scoring, weights, thresholds.
 5. **Consequence checking** — static checks, memory lookup, local spikes, Jev re-score.
-6. **Memrouter** — per `MEMROUTER.md` build order; show improvement over repeated runs vs a standard memory layer.
+6. **Memrouter learning** — `MEMROUTER.md` build steps 2–7: surprise-based links, spreading activation, Jev attention filter, decay, consolidation (sleep job), conditions and reconsolidation, fear memories, predictor trust and simulation reuse. Show improvement over repeated runs vs a standard memory layer.
 7. **Inspection tools, approvals, web page for keys/credits.**
 8. **Launch** — publish repo, benchmarks and write-up.
 9. **Later** — learned world model, SDK/LangGraph adapter, team dashboard, colony layer.
@@ -211,3 +211,13 @@ Wedge: **coding agents first** (verifiable outcomes, real token pain). Expand to
 - **Per-decision overhead** → full flow only on crucial decisions.
 - **Platform competition** → edge is decision layer + outcome-learning memory, not checkpoints or context sharing.
 - **Trust/privacy** → no raw code stored, local execution, per-team isolation.
+
+## 17. Tech stack
+
+- **Language:** Python 3.12.
+- **MCP server:** official MCP Python SDK. **Streamable HTTP** transport for the hosted server (authenticated by platform API key); **stdio** for local development.
+- **Account API:** FastAPI for API keys, credits and usage endpoints.
+- **Storage:** Postgres + pgvector.
+- **Embeddings:** behind an interface; default is a small open-source model run locally.
+- **Tests:** pytest.
+- **Runtime:** Docker for local and cloud runs; everything containerised. Hosting provider decided at launch.

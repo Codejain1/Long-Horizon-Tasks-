@@ -1,6 +1,6 @@
 # Memrouter — Specification
 
-> **Status: DESIGN.** Companion to `ARCHITECTURE.md`. Memrouter is the shared, outcome-learning memory layer of the long-horizon agent system.
+> **Status: DESIGN.** Companion to `PROJECT.md`, which is the source of truth and wins on any conflict. Memrouter is the shared, outcome-learning memory layer of the long-horizon agent system.
 >
 > **One line:** memory that learns like a brain, engineered like a database.
 
@@ -48,9 +48,13 @@ Episode {
   chosen: OptionRef,
   alternatives: OptionRef[],
   predicted: { success, tokens, costUsd, latencyMs, confidence, source: "jev" | "sim" | "memory" },
+                             // predicted.success = probability of success, 0..1
   actual:    { success, tokens, costUsd, latencyMs, testResults, signalType: "auto" | "implicit" | "human" },
+                             // actual.success = test pass rate, 0..1
+  surprise,                  // signed, -1..1 (see §5)
   severity: "normal" | "severe",
   provenance: { agentId, taskId, createdAt },
+  archivedAt?,               // set when moved to cold storage by the sleep job (§7)
   embedding
 }
 
@@ -81,14 +85,25 @@ PredictorStats {                // tracks whose forecasts can be trusted
 }
 ```
 
-Storage: Postgres + pgvector to start (nodes, links, weights, embeddings). Move to a graph database only if link traversal becomes a bottleneck.
+Storage: Postgres + pgvector to start (nodes, links, weights, embeddings). Move to a graph database only if link traversal becomes a bottleneck. Archived episodes live in **cold storage**: kept permanently as world-model training data, excluded from retrieval.
 
 ## 5. Write path (after every outcome)
 
 1. **Record episode** with predicted vs actual outcome, conditions, provenance.
-2. **Compute surprise**: `surprise = |actual_score − predicted_score|`, signed by direction.
+2. **Compute surprise** as a signed prediction error:
+   ```
+   success         = actual test pass rate                       (0..1)
+   efficiency      = mean over {tokens, cost, latency} of
+                     min(1, predicted / actual)                  (0..1)
+   outcome_score   = 0.6 × success + 0.4 × efficiency
+   predicted_score = 0.6 × predicted_success_probability + 0.4
+   surprise        = outcome_score − predicted_score             (−1..1)
+   ```
+   - `predicted_score` assumes the prediction expects to land on budget (efficiency = 1).
+   - The weights (0.6 / 0.4) are configurable defaults (§14).
 3. **Update links** among memories that were recalled for this decision:
    `Δweight = learningRate × surprise × signalWeight`
+   - The **sign** of `surprise` sets the direction (better than predicted → strengthen, worse → weaken); its **magnitude** sets the size.
    - `signalWeight`: human > auto > implicit (e.g. 1.0 / 0.7 / 0.4).
    - Expected outcomes barely change weights; surprising ones change them a lot.
 4. **Update predictor stats** for Jev / simulation / memory (were their predictions right?).
@@ -114,10 +129,11 @@ Runs periodically offline (e.g. nightly or after N episodes):
 - **Replay** recent episodes, grouped by situation and conditions.
 - **Extract** new lessons and strategies where episodes agree; attach evidence links.
 - **Merge** duplicates; strengthen lessons confirmed by new episodes.
-- **Prune** weak links and low-value episodes whose lessons are already consolidated (keep evidence references).
+- **Archive** low-value episodes whose lessons are already consolidated: move them to cold storage (excluded from retrieval, kept as world-model training data; evidence references stay valid). **Episodes are never deleted.**
+- **Prune** weak links and stale entries in the retrieval index. Pruning applies only to links and the index, never to episodes.
 - **Refresh** predictor calibration stats.
 
-This keeps storage lean and turns experience into reusable knowledge.
+This keeps retrieval lean, turns experience into reusable knowledge, and preserves the full episode history for training.
 
 ## 8. Decay and reconsolidation
 
@@ -163,7 +179,20 @@ consolidate() -> ConsolidationReport  // sleep job
 flagFear(episodeId) / clearFear(lessonId, byHuman)
 ```
 
-Exposed as a Python SDK first, then as an MCP server so tools like Claude Code can use it directly.
+**MCP first.** The MCP server is the product (`PROJECT.md` §3, §11), so these interfaces are exposed through the platform's MCP tools first:
+
+| Interface | MCP tool |
+|---|---|
+| `recall` | `recall_context` |
+| `record` | `record_outcome` |
+| `lookupSimulation` | used inside `evaluate_options` / `submit_consequences` |
+| `predictorTrust` | internal (feeds Jev scoring) |
+| `consolidate` | internal scheduled job, not host-callable |
+| `flagFear` / `clearFear` | internal on severe outcomes / `clear_fear` (human only) |
+
+Inspection is served by `show_memories` and `delete_memory` (`PROJECT.md` §11).
+
+**Later:** a Python SDK exposing the same interfaces, alongside the LangGraph adapter (`PROJECT.md` §13, item 9).
 
 ## 13. Role in the pipeline
 
@@ -182,6 +211,7 @@ Exposed as a Python SDK first, then as an MCP server so tools like Claude Code c
 | Shortlist before Jev | 20–30 |
 | New semantic link weight | 0.1 |
 | Learning rate | 0.2 |
+| Surprise weights (success / efficiency) | 0.6 / 0.4 |
 | Signal weights (human / auto / implicit) | 1.0 / 0.7 / 0.4 |
 | Link prune threshold | 0.05 |
 | Consolidation cadence | nightly or every 200 episodes |
@@ -196,6 +226,8 @@ Exposed as a Python SDK first, then as an MCP server so tools like Claude Code c
 - Rate of bad memories traced and removed.
 
 ## 16. Build order
+
+Step 1 ships in `PROJECT.md` Phase 2 (with the MCP skeleton, because `recall_context` and `record_outcome` need it). Steps 2–7 ship in `PROJECT.md` Phase 6. Step 8 is later.
 
 1. Episodes + write path + basic similarity recall.
 2. Surprise-based link learning + spreading activation.
