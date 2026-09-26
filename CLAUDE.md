@@ -31,3 +31,21 @@ Instructions for every Claude session in this repository.
    - Test results
    - Open questions
    - Next step
+
+All four proposed defaults are approved: Docker when available with per-task local setup as fallback, your difficulty weights, the first 10 of the 50 tasks as the smoke run, and per-token prices in config if litellm lacks claude-sonnet-5.
+
+Standing rule from now on. Add this to CLAUDE.md so it applies to every session:
+
+DECISION RULE
+- When a choice is not covered by the docs, pick the most reasonable default yourself, proceed, and log it in PROGRESS.md under "Decisions made" with a one-line reason.
+- Do not stop to ask about implementation details, naming, library choices, parameters, file structure or anything easily changed later.
+- Only stop and ask me when:
+  1. It needs credentials, accounts, or spending money.
+  2. It is hard to reverse (data deletion, public releases, schema changes affecting stored data).
+  3. It contradicts PROJECT.md or MEMROUTER.md.
+  4. You are truly blocked and cannot continue with any reasonable assumption.
+- Collect any non-blocking questions and list them once at the end of the session under "Open questions", with the default you used for each.
+
+Continue with the Phase 1 harness now. Do not wait for further confirmation.
+
+
