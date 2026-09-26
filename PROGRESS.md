@@ -11,9 +11,33 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - Applied two rounds of owner decisions to both docs (see "Decisions made"). PR #1 was merged before round 1 was pushed, so rounds 1 and 2 go in a follow-up PR.
   - Wrote the Phase 1 spec as `docs/PROJECT.md` §18, including the domains and credentials real runs need.
 
+- **Session 1 — Phase 2: MCP skeleton, task state and memrouter step 1.** Built on request, ahead of Phase 1 (see open question 20).
+  - **MCP server** (`src/horizon/server.py`, MCP Python SDK 2.x): `start_task`, `recall_context` and `record_outcome`, with directive descriptions and server instructions. Runs over stdio (local) or streamable HTTP behind a static dev API key.
+  - **Task state** (`src/horizon/taskstate/`): goal (verbatim), constraints, plan, progress, decisions and open issues. It is always returned by `recall_context`, and `record_outcome` appends to it.
+  - **Memrouter step 1** (`src/horizon/memrouter/`):
+    - episodes (MEMROUTER §4 fields, plus `recall_id` and `schema_version`);
+    - the write path: record the episode and compute surprise, with every §5 edge case and the low-confidence fallback from similar episodes;
+    - basic similarity recall: team-isolated, excludes archived episodes, capped by a token budget, and every recall is logged.
+  - **Embeddings:** behind an interface. The default is fastembed (bge-small); the fallback is a deterministic offline hash embedder.
+  - **Storage:** Postgres + pgvector, plus SQLite for zero-setup local use. Both pass the same tests.
+  - **Failure isolation:** task state keeps working when memrouter fails. Tools report `memory_status: "unavailable"`, and memrouter is retried on the next call.
+  - **Claude Code integration** (`docs/CLAUDE_CODE.md`):
+    - SessionStart, PostToolUse (Bash) and Stop hooks;
+    - a CLAUDE.md snippet;
+    - `horizon install-claude-code` (idempotent installer);
+    - `horizon stats` (invocation reliability);
+    - the hook's real test counts override the model's self-report.
+  - Dockerfile and docker-compose (pgvector/pgvector:pg16).
+  - Tidied `CLAUDE.md`: the owner's decision rule is now a proper section, and the session-specific text was removed (the approvals are recorded below).
+  - **Tests:** 119 pass on both SQLite and Postgres 16 + pgvector 0.6. They include:
+    - a real stdio subprocess;
+    - HTTP with and without the API key;
+    - a simulated Claude Code session (stdio server + hook subprocesses sharing one store).
+  - **Real Claude Code check:** `claude mcp list` shows the server as `√ Connected`. No model calls were made.
+
 ## In progress
 
-- Nothing. No build phase has started.
+- Nothing.
 
 ## Decisions made
 
@@ -67,6 +91,40 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - The domains and credentials for real runs are listed in `PROJECT.md` §18.
     - Proceed to Phase 2 once the harness PR is merged.
 
+**Owner decisions, round 3**
+14. **Phase 1 defaults approved** (were open questions 6–9):
+    - Docker when available, with per-task local setup as the fallback.
+    - The proposed difficulty weights.
+    - The first 10 of the 50 tasks form the smoke run.
+    - Per-token prices go in config if litellm lacks `claude-sonnet-5`.
+15. **Decision rule** added to `CLAUDE.md`: choose reasonable defaults and log them, and stop only for credentials or money, hard-to-reverse changes, contradictions with the docs, or true blockers.
+
+**Phase 2 decisions (defaults chosen under the decision rule)**
+- **Package and SDK:** package `horizon` in `src/`, with the CLI `horizon`. The MCP Python SDK is 2.x (`MCPServer`), since 2.2 is current.
+- **SQLite backend alongside Postgres:** makes local Claude Code prototyping zero-setup. Both run the same tests. Postgres + pgvector remains the hosted store.
+- **Task state and memory storage** (default for open question 4): same database, separate tables and separate connections. Memrouter is created lazily and retried, so a memrouter failure never blocks task state.
+- **Auth before Phase 7** (default for open question 5): stdio has no auth. HTTP needs `HORIZON_DEV_API_KEY` as a Bearer token or `X-API-Key`.
+- **Host scope** (default for open question 19): Claude Code only, as requested.
+- **Embedded text is the situation plus conditions, not the chosen option:** at recall time the choice isn't known yet, so this keeps the write side and the read side symmetric.
+- **Offline hash embedder fallback:** Hugging Face is blocked in the cloud session, so the bge model can't download. Each episode stores `embedding_model`, and recall only compares vectors from the same model, so the two embedders never mix.
+- **Recall parameters:** top-50 candidates by cosine similarity, a minimum similarity of 0.2, at most 8 items, and a 1,500-token budget estimated at about 4 characters per token.
+  - There is no condition-match scoring yet (open question 16). Conditions are stored and embedded as text.
+- **"Similar episodes" for the fallback success rate:** the top 10 in the team with similarity ≥ 0.5, excluding archived episodes.
+- **Surprise in Phase 2:** computed and stored on every episode (write path step 2). Link updates wait for Phase 6.
+  - The surprise weights are normalised to sum to 1, which keeps the range at −1..1.
+  - When predicted and actual are both 0, the ratio is 1 (default for open question 14; it follows the "actual is 0 → ratio 1" rule).
+- **`predicted.source` gains a `"host"` value:** in Phase 2 there is no Jev or simulation, so predictions come from the host LLM or the memory fallback (`"memory"` is not set yet; see open question 22).
+- **Test results are stored as counts only** (default for open question 18): passed, failed, total and runner, plus the command truncated to 300 characters. Raw output is never stored.
+- **Hook-captured test counts override the host's own report.** A capture belongs to a task when it comes from the same project directory after the task started. All pending captures are consumed on `record_outcome`.
+- **Flat tool parameters** (`predicted_success`, `tests_passed`, …) instead of nested objects: these are easier for host LLMs to fill in correctly.
+- **`record_outcome` also updates task state:** it appends a decision and a progress line, can replace the open issues, and marks the task done with `task_complete`.
+- **Every recall is logged** (`recall_log`) **and every tool call is logged** (`tool_calls`). The recall log supports Phase 6 link learning; the call log feeds `horizon stats`.
+- **Stop hook blocks at most once per stop** (it respects `stop_hook_active`) and only when an active task has unrecorded test runs.
+- **Installer:** uses the absolute Python path in hooks and `.mcp.json`, and adds `enabledMcpjsonServers`.
+  - Claude Code still asks for one-time approval of project `.mcp.json` servers. The docs show `claude mcp add -s local` as the prompt-free alternative.
+- **No `episodes_archive` table yet:** the sleep job that fills it is Phase 6. The `archived_at` column exists, and recall excludes archived episodes.
+- **World-model logging** (open question 17, partly): each episode carries `schema_version: 1`.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -94,25 +152,25 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 ### Build-order details
 
 3. **Memory in Phases 4 and 5.** Proposal: Phases 4 and 5 use the Phase 2 basic similarity recall for "memory feeds Jev evidence" and "memory lookup". Full simulation reuse, predictor trust and the Jev attention filter arrive in Phase 6. OK?
-4. **Task state and memory storage.** Task state must keep working if memrouter is down (MEMROUTER §11). Should it be a separate service or database, or the same Postgres with separate tables and a failure-isolated code path?
-5. **When does API key auth start?** Key, credits and usage endpoints are Phase 7. Should Phases 2–6 use stdio locally with no auth, plus a single static dev key for HTTP?
+4. **(Default used in Phase 2: same Postgres, separate tables, failure-isolated code path.) Task state and memory storage.** Task state must keep working if memrouter is down (MEMROUTER §11). Should it be a separate service or database, or the same Postgres with separate tables and a failure-isolated code path?
+5. **(Default used in Phase 2: stdio without auth, static dev key for HTTP.) When does API key auth start?** Key, credits and usage endpoints are Phase 7. Should Phases 2–6 use stdio locally with no auth, plus a single static dev key for HTTP?
 
 ### Phase 1: benchmark harness
 
-6. **(blocks Phase 1) Where does the agent execute task code?** mini-SWE-agent's SWE-bench mode normally runs each task inside that task's SWE-bench Docker image. The cloud session may not have Docker. The options are:
+6. **(Resolved: owner approved (a) with (b) as fallback.) Where does the agent execute task code?** mini-SWE-agent's SWE-bench mode normally runs each task inside that task's SWE-bench Docker image. The cloud session may not have Docker. The options are:
    - (a) Docker in the session, if available (pulls images from Docker Hub, so that domain would be needed);
    - (b) a local environment per task (clone the repo and install its dependencies; slower and can differ from the evaluation environment);
    - (c) a remote sandbox provider (a new service and credential).
 
    sb-cli only covers evaluation, not the agent's own runs. Proposal: support (a) with (b) as a fallback, and check which one works when real runs are enabled. This doesn't block the dry-run build.
-7. **Difficulty weighting.** SWE-bench Verified has four difficulty buckets (<15 min, 15 min–1 h, 1–4 h, >4 h), and the longest has very few tasks. Proposal:
+7. **(Resolved: weights approved.) Difficulty weighting.** SWE-bench Verified has four difficulty buckets (<15 min, 15 min–1 h, 1–4 h, >4 h), and the longest has very few tasks. Proposal:
    - take every >4 h task;
    - then roughly 40% from 1–4 h, 35% from 15 min–1 h and 25% from <15 min;
    - stratify by repo within each bucket.
 
    Are those weights OK?
-8. **Smoke run selection.** Should the 10 smoke tasks be the first 10 of the committed 50 (keeping the same stratification), or a separate set?
-9. **Model pricing.** mini-SWE-agent tracks cost through litellm. If litellm doesn't yet list `claude-sonnet-5` prices, the $1 cap can't be enforced. Proposal: set per-token prices in harness config and use them for both the cap and the reports.
+8. **(Resolved: first 10 of the 50.) Smoke run selection.** Should the 10 smoke tasks be the first 10 of the committed 50 (keeping the same stratification), or a separate set?
+9. **(Resolved: per-token prices in config.) Model pricing.** mini-SWE-agent tracks cost through litellm. If litellm doesn't yet list `claude-sonnet-5` prices, the $1 cap can't be enforced. Proposal: set per-token prices in harness config and use them for both the cap and the reports.
 10. **"Benchmark after every phase".** Phases 2–3 don't change agent behaviour much. Is a no-regression check enough for those phases?
 
 ### Decision layer and Jev
@@ -123,24 +181,31 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 
 ### Memrouter spec gaps
 
-14. **Surprise when predicted and actual are both 0.** With `max(actual, ε)`, the ratio comes out as 0 instead of 1 (for example, a predicted cost of $0 when the actual cost is $0). Should this case count as a ratio of 1?
+14. **(Default used: ratio 1.) Surprise when predicted and actual are both 0.** With `max(actual, ε)`, the ratio comes out as 0 instead of 1 (for example, a predicted cost of $0 when the actual cost is $0). Should this case count as a ratio of 1?
 15. **Decay maths is undefined.** No formulas are given for how `strength` and `stability` change per recall or per "usage opportunity", and "helpful" isn't defined.
 16. **Undefined terms.** "Condition match" scoring for mixed operators is not defined. Neither is who classifies a failure as "severe".
 
 ### Outcomes, privacy and data
 
 17. **Undefined specs.** "Heavy testing" and the world-model logging format are both undefined. The logging format is needed from Phase 1/2 ("from day one"). Proposal: Phase 1 writes one JSON Lines record per task run with a versioned schema, and the Phase 2 episode format builds on it.
-18. **Raw code could be stored.** Test output and `testResults` can contain code, stack traces and file paths. What sanitisation or redaction is required?
+18. **(Default used: counts only for test results; see below.) Raw code could be stored.** Test output and `testResults` can contain code, stack traces and file paths. What sanitisation or redaction is required?
 
 ### Host integration
 
-19. **Which hosts first?** Should Phase 2 target Claude Code only, or also Codex and Cursor? What target invocation rate counts as "reliable"?
+19. **(Default used: Claude Code only.) Which hosts first?** Should Phase 2 target Claude Code only, or also Codex and Cursor? What target invocation rate counts as "reliable"?
+
+### Raised in Phase 2 (non-blocking; the default used is in brackets)
+
+20. **Phase 1 was skipped.** The harness isn't in the repo yet, but this session was asked to build Phase 2. §13 says to benchmark after every phase, so Phase 2 has no benchmark run. [Built Phase 2 as asked. Phase 1 is still to do, dry run first, with no paid calls.]
+21. **Real host invocation rate is not measured yet.** This needs real Claude Code sessions, which cost API usage. [The machinery is in place: hooks plus `horizon stats` → `outcome_recording_rate`. The owner runs a few real tasks when ready.]
+22. **`predicted.source`.** MEMROUTER §4 lists `jev | sim | memory`. Phase 2 adds `host`. Should the fallback prediction be tagged `memory`? [Today a missing prediction keeps `source: "host"`, and the fallback is marked by `lowConfidence`.]
+23. **Situation text can still contain code.** `situation`, `chosen` and `reason` are free text from the host. [No redaction yet. The tool descriptions ask for short summaries.]
+24. **Embedding model download.** `huggingface.co` must be reachable wherever the server runs, or it falls back to the weaker hash embedder. [Fallback with a warning. `huggingface.co` is already on the §18 domain list.]
+25. **Stop-hook pushiness.** Blocking a stop once to ask for `record_outcome` could annoy users. [Enabled. Removing the `Stop` hook from `.claude/settings.json` turns it off.]
 
 ## Next step
 
-Merge the follow-up docs PR. Then start **Phase 1 — Benchmark harness + baseline** as specified in `docs/PROJECT.md` §18:
-- mini-SWE-agent with `claude-sonnet-5` on 50 SWE-bench Verified tasks;
-- a dry-run mode with a mock model, and real runs behind one config flag;
-- no paid API calls.
-
-Questions 6–9 can take the proposed defaults during the build unless answered first.
+1. Review and merge the Phase 2 PR.
+2. Build **Phase 1 — benchmark harness + baseline** (`docs/PROJECT.md` §18) with the approved defaults: dry-run mode, no paid calls.
+3. When credits exist, run a few real Claude Code tasks with Horizon installed and check `horizon stats` to measure host invocation reliability. This is the Phase 2 risk check.
+4. Then **Phase 3 — task state checkpoint references and rollback rules.**
