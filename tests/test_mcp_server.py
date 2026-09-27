@@ -172,3 +172,16 @@ async def test_simulated_claude_code_session(settings, project_dir):
 
     resumed = run_hook_cli("session-start", {"cwd": project_dir, "source": "resume"}, env)
     assert task_id in resumed["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.anyio
+async def test_record_outcome_sets_provenance_from_client_info(platform, memrouter):
+    async with Client(create_server(platform)) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        assert "ctx" not in tools["record_outcome"].input_schema["properties"]
+        task_id = payload(await client.call_tool("start_task", {"goal": "g"}))["task_id"]
+        out = payload(await client.call_tool("record_outcome", {
+            "task_id": task_id, "situation": "s", "chosen": "c", "success": 1.0, "plan": ["step 2"]}))
+    agent = memrouter.store.get(out["episode_id"], "local").provenance.agent_id
+    assert agent and "/" in agent  # "<client name>/<version>"
+    assert platform.tasks.get(task_id, "local").plan == ["step 2"]

@@ -10,7 +10,7 @@ import hmac
 import os
 from typing import Annotated, Any, Literal
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
@@ -68,6 +68,16 @@ def build_platform(settings: Settings, cwd: str | None = None) -> Platform:
         return MemRouter(store, make_embedder(settings.embedder, settings.embedding_dim), settings)
 
     return Platform(settings, tasks, memrouter, cwd=cwd)
+
+
+def client_agent(ctx: Context | None) -> str | None:
+    """Provenance for episodes (MEMROUTER.md §4, §11): the host that recorded it, e.g. "claude-code/2.1.283".
+    Client-supplied, so it traces memories; it is not an identity check."""
+    try:
+        info = ctx.session.client_params.client_info
+    except AttributeError:
+        return None
+    return f"{info.name}/{info.version}"[:100] if info else None
 
 
 def _call(fn, *args, **kwargs) -> dict:
@@ -137,6 +147,8 @@ def create_server(platform: Platform) -> MCPServer:
         open_issues: Annotated[list[str] | None, Field(description="Replaces the open issues list.")] = None,
         task_complete: Annotated[bool, Field(description="True when the whole task is done.")] = False,
         failure_reason: Annotated[str | None, Field(description="If tests failed: why, in one sentence.")] = None,
+        plan: Annotated[list[str] | None, Field(description="Replaces the plan, if it changed.")] = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         return _call(
             platform.record_outcome, task_id, situation, chosen,
@@ -147,6 +159,7 @@ def create_server(platform: Platform) -> MCPServer:
             tokens=tokens, cost_usd=cost_usd, latency_ms=latency_ms, signal_type=signal_type,
             severity=severity, recall_id=recall_id, progress_note=progress_note,
             open_issues=open_issues, task_complete=task_complete, failure_reason=failure_reason,
+            plan=plan, agent_id=client_agent(ctx),
         )
 
     return server

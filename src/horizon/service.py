@@ -169,11 +169,13 @@ class Platform:
                 conditions=conditions,
                 token_budget=token_budget,
                 task_id=task_id,
+                project_id=task.project_id,
             ))
             if ckpt:
                 ckpt.recall_id = slice_.recall_id if slice_ is not None else None
                 rollback.attach_checkpoint(task, ckpt)
-            if ckpt or human_guidance:
+            if ckpt or human_guidance or task.restore_check:
+                task.restore_check = None  # this recall went through: the hook's restore check is done
                 self.tasks.save(task)
             out: dict[str, Any] = {
                 "task_id": task_id,
@@ -223,6 +225,8 @@ class Platform:
         open_issues: list[str] | None = None,
         task_complete: bool = False,
         failure_reason: str | None = None,
+        plan: list[str] | None = None,
+        agent_id: str | None = None,
     ) -> dict:
         # Store decision summaries, never raw code (PROJECT.md §12).
         situation = redact(situation, MAX_SITUATION)
@@ -233,6 +237,7 @@ class Platform:
         open_issues = redact_list(open_issues, MAX_NOTE)
         conditions = redact_conditions(conditions)
         failure_reason = redact(failure_reason, MAX_NOTE)
+        plan = redact_list(plan, MAX_NOTE)
 
         def run() -> dict:
             task = self._task(task_id)
@@ -262,6 +267,7 @@ class Platform:
                 task_id=task.id,
                 recall_id=recall_id,
                 severity=severity,
+                agent_id=agent_id,
             ))
             episode_id = recorded.episode.id if recorded else None
 
@@ -275,6 +281,8 @@ class Platform:
             task.progress.append(ProgressEntry(note=progress_note or f"{chosen}: {summary}"))
             if open_issues is not None:
                 task.open_issues = open_issues
+            if plan is not None:
+                task.plan = plan
             failed = actual_success < self.settings.rollback_below and not task_complete
             action = rollback.apply_outcome(task, failed=failed, chosen=chosen, reason=failure_reason or summary,
                                             checkpoint=ckpt, max_attempts=self.settings.max_attempts)
