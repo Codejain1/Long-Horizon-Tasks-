@@ -4,7 +4,8 @@
 - PostToolUse (Bash): capture real test counts from test commands, so
   record_outcome uses them instead of the model's own summary (PROJECT.md §9).
 - PreToolUse (recall_context): snapshot the project (git + Claude Code checkpoint
-  reference) just before each decision, so a failed attempt can be rolled back.
+  reference) just before each decision, so a failed attempt can be rolled back. After a
+  rollback, deny that recall once if the working tree wasn't restored.
 - Stop: only when a task has an unrecorded outcome (a test run no record_outcome used),
   block once and ask for it. Each test run is nudged about at most once.
 
@@ -22,7 +23,7 @@ from typing import Any
 from horizon.config import Settings
 from horizon.db import connect
 from horizon.models import TestCapture
-from horizon.taskstate.checkpoints import capture
+from horizon.taskstate.checkpoints import capture, restore_steps, same_tree
 from horizon.taskstate.store import TaskStore
 from horizon.testparse import is_test_command, parse_test_output
 
@@ -84,10 +85,27 @@ def post_tool_use(payload: dict, store: TaskStore, settings: Settings) -> dict |
 
 
 def pre_tool_use(payload: dict, store: TaskStore, settings: Settings) -> dict | None:
-    """Silent: records a checkpoint reference that the recall_context call about to run attaches to its task."""
+    """Records a checkpoint reference that the recall_context call about to run attaches to its task.
+
+    Silent, except right after a rollback: if the tree doesn't match the rollback target, the recall is
+    denied once with the restore command (PROJECT.md §8: restore, then retry). Never twice in a row.
+    """
     if not str(payload.get("tool_name", "")).endswith("__recall_context"):
         return None
-    ckpt = capture(project_dir(payload), payload.get("session_id"), payload.get("transcript_path"))
+    cwd = project_dir(payload)
+    ckpt = capture(cwd, payload.get("session_id"), payload.get("transcript_path"))
+    for task in store.active(settings.team_id, cwd=cwd):
+        if task.restore_check and ckpt and ckpt.git and not same_tree(cwd, ckpt.git.commit, task.restore_check):
+            target = next((c for c in task.checkpoints if c.id == task.rollback_to), None)
+            task.restore_check = None
+            store.save(task)
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"Horizon: task {task.id} was rolled back but the files were not restored. Run "
+                    f"`{restore_steps(target)['git']}` first, then call recall_context again."),
+            }}
     if ckpt:
         store.add_checkpoint(ckpt)
     return None

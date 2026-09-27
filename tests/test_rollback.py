@@ -251,3 +251,38 @@ def test_retry_limit_and_threshold_are_configurable(settings, task_store, memrou
     task_id = platform.start_task("x")["task_id"]
     assert platform.record_outcome(task_id, "s", "c", tests_passed=9, tests_failed=1)["rollback"] is None
     assert platform.record_outcome(task_id, "s", "c", success=0.5)["rollback"]["action"] == "escalate"
+
+
+def _pre(cwd, settings):
+    body = {"session_id": "s1", "cwd": cwd, "tool_name": "mcp__horizon__recall_context", "tool_input": {}}
+    out = run_hook("pre-tool-use", json.dumps(body), settings)
+    return json.loads(out) if out else None
+
+
+def test_recall_after_rollback_is_denied_once_until_restored(platform, settings, repo):
+    task_id = platform.start_task("x")["task_id"]
+    assert _pre(str(repo), settings) is None
+    ctx = platform.recall_context(task_id, "s")
+    (repo / "app.py").write_text("broken\n")
+    rb = platform.record_outcome(task_id, "s", "A", tests_passed=0, tests_failed=1, recall_id=ctx["recall_id"])
+    assert rb["rollback"]["action"] == "rollback"
+
+    # Not restored: the retry's recall is denied with the restore command...
+    denied = _pre(str(repo), settings)["hookSpecificOutput"]
+    assert denied["permissionDecision"] == "deny" and rb["rollback"]["restore"]["git"] in denied["permissionDecisionReason"]
+    # ...but only once, so a host that can't restore is never stuck.
+    assert _pre(str(repo), settings) is None
+
+
+def test_recall_after_a_restore_goes_through(platform, settings, repo):
+    task_id = platform.start_task("x")["task_id"]
+    _pre(str(repo), settings)
+    ctx = platform.recall_context(task_id, "s")
+    (repo / "app.py").write_text("broken\n")
+    rb = platform.record_outcome(task_id, "s", "A", tests_passed=0, tests_failed=1, recall_id=ctx["recall_id"])
+    subprocess.run(rb["rollback"]["restore"]["git"], shell=True, check=True)
+    assert _pre(str(repo), settings) is None
+    platform.recall_context(task_id, "s")
+    assert platform.tasks.get(task_id, "local").restore_check is None
+    stats = platform.tasks.stats()
+    assert stats["checkpoints_captured"] == stats["checkpoints_attached"] == 2

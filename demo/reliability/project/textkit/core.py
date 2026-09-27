@@ -25,3 +25,12 @@ def word_count(text: str) -> int:
 def chunk(items: list, size: int) -> list[list]:
     """Split items into lists of at most `size` elements."""
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+SMALL_WORDS = {"a", "an", "the", "and", "but", "or", "of", "in", "on", "at", "to", "for", "by"}
+
+
+def title_case(text: str) -> str:
+    """Capitalise each word, except SMALL_WORDS that are neither first nor last:
+    "the lord of the rings" -> "The Lord of the Rings", "don't stop" -> "Don't Stop"."""
+    raise NotImplementedError

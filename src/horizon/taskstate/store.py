@@ -178,6 +178,8 @@ class TaskStore:
         captured, consumed = self.db.fetchone(
             "SELECT COUNT(*), SUM(CASE WHEN consumed_by IS NOT NULL THEN 1 ELSE 0 END) FROM test_captures")
         consumed = int(consumed or 0)
+        ckpts, claimed = self.db.fetchone(
+            "SELECT COUNT(*), SUM(CASE WHEN consumed_by IS NOT NULL THEN 1 ELSE 0 END) FROM checkpoints")
         return {
             "tool_calls": calls,
             "tasks": {k: int(v) for k, v in tasks.items()},
@@ -185,4 +187,7 @@ class TaskStore:
             "test_runs_recorded": consumed,
             # Share of real test runs the host followed up with record_outcome.
             "outcome_recording_rate": round(consumed / captured, 3) if captured else None,
+            # Phase 3: checkpoints captured by the PreToolUse hook, and how many a recall attached to a task.
+            "checkpoints_captured": int(ckpts),
+            "checkpoints_attached": int(claimed or 0),
         }

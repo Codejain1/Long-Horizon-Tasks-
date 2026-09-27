@@ -1,6 +1,6 @@
 # Horizon reliability demo
 
-This demo measures whether Claude Code calls Horizon's tools unprompted (`PROJECT.md` §14: "rate of reliable MCP invocation by the host"). It uses 4 small tasks on a tiny Python package (`project/`). Each task starts with failing tests.
+This demo measures whether Claude Code calls Horizon's tools unprompted (`PROJECT.md` §14: "rate of reliable MCP invocation by the host"). It uses 5 small tasks on a tiny Python package (`project/`). Each task starts with failing tests.
 
 ## Run it headless (recommended)
 
@@ -13,6 +13,8 @@ For each task, `run.sh`:
 1. copies `project/` to `OUT/project` and runs `horizon install-claude-code`, which declares Horizon in `.mcp.json` and installs the hooks and the CLAUDE.md snippet;
 2. runs one fresh `claude -p` session with the prompt from `tasks.json`, logging the transcript to `OUT/logs/<task>.jsonl`;
 3. runs that task's tests again itself (`OUT/logs/<task>.check.txt`).
+
+Sessions are isolated from your own setup: `--setting-sources project,local` (only the project's hooks) and `--strict-mcp-config` (only Horizon). Set `CLAUDE_MODEL=sonnet` (or any model) to choose the host model.
 
 At the end it prints the report and writes `OUT/report.json`. The sessions use your normal Claude Code login. No Anthropic API key is needed.
 
@@ -36,6 +38,11 @@ Without transcripts, the report shows only the Horizon-side numbers.
 | `recorded_after_last_test` | `record_outcome` came after the last test run |
 | `task_complete_sent` | the final `record_outcome` set `task_complete` |
 | `tests_pass_after` | the task's tests pass after the session |
+
+| `hooks_fired_as_expected` | SessionStart and Stop fired once, PreToolUse once per `recall_context`, PostToolUse once per Bash call that ran, and none failed (from `--include-hook-events`) |
+| `rollback_returned` | a `record_outcome` returned `rollback.action: "rollback"` (task 5 is built to fail its first attempt) |
+| `restored_after_rollback` | the host ran the `git restore` command before its next edit |
+| `recalled_after_rollback` | the host called `recall_context` before its next edit |
 
 `rates` gives the share of tasks meeting each criterion. `horizon_db` holds the server-side counts, including `outcome_recording_rate`: the share of hook-captured test runs that `record_outcome` used.
 

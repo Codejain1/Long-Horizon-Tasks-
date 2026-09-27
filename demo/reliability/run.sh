@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Horizon reliability demo: run 4 small coding tasks as separate headless Claude Code sessions,
+# Horizon reliability demo: run 5 small coding tasks as separate headless Claude Code sessions,
 # with Horizon declared in the project's .mcp.json and its hooks installed, then report how
 # reliably the tools were called.
 #
 #   demo/reliability/run.sh [OUT_DIR]          # full run (uses your Claude Code login)
 #   demo/reliability/run.sh --setup-only DIR   # only prepare DIR/project for a manual session
+#   CLAUDE_MODEL=sonnet demo/reliability/run.sh OUT   # pick the host model (default: your Claude Code default)
 #
 # Needs: `claude` on PATH and logged in; the repo venv (uv venv -p 3.12 && uv pip install -e ".[dev]").
 set -euo pipefail
@@ -53,12 +54,16 @@ while IFS=$'\t' read -r id check prompt; do
   echo "== $id"
   # One fresh session per task, as a user would start one. --mcp-config loads the same .mcp.json
   # without the interactive approval prompt; hooks come from .claude/settings.json.
+  # Isolation: only the project's settings/hooks and only Horizon's MCP server, so the user's own
+  # hooks and MCP servers can't change the result. --include-hook-events shows whether hooks fired.
   claude -p "$prompt" \
-    --output-format stream-json --verbose \
+    --output-format stream-json --verbose --include-hook-events \
+    --setting-sources project,local --strict-mcp-config \
+    ${CLAUDE_MODEL:+--model "$CLAUDE_MODEL"} \
     --mcp-config .mcp.json \
     --permission-mode acceptEdits \
     --allowedTools "mcp__horizon__start_task" "mcp__horizon__recall_context" "mcp__horizon__record_outcome" \
-                   "Bash(python -m pytest:*)" "Bash(pytest:*)" "Bash(python:*)" "Read" "Grep" "Glob" "Edit" "Write" \
+                   "Bash(python -m pytest:*)" "Bash(python3 -m pytest:*)" "Bash(pytest:*)" "Bash(python:*)" "Bash(python3:*)" "Bash(git -C:*)" "Bash(git restore:*)" "Read" "Grep" "Glob" "Edit" "Write" \
     < /dev/null > "$OUT/logs/$id.jsonl" 2> "$OUT/logs/$id.stderr" || echo "   session exited non-zero (see logs/$id.stderr)"
   if python -m pytest -q "$check" > "$OUT/logs/$id.check.txt" 2>&1; then echo "   tests pass"; else echo "   tests FAIL"; fi
 done < "$OUT/tasks.tsv"

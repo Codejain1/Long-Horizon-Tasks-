@@ -201,6 +201,9 @@ class TaskState(BaseModel):
     attempts: int = 0  # consecutive failed outcomes; reset by a success or by human guidance
     failures: list[FailureEntry] = Field(default_factory=list)  # the current failure streak
     rollback_to: str | None = None  # checkpoint id: the last known-good state of the current streak
+    # Git commit the working tree must match before the next recall_context, after a rollback.
+    # Checked by the PreToolUse hook (once), cleared by the next recall that goes through.
+    restore_check: str | None = None
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 

@@ -43,6 +43,12 @@ def git_snapshot(cwd: str) -> GitRef | None:
     return GitRef(repo=root, commit=commit) if commit else None
 
 
+def same_tree(cwd: str, a: str, b: str) -> bool:
+    """Whether two commits snapshot the same files (a stash-create commit and HEAD can share a tree)."""
+    tree_a = _git(cwd, "rev-parse", f"{a}^{{tree}}")
+    return tree_a is not None and tree_a == _git(cwd, "rev-parse", f"{b}^{{tree}}")
+
+
 def _prompt_text(entry: dict) -> str | None:
     """The text of a real user prompt, or None for tool results, meta and command entries."""
     if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isSidechain"):

@@ -40,6 +40,7 @@ def checkpoint_for_decision(task: TaskState, recall_id: str | None) -> Checkpoin
 def apply_outcome(task: TaskState, *, failed: bool, chosen: str, reason: str,
                   checkpoint: Checkpoint | None, max_attempts: int) -> dict | None:
     """Update the retry state for one outcome. Returns the rollback or escalation for a failure."""
+    task.restore_check = None
     if not failed:
         task.attempts, task.failures, task.rollback_to = 0, [], None
         return None
@@ -51,7 +52,8 @@ def apply_outcome(task: TaskState, *, failed: bool, chosen: str, reason: str,
         task.rollback_to = checkpoint.id if checkpoint else None
     task.failures.append(FailureEntry(attempt=task.attempts, chosen=chosen, reason=reason,
                                       checkpoint_id=checkpoint.id if checkpoint else None))
-    restore = restore_steps(find_checkpoint(task, task.rollback_to))
+    target = find_checkpoint(task, task.rollback_to)
+    restore = restore_steps(target)
     failures = [{"attempt": f.attempt, "chosen": f.chosen, "reason": f.reason} for f in task.failures]
 
     if task.attempts >= max_attempts:
@@ -65,6 +67,8 @@ def apply_outcome(task: TaskState, *, failed: bool, chosen: str, reason: str,
             "next": ("Retry limit reached: stop retrying. Restore the checkpoint, then show the user these "
                      "failures and ask how to proceed. Pass their answer to recall_context as human_guidance."),
         }
+    if target and target.git:
+        task.restore_check = target.git.commit
     return {
         "action": "rollback",
         "attempt": task.attempts,
@@ -72,15 +76,16 @@ def apply_outcome(task: TaskState, *, failed: bool, chosen: str, reason: str,
         "failure_reason": reason,
         "failures": failures,
         "restore": restore,
-        "next": ("Restore the checkpoint (run restore.git if present), then call recall_context before "
-                 "retrying. Do not repeat an approach listed in failures."),
+        "next": ("Run restore.git now, before any other edit, even if you plan to rewrite the same code: "
+                 "the retry must start from the known-good state. Then call recall_context and retry with an "
+                 "approach not listed in failures."),
     }
 
 
 def resume(task: TaskState) -> None:
     """A human answered the escalation: start a fresh streak."""
     task.status = "active"
-    task.attempts, task.failures, task.rollback_to = 0, [], None
+    task.attempts, task.failures, task.rollback_to, task.restore_check = 0, [], None, None
 
 
 def retry_state(task: TaskState, max_attempts: int) -> dict | None:
