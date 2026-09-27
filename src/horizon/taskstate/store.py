@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from horizon.db import Database, load_json
-from horizon.models import TaskState, TestCapture, now
+from horizon.models import Checkpoint, TaskState, TestCapture, now
 
 
 def ts(db: Database, value: datetime | None):
@@ -32,6 +32,9 @@ _SCHEMA = {
         """CREATE TABLE IF NOT EXISTS tool_calls (
             id INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL, task_id TEXT,
             ok INTEGER NOT NULL, error TEXT, created_at TEXT NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS checkpoints (
+            id TEXT PRIMARY KEY, cwd TEXT NOT NULL, data TEXT NOT NULL,
+            created_at TEXT NOT NULL, consumed_by TEXT)""",
     ],
     "postgres": [
         """CREATE TABLE IF NOT EXISTS tasks (
@@ -46,11 +49,15 @@ _SCHEMA = {
         """CREATE TABLE IF NOT EXISTS tool_calls (
             id BIGSERIAL PRIMARY KEY, tool TEXT NOT NULL, task_id TEXT,
             ok BOOLEAN NOT NULL, error TEXT, created_at TIMESTAMPTZ NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS checkpoints (
+            id TEXT PRIMARY KEY, cwd TEXT NOT NULL, data JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL, consumed_by TEXT)""",
     ],
 }
 _INDEXES = [
     "CREATE INDEX IF NOT EXISTS tasks_team_status ON tasks (team_id, status)",
     "CREATE INDEX IF NOT EXISTS captures_cwd ON test_captures (cwd, created_at)",
+    "CREATE INDEX IF NOT EXISTS checkpoints_cwd ON checkpoints (cwd, created_at)",
 ]
 
 
@@ -94,7 +101,8 @@ class TaskStore:
         return task
 
     def active(self, team_id: str, cwd: str | None = None) -> list[TaskState]:
-        sql = "SELECT data FROM tasks WHERE team_id = %s AND status = 'active'"
+        """Open tasks: active, or escalated and waiting for a human."""
+        sql = "SELECT data FROM tasks WHERE team_id = %s AND status IN ('active', 'escalated')"
         params: tuple = (team_id,)
         if cwd is not None:
             sql += " AND cwd = %s"
@@ -133,6 +141,24 @@ class TaskStore:
     def mark_nudged(self, capture_ids: list[str]) -> None:
         for cid in capture_ids:
             self.db.execute("UPDATE test_captures SET nudged_at = %s WHERE id = %s", (ts(self.db, now()), cid))
+
+    # --- checkpoints (PreToolUse hook) -----------------------------------------
+
+    def add_checkpoint(self, ckpt: Checkpoint) -> Checkpoint:
+        self.db.execute(
+            "INSERT INTO checkpoints (id, cwd, data, created_at) VALUES (%s, %s, %s, %s)",
+            (ckpt.id, ckpt.cwd, self.db.json(ckpt.model_dump(mode="json")), ts(self.db, ckpt.created_at)),
+        )
+        return ckpt
+
+    def take_checkpoint(self, cwd: str, since: datetime, task_id: str) -> Checkpoint | None:
+        """The newest unclaimed checkpoint for a directory; claims it and any older ones."""
+        rows = self.db.fetchall(
+            "SELECT id, data FROM checkpoints WHERE cwd = %s AND consumed_by IS NULL AND created_at >= %s"
+            " ORDER BY created_at DESC", (cwd, ts(self.db, since)))
+        for cid, _ in rows:
+            self.db.execute("UPDATE checkpoints SET consumed_by = %s WHERE id = %s", (task_id, cid))
+        return Checkpoint.model_validate(load_json(rows[0][1])) if rows else None
 
     # --- invocation log --------------------------------------------------------
 

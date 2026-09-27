@@ -17,6 +17,7 @@ MARK_START, MARK_END = "<!-- horizon:start -->", "<!-- horizon:end -->"
 HOOK_EVENTS = {
     # event: (matcher or None, hook name)
     "SessionStart": (None, "session-start"),
+    "PreToolUse": ("mcp__horizon__recall_context", "pre-tool-use"),
     "PostToolUse": ("Bash", "post-tool-use"),
     "Stop": (None, "stop"),
 }

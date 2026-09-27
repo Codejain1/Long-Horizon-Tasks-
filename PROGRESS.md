@@ -53,9 +53,23 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - Tests: 20 new; 177 pass in total on SQLite and Postgres.
   - **Not done:** the committed 50-task list (`bench/tasks/swebench_verified_50.json`). `huggingface.co` is blocked in this session. See open question 26.
 
+- **Session 3 — Phase 3: checkpoint references and rollback rules** (`PROJECT.md` §8). Stacked on PR #3, which is not merged yet.
+  - **Checkpoint references** (`src/horizon/taskstate/checkpoints.py`): a new `PreToolUse` hook on `recall_context` records, just before each decision:
+    - a **git** snapshot of the working tree (`git stash create`, or `HEAD` when clean). This doesn't touch the working tree, index, HEAD or stash list;
+    - a **Claude Code** checkpoint reference: the latest real user prompt from the session transcript (uuid, time and a redacted snippet), which is what `/rewind` lists.
+    - `recall_context` attaches the checkpoint to the task. Each decision in task state records its `checkpoint_id`.
+  - **Rollback rules** (`src/horizon/taskstate/rollback.py`): when `record_outcome` reports a failure, it returns `rollback`:
+    - **restore:** a `git restore --source=<snapshot>` command, and/or `/rewind` instructions for the user;
+    - **failure reason fed back:** a new `failure_reason` parameter, defaulting to the test summary. `recall_context`'s `task_state.retry` lists every failed approach in the streak;
+    - **retry limit:** `HORIZON_MAX_ATTEMPTS`, default 3;
+    - **escalation:** at the limit the task becomes `escalated`, and the host is told to stop and ask the user. `recall_context(human_guidance=…)` resumes the task.
+  - Installer, CLAUDE.md snippet, tool descriptions and `docs/CLAUDE_CODE.md` are updated.
+  - **Tests:** 12 new ones, plus an extended simulated Claude Code session (real hook subprocesses and the stdio server). **126 pass on SQLite.** The git restore is checked against real repos. The transcript parser was checked against a real Claude Code transcript, which found and fixed one case: `[Request interrupted by user]` entries.
+  - **Not run:** the Postgres variants (48 skipped). This machine has no pgvector or Docker. No real Claude Code session was run either.
+
 ## In progress
 
-- Nothing. The only remaining Phase 1 step is generating and committing the task list once `huggingface.co` is reachable.
+- Nothing. Phase 1 still needs its committed task list (see below). The only remaining Phase 1 step is generating and committing the task list once `huggingface.co` is reachable.
 
 ## Decisions made
 
@@ -172,6 +186,20 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **No `episodes_archive` table yet:** the sleep job that fills it is Phase 6. The `archived_at` column exists, and recall excludes archived episodes.
 - **World-model logging** (open question 17, partly): each episode carries `schema_version: 1`.
 
+**Phase 3 decisions (defaults chosen under the decision rule)**
+- **Checkpoints are captured by a hook, not the model:** `PreToolUse` with matcher `mcp__horizon__recall_context`, the moment before each decision. This matches the Phase 2 test-capture pattern: the hook writes to a `checkpoints` table and the next `recall_context` for that directory claims it. The server never reads the repository (§12); only commit ids are stored.
+- **Git snapshot = `git stash create`, falling back to `HEAD`.** It captures uncommitted tracked changes without modifying anything. Untracked files aren't captured.
+- **Restore = `git restore --source=<snapshot> --staged --worktree -- :/`.** It resets tracked files, deletes tracked files added since, and leaves HEAD, history and untracked files alone. It is non-destructive to commits, and the failed attempt stays in Claude Code's own checkpoints.
+- **Snapshot commits aren't pinned under `refs/`**, so `git gc` could prune one after about 2 weeks. That's fine for in-task rollback. (`ponytail:` note in the code.)
+- **Claude Code checkpoint = the latest real user prompt** in the transcript. `/rewind` can only be run by the user, so it is given as an instruction; git is what the host runs itself.
+- **Failure = test pass rate below 1.0** (`HORIZON_ROLLBACK_BELOW`). See open question 29.
+- **Retry limit = 3 consecutive failed attempts per task** (`HORIZON_MAX_ATTEMPTS`): two rollbacks, then escalation. Streaks are counted per task, not per situation, because the host words the situation differently each time.
+- **Every rollback in a streak targets the checkpoint from before the first failure.** If the host skips a restore, the broken tree can't become the new baseline.
+- **Escalation = task status `escalated` plus a human-guidance resume on `recall_context`.** No new tool was added; MCP approvals (elicitation) are Phase 7. Escalated tasks still count as open for the SessionStart and Stop hooks, and SessionStart flags them.
+- **`task_complete: true` wins over a failing pass rate:** there is no rollback when the host says the task is done.
+- **At most 20 checkpoints are kept per task**, plus the rollback target.
+- **No data migration:** the new table is created if missing, and the new task-state fields have defaults, so existing stored tasks load unchanged.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -259,6 +287,14 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
     [Both are handled defensively, and the smoke run exists to catch exactly this.]
 28. **Real-run spend.** The caps bound the worst case at $10 for the smoke run and $150 for the full 50 × 3. [No real runs until the owner sets `real_runs: true` and provides the keys.]
 
+### Raised in Phase 3 (the default used is in brackets)
+
+29. **Repos with failing tests before the task starts** would trigger a rollback on every attempt at the 1.0 threshold. [Threshold 1.0, configurable. The better rule is "worse than the pass rate at the checkpoint", but that needs a test run at checkpoint time.]
+30. **Hosts without hooks get no checkpoints.** [Claude Code only, per decision 19. A `checkpoint` parameter on `recall_context` would cover Codex and Cursor later.]
+31. **Should a `severe` outcome escalate immediately** instead of after N attempts? [No. It follows the normal limit.]
+32. **We don't verify that the host actually restored.** [Streaks always target the first good checkpoint, which limits the damage. A hook could compare the tree with the snapshot on the next recall.]
+33. **Phase 3 has no benchmark run** (§13). [Same as open question 10: it doesn't change the baseline agent, which is mini-SWE-agent without MCP.]
+
 ## Next step
 
 1. **Owner:**
@@ -268,4 +304,6 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 3. When credits and keys exist, set `real_runs: true` in `bench/config.yaml`:
    - smoke run first (`horizon-bench run --stage smoke`, at most $10);
    - then the full baseline (`--stage full`, 3 repeats, at most $150).
-4. Then **Phase 3 — task state checkpoint references and rollback rules.**
+4. Review and merge PR #3, then the Phase 3 PR stacked on it.
+5. Optionally, run a real Claude Code session on `demo/reliability/` and check that `PreToolUse` fires on `recall_context` and that a failing task gets a rollback.
+6. Then **Phase 4: decision layer** (crucial-decision detection, Jev scoring, weights and thresholds). Open questions 11–13 need answers or defaults first.

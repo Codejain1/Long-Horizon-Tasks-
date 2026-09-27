@@ -41,6 +41,10 @@ class Settings:
     recall_token_budget: int = 1500
     # Static key for the HTTP transport until real API keys (Phase 7).
     dev_api_key: str | None = None
+    # Rollback rules (PROJECT.md §8): an outcome below this pass rate is a failure, and this many
+    # consecutive failures escalate the task to a human.
+    rollback_below: float = 1.0
+    max_attempts: int = 3
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -69,4 +73,6 @@ class Settings:
             recall_max_items=get("RECALL_MAX_ITEMS", base.recall_max_items, int),
             recall_token_budget=get("RECALL_TOKEN_BUDGET", base.recall_token_budget, int),
             dev_api_key=get("DEV_API_KEY", None),
+            rollback_below=get("ROLLBACK_BELOW", base.rollback_below, float),
+            max_attempts=get("MAX_ATTEMPTS", base.max_attempts, int),
         )

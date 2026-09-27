@@ -26,6 +26,7 @@ from horizon.models import (
     TestResults,
 )
 from horizon.redact import MAX_CONDITION_VALUE, MAX_NOTE, MAX_OPTION, MAX_SITUATION, redact, redact_list
+from horizon.taskstate import rollback
 from horizon.taskstate.store import TaskStore
 
 log = logging.getLogger(__name__)
@@ -45,9 +46,9 @@ class ToolInputError(ValueError):
     """A problem with the host's input; the message tells the host what to do."""
 
 
-def compact_task_state(task: TaskState) -> dict[str, Any]:
+def compact_task_state(task: TaskState, max_attempts: int) -> dict[str, Any]:
     """The always-included task state: small enough to send on every recall."""
-    return {
+    out = {
         "task_id": task.id,
         "status": task.status,
         "goal": task.goal,
@@ -60,6 +61,10 @@ def compact_task_state(task: TaskState) -> dict[str, Any]:
         ],
         "open_issues": task.open_issues,
     }
+    retry = rollback.retry_state(task, max_attempts)
+    if retry:
+        out["retry"] = retry  # the failure reasons, fed back into the decision step (PROJECT.md §8)
+    return out
 
 
 class Platform:
@@ -129,11 +134,14 @@ class Platform:
             ))
             return {
                 "task_id": task.id,
-                "task_state": compact_task_state(task),
+                "task_state": self._compact(task),
                 "next": "Call recall_context with this task_id before your first decision or edit.",
             }
 
         return self._logged("start_task", None, run)
+
+    def _compact(self, task: TaskState) -> dict[str, Any]:
+        return compact_task_state(task, self.settings.max_attempts)
 
     def recall_context(
         self,
@@ -141,12 +149,20 @@ class Platform:
         situation: str,
         conditions: list[Condition] | None = None,
         token_budget: int | None = None,
+        human_guidance: str | None = None,
     ) -> dict:
         situation = redact(situation, MAX_SITUATION)
         conditions = redact_conditions(conditions)
+        human_guidance = redact(human_guidance, MAX_NOTE)
 
         def run() -> dict:
             task = self._task(task_id)
+            if human_guidance:
+                task.progress.append(ProgressEntry(note=f"Human guidance: {human_guidance}"))
+                if task.status == "escalated":
+                    rollback.resume(task)
+            # The PreToolUse hook snapshots the project just before this call (PROJECT.md §8).
+            ckpt = self.tasks.take_checkpoint(task.cwd, task.created_at, task.id) if task.cwd else None
             slice_, status = self._call_memory(lambda m: m.recall(
                 team_id=self.settings.team_id,
                 situation=situation,
@@ -154,17 +170,27 @@ class Platform:
                 token_budget=token_budget,
                 task_id=task_id,
             ))
+            if ckpt:
+                ckpt.recall_id = slice_.recall_id if slice_ is not None else None
+                rollback.attach_checkpoint(task, ckpt)
+            if ckpt or human_guidance:
+                self.tasks.save(task)
             out: dict[str, Any] = {
                 "task_id": task_id,
-                "task_state": compact_task_state(task),
+                "task_state": self._compact(task),
                 "memory_status": status,
                 "recall_id": None,
+                "checkpoint_id": ckpt.id if ckpt else None,
                 "memories": [],
             }
             if slice_ is not None:
                 out["recall_id"] = slice_.recall_id
                 out["memories"] = [m.model_dump(mode="json") for m in slice_.memories]
                 out["memories_truncated"] = slice_.truncated
+            if task.status == "escalated":
+                out["next"] = ("This task is escalated after repeated failures: ask the user how to proceed "
+                               "and call recall_context again with their answer as human_guidance.")
+                return out
             out["next"] = ("After implementing and running tests, call record_outcome with this recall_id."
                            if slice_ is not None else
                            "Memory is unavailable; continue on the task state and still call record_outcome.")
@@ -196,6 +222,7 @@ class Platform:
         progress_note: str | None = None,
         open_issues: list[str] | None = None,
         task_complete: bool = False,
+        failure_reason: str | None = None,
     ) -> dict:
         # Store decision summaries, never raw code (PROJECT.md §12).
         situation = redact(situation, MAX_SITUATION)
@@ -205,6 +232,7 @@ class Platform:
         progress_note = redact(progress_note, MAX_NOTE)
         open_issues = redact_list(open_issues, MAX_NOTE)
         conditions = redact_conditions(conditions)
+        failure_reason = redact(failure_reason, MAX_NOTE)
 
         def run() -> dict:
             task = self._task(task_id)
@@ -238,13 +266,18 @@ class Platform:
             episode_id = recorded.episode.id if recorded else None
 
             # Task state is updated whether or not memory worked.
+            ckpt = rollback.checkpoint_for_decision(task, recall_id)
             task.decisions.append(DecisionEntry(situation=situation, chosen=chosen, reason=reason,
-                                                episode_id=episode_id, success=round(actual_success, 3)))
+                                                episode_id=episode_id, success=round(actual_success, 3),
+                                                checkpoint_id=ckpt.id if ckpt else None))
             summary = (f"tests {tests.passed}/{tests.total} passed" if tests
                        else f"success {actual_success:.0%}")
             task.progress.append(ProgressEntry(note=progress_note or f"{chosen}: {summary}"))
             if open_issues is not None:
                 task.open_issues = open_issues
+            failed = actual_success < self.settings.rollback_below and not task_complete
+            action = rollback.apply_outcome(task, failed=failed, chosen=chosen, reason=failure_reason or summary,
+                                            checkpoint=ckpt, max_attempts=self.settings.max_attempts)
             if task_complete:
                 task.status = "completed"
             self.tasks.save(task)
@@ -258,6 +291,8 @@ class Platform:
                 "actual_success": round(actual_success, 3),
                 "test_results_source": tests.source if tests else None,
                 "task_status": task.status,
+                "checkpoint_id": ckpt.id if ckpt else None,
+                "rollback": action,
             }
             if recorded:
                 out.update(surprise=round(recorded.surprise.surprise, 3),
