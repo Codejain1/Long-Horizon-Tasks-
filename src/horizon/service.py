@@ -359,9 +359,11 @@ class Platform:
                             test_results=tests, signal_type=signal)
             source, p_success = "host", predicted_success
             ev = task.last_evaluation
-            if p_success is None and ev and ev.get("predicted_success") is not None and ev.get("source") \
+            if ev and ev.get("predicted_success") is not None and ev.get("source") \
                     and same_option(ev.get("chosen"), chosen):
-                source, p_success = ev["source"], ev["predicted_success"]  # what the scorer predicted (§9)
+                # §9: record what the scorer predicted for the option it chose, over the host's own guess, so
+                # predictor trust (Phase 6) measures Jev. Seen live: hosts pass their own predicted_success too.
+                source, p_success = ev["source"], ev["predicted_success"]
             predicted = Predicted(success=p_success, tokens=predicted_tokens, cost_usd=predicted_cost_usd,
                                   latency_ms=predicted_latency_ms, source=source)
 

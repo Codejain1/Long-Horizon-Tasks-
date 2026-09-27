@@ -24,7 +24,7 @@ class Scorer(Protocol):
     def ask(self, state: dict, questions: dict[str, dict]) -> dict[str, Answer]: ...
 
 
-def noul(instructions: str) -> dict:
+def noul(instructions: str | dict) -> dict:
     return {"type": "noul", "instructions": instructions}
 
 
@@ -79,11 +79,12 @@ class LLMScorer:
         keys = {qid: f"q{i}" for i, qid in enumerate(questions)}  # schema-safe property names
         lines = []
         for qid, q in questions.items():
+            text = q["instructions"] if isinstance(q["instructions"], str) else json.dumps(q["instructions"])
             if q["type"] == "noul":
-                lines.append(f"{keys[qid]} (yes/no probability): {q['instructions']}")
+                lines.append(f"{keys[qid]} (yes/no probability): {text}")
             else:
                 levels = "; ".join(f"{i} = {level}" for i, level in enumerate(q["criteria"]))
-                lines.append(f"{keys[qid]} (level 0-{len(q['criteria']) - 1}): {q['instructions']} Levels: {levels}")
+                lines.append(f"{keys[qid]} (level 0-{len(q['criteria']) - 1}): {text} Levels: {levels}")
         response = self.client.messages.create(
             model=self.model,
             max_tokens=2048,

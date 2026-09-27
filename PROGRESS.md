@@ -124,6 +124,13 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Real Claude Code:** a new demo task 6 contains a crucial choice. Opus 5.5 and Sonnet 5 both called `evaluate_options` before their first edit, with four sensible options each. One finding, now fixed: `unscored` must not name a `chosen` option (details in `demo/reliability/RESULTS.md`).
   - **Tests:** 258 pass on SQLite and Postgres (16 new for Phase 4). The Jev and LLM adapters are tested through the real SDKs over a mocked HTTP transport, which checks the request shape and response parsing.
 
+- **Session 7 — live Jev.** The owner provided a TypeSafe API key. It is kept out of the repo and passed only as `TYPESAFE_API_KEY`.
+  - **Live calls:** `jev-1.13.0`, 0.45–0.71 s per decision. Three hand cases behaved sensibly: a routine variable name, a clear storage winner, and a safe production migration.
+  - **Demo task 6 with Jev behind `evaluate_options`, on Opus 5.5 and Sonnet 5:** both hosts called it before editing, got `clear_winner` → sqlite3, followed it, and passed the tests.
+  - **Two fixes from the live runs:**
+    - the high-stakes question was reworded (a false positive on caches; true positives unchanged);
+    - the scorer's prediction now wins over the host's own guess for the evaluated option, so episodes record `source: jev`. Verified in a rerun: predicted 0.87, surprise +0.13.
+
 ## In progress
 
 - Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
@@ -292,7 +299,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Open question 12, weights:** success 0.30, compatibility 0.20, architecture fit 0.20, cost 0.15, tokens 0.10, latency 0.05. They are renormalised over the dimensions available. Measured dimensions count only when every option has an estimate: best = 1, others = best / value.
 - **Open question 13, high stakes:** the scorer's *would any option spend money, message people, or delete or overwrite data* ≥ 0.5 (the §9 examples), **or** a severe past failure among the recalled memories. High stakes only matters on a close call: a clear winner doesn't need a human.
 - **One scorer request per decision**, including the crucial-detection questions. §16 worries about per-decision overhead, but the host calls this tool only at decision points, and one parallel request is faster than two sequential ones.
-- **Accuracy is scored as a Noul**, *will this option work?*, so it doubles as the calibrated predicted success probability recorded on the episode (source `jev` or `llm`). The prediction is used when `record_outcome`'s `chosen` matches the evaluated option (case-insensitive containment) and the host gave none of its own.
+- **Accuracy is scored as a Noul**, *will this option work?*, so it doubles as the calibrated predicted success probability recorded on the episode (source `jev` or `llm`). The prediction is used when `record_outcome`'s `chosen` matches the evaluated option (case-insensitive containment). **It wins over the host's own `predicted_success`** (session 7: hosts always send one), because §9 asks to record what Jev predicted and Phase 6 predictor trust needs Jev's forecasts.
 - **`llm` is a new prediction source** (`MEMROUTER.md` §4 updated), so Jev's predictor trust (Phase 6) is never mixed with the comparison scorer's.
 - **The LLM scorer model is `claude-haiku-4-5`**, overridable: §5 asks for a *small* LLM. It answers through a JSON-schema structured output and gives no confidence, so its answers never block a clear winner.
 - **A scorer failure or missing key degrades to `unscored`**, the same failure isolation as memrouter. The scorer is created lazily, and creation is retried on the next call.
@@ -401,14 +408,14 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 
 ### Raised in Phase 4 (the default used is in brackets)
 
-37. **(Needs credentials.) Jev has never been called for real.** This needs a `TYPESAFE_API_KEY` from console.typesafe.ai. The docs publish no pricing or rate limits (§15 "test Jev access for real" is still open). [Built and tested against the SDK over a mocked transport; `HORIZON_SCORER=none` by default.]
+37. **(Partly resolved in session 7: key provided, Jev verified live; pricing and rate limits still unpublished.)** **Jev has never been called for real.** This needs a `TYPESAFE_API_KEY` from console.typesafe.ai. The docs publish no pricing or rate limits (§15 "test Jev access for real" is still open). [Built and tested against the SDK over a mocked transport; `HORIZON_SCORER=none` by default.]
 38. **(Needs credentials and spend.) The LLM scorer has never been called for real.** It needs Claude API credentials. [Same as above.]
 39. **Weights and thresholds are untuned.** §5's experiment (Jev against the small LLM on real decisions, then against real outcomes) is what should set them. [Defaults above. Every raw dimension is returned, so re-weighting doesn't need re-scoring.]
 40. **Phase 4 has no benchmark run.** mini-SWE-agent doesn't speak MCP (same as open question 10). [The demo measures invocation instead.]
 
 ## Next step
 
-1. **Owner:** create a TypeSafe API key and set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev`. Then rerun demo task 6 to see real Jev decisions, and whether the host follows them. Optionally set `HORIZON_SCORER=llm` with Claude API credentials for the comparison.
+1. **Owner:** to use Jev in your own projects, set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev` in the environment Claude Code starts from. Optionally set `HORIZON_SCORER=llm` with Claude API credentials to run the Jev-vs-small-LLM comparison (open question 39).
 2. Review the Phase 4 branch and open its PR when ready (the owner asked for PRs in batches).
 3. Then **Phase 5: consequence checking**: static checks, memory lookup, local spikes, and a Jev re-score on close calls.
 4. When credits and keys exist, run the Phase 1 real benchmark (smoke run first).

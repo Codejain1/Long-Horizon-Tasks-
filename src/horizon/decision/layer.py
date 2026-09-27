@@ -58,8 +58,13 @@ def build_questions(n_options: int) -> dict[str, dict]:
         "crucial.many_steps": noul("Will the choice in `situation` shape many later steps of the task in `goal`?"),
         "crucial.real_cost": noul("Does the choice in `situation` carry real cost: money, many tokens, lost time "
                                   "or data risk?"),
-        "high_stakes": noul("Would any of the `options` spend money, send messages to people, or delete or "
-                            "overwrite data?"),
+        # Wording checked against live Jev: "delete or overwrite data" also fired on caches (0.80 -> 0.20).
+        "high_stakes": noul({
+            "question": "Could any of the `options` cause real-world harm that is hard to undo: spending real "
+                        "money, sending messages to real people, or destroying existing user or production data?",
+            "not_counted": "Routine writes the software itself manages (caches, temp files, build output, test "
+                           "data) and changes git can undo.",
+        }),
     }
     for i in range(n_options):
         ref = f"`options[{i}]`"

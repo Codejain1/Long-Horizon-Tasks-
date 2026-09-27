@@ -47,3 +47,15 @@ Task 6 only, on Opus 5.5 and on Sonnet 5, with no scorer configured (`HORIZON_SC
 **Finding and fix.** With no scorer, the first version returned the cheapest option by the host's own estimates as `chosen` (shelve/dbm), and shelve can't serve several processes. Both hosts ignored it and built sqlite3 ("I'll decide based on engineering merit rather than the token-cost ranking"). `unscored` now returns `chosen: null`, and the estimate ranking comes back separately as `cheapest_by_estimates`. Estimates show what's cheap, not what works.
 
 Not measured yet: real Jev or LLM scores (no API keys). With a scorer, the same run would also test whether hosts follow `clear_winner`, `close_call` and `ask_human`.
+
+### With live Jev (`HORIZON_SCORER=jev`, `jev-1.13.0`)
+
+| Host model | `evaluate_options` before edit | Jev decision | margin | host followed it | tests pass | episode prediction |
+|---|---|---|---|---|---|---|
+| Opus 5.5 | yes | `clear_winner`: stdlib sqlite3 (WAL), 0.91 vs next best 0.41 | 0.50 | yes | yes | 0.9 from `host` (before the fix below) |
+| Sonnet 5 | yes | `clear_winner`: sqlite3, 0.87 vs diskcache 0.46 | 0.41 | yes | yes | 0.9 from `host` (before the fix) |
+| Sonnet 5 (rerun) | yes | `clear_winner`: sqlite3 | — | yes | yes | **0.87 from `jev`**, surprise +0.13 |
+
+- Each decision is one Jev request of 4 + 4 × options questions, taking 0.45–0.71 s. Redis ranked near zero under a "stdlib only" constraint, and shelve/dbm (no safe concurrent writers) ranked low.
+- **Fix: prediction source.** Hosts pass their own `predicted_success` as well, and that used to win. Now, when the implemented option is the one the scorer evaluated, the scorer's prediction is recorded (§9 "record what Jev predicted"), so Phase 6 predictor trust measures Jev.
+- **Fix: high-stakes wording.** "Delete or overwrite data" fired on a cache (Noul 0.80). The new wording ("real-world harm that is hard to undo: … destroying existing user or production data", with caches, temp files, build output and git-undoable changes excluded) scored 0.20 on the cache. True positives stayed high: a production table migration 0.93, emailing 40k customers 0.93, $3k/month of cloud spend 0.87.

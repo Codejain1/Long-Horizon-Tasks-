@@ -131,7 +131,8 @@ def test_evaluation_feeds_memory_evidence_and_the_scorer_prediction_is_recorded(
     assert state["goal"] == "Add persistence" and state["constraints"] == ["team knows SQL"]
     assert state["past_outcomes"][0]["chosen"] == "PostgreSQL"
 
-    out = platform.record_outcome(task_id, "choose a database", "postgresql", success=1.0)
+    out = platform.record_outcome(task_id, "choose a database", "postgresql", success=1.0,
+                                  predicted_success=0.95)  # the host's own guess loses to Jev's for this option
     ep = memrouter.store.get(out["episode_id"], "local")
     assert (ep.predicted.success, ep.predicted.source) == (0.8, "jev")  # §9: record what Jev predicted
     other = platform.record_outcome(task_id, "s", "SQLite", success=1.0)  # a different option: not Jev's
