@@ -39,3 +39,23 @@ def test_parses_counts(output, runner, passed, failed):
 def test_unparseable_output_returns_none():
     assert parse_test_output("command not found: pytest") is None
     assert parse_test_output("") is None
+
+
+@pytest.mark.parametrize("output,ids", [
+    ("FAILED tests/test_a.py::test_x - AssertionError: boom\nERROR tests/test_b.py::test_y\n"
+     "==== 1 failed, 3 passed, 1 error in 0.1s ====", ("tests/test_a.py::test_x", "tests/test_b.py::test_y")),
+    ("FAIL: test_x (pkg.tests.TestA)\n----\nRan 2 tests in 0.1s\n\nFAILED (failures=1)", ("pkg.tests.TestA.test_x",)),
+    ("--- FAIL: TestB (0.00s)\n--- PASS: TestA (0.00s)\nFAIL", ("TestB",)),
+    ("test tests::b ... FAILED\ntest result: FAILED. 1 passed; 1 failed;", ("tests::b",)),
+    ("  ● math › adds\n\nTests:       1 failed, 4 passed, 5 total", ("math › adds",)),
+])
+def test_failing_ids(output, ids):
+    counts = parse_test_output(output)
+    assert counts.failing == ids and counts.failing_complete
+
+
+def test_failing_ids_cut_short_are_marked_incomplete():
+    # e.g. `pytest -q | tail -1`: the summary survives, the FAILED lines don't.
+    counts = parse_test_output("==== 2 failed, 3 passed in 0.1s ====")
+    assert counts.failing == () and not counts.failing_complete
+    assert parse_test_output("=== 5 passed in 1.00s ===").failing_complete

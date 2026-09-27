@@ -75,6 +75,7 @@ def post_tool_use(payload: dict, store: TaskStore, settings: Settings) -> dict |
         passed=counts.passed,
         failed=counts.failed,
         total=counts.total,
+        failing=list(counts.failing) if counts.failing_complete else None,
     ))
     context = (f"Horizon captured this test run: {counts.passed} passed, {counts.failed} failed. "
                "Call record_outcome for the change you just tested.")

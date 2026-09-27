@@ -27,6 +27,7 @@ from horizon.models import (
 )
 from horizon.redact import MAX_CONDITION_VALUE, MAX_NOTE, MAX_OPTION, MAX_SITUATION, redact, redact_list
 from horizon.taskstate import rollback
+from horizon.taskstate.judge import judge, targets_from_goal
 from horizon.taskstate.store import TaskStore
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,8 @@ def compact_task_state(task: TaskState, max_attempts: int) -> dict[str, Any]:
             for d in task.decisions[-RECENT_DECISIONS:]
         ],
         "open_issues": task.open_issues,
+        "baseline": {"status": task.baseline, "failing_at_start": len(task.baseline_failing),
+                     "target_tests": task.target_tests},
     }
     retry = rollback.retry_state(task, max_attempts)
     if retry:
@@ -119,6 +122,7 @@ class Platform:
         plan: list[str] | None = None,
         open_issues: list[str] | None = None,
         project_id: str | None = None,
+        target_tests: list[str] | None = None,
     ) -> dict:
         def run() -> dict:
             if not goal.strip():
@@ -131,11 +135,15 @@ class Platform:
                 plan=redact_list(plan, MAX_NOTE) or [],
                 open_issues=redact_list(open_issues, MAX_NOTE) or [],
                 cwd=self.cwd,
+                target_tests=list(dict.fromkeys((redact_list(target_tests, MAX_OPTION) or [])
+                                                + targets_from_goal(goal))),
             ))
             return {
                 "task_id": task.id,
                 "task_state": self._compact(task),
-                "next": "Call recall_context with this task_id before your first decision or edit.",
+                "next": ("Run the project's full test suite once now, before any edit, so Horizon records which "
+                         "tests already fail (they won't count against you). Then call recall_context with this "
+                         "task_id before your first decision or edit."),
             }
 
         return self._logged("start_task", None, run)
@@ -161,6 +169,8 @@ class Platform:
                 task.progress.append(ProgressEntry(note=f"Human guidance: {human_guidance}"))
                 if task.status == "escalated":
                     rollback.resume(task)
+            baseline_changed = task.baseline == "pending"
+            self._take_baseline(task)
             # The PreToolUse hook snapshots the project just before this call (PROJECT.md §8).
             ckpt = self.tasks.take_checkpoint(task.cwd, task.created_at, task.id) if task.cwd else None
             slice_, status = self._call_memory(lambda m: m.recall(
@@ -174,7 +184,7 @@ class Platform:
             if ckpt:
                 ckpt.recall_id = slice_.recall_id if slice_ is not None else None
                 rollback.attach_checkpoint(task, ckpt)
-            if ckpt or human_guidance or task.restore_check:
+            if ckpt or human_guidance or task.restore_check or baseline_changed:
                 task.restore_check = None  # this recall went through: the hook's restore check is done
                 self.tasks.save(task)
             out: dict[str, Any] = {
@@ -199,6 +209,22 @@ class Platform:
             return out
 
         return self._logged("recall_context", task_id, run)
+
+    def _take_baseline(self, task: TaskState) -> int:
+        """Test runs made since start_task and before the first recall_context (so before any decision or
+        edit) are the baseline (PROJECT.md §9). Taken by whichever of recall_context and record_outcome
+        comes first. Returns how many test runs it took (0 when already taken or there were none)."""
+        if task.baseline != "pending":
+            return 0
+        captures = self.tasks.pending_captures(task.cwd, since=task.created_at) if task.cwd else []
+        if captures and all(c.failing is not None for c in captures):
+            task.baseline = "captured"
+            task.baseline_failing = list(dict.fromkeys(t for c in captures for t in c.failing))
+        else:
+            task.baseline = "missing"  # no run, or a run whose failures weren't all identified
+        if captures:
+            self.tasks.consume_captures([c.id for c in captures], f"baseline:{task.id}")
+        return len(captures)
 
     def record_outcome(
         self,
@@ -241,6 +267,17 @@ class Platform:
 
         def run() -> dict:
             task = self._task(task_id)
+            if self._take_baseline(task):
+                # The host recorded its pre-change test run: that run is the baseline, not an outcome.
+                self.tasks.save(task)
+                return {
+                    "task_id": task.id,
+                    "recorded": False,
+                    "baseline": {"status": task.baseline, "failing_at_start": len(task.baseline_failing)},
+                    "next": ("That test run was before any change, so it is the task's baseline: tests failing now "
+                             "won't count against you. Call recall_context, make your change, run the tests, then "
+                             "call record_outcome."),
+                }
             tests, signal, captures = self._resolve_tests(task, tests_passed, tests_failed, signal_type)
             if tests is not None:
                 actual_success = tests.pass_rate
@@ -250,6 +287,10 @@ class Platform:
                 raise ToolInputError(
                     "Provide tests_passed and tests_failed from your test run (preferred), or success (0..1)."
                 )
+            # Judge on regressions against the baseline, not the absolute pass rate (PROJECT.md §9).
+            verdict = judge(task, tests, captures[0].failing if captures else None, actual_success,
+                            self.settings.rollback_below)
+            actual_success = verdict.success
             actual = Actual(success=actual_success, tokens=tokens, cost_usd=cost_usd, latency_ms=latency_ms,
                             test_results=tests, signal_type=signal)
             predicted = Predicted(success=predicted_success, tokens=predicted_tokens,
@@ -278,12 +319,16 @@ class Platform:
                                                 checkpoint_id=ckpt.id if ckpt else None))
             summary = (f"tests {tests.passed}/{tests.total} passed" if tests
                        else f"success {actual_success:.0%}")
+            if verdict.pre_existing:
+                summary += f" ({len(verdict.pre_existing)} already failing at start)"
+            if verdict.regressions:
+                summary += f"; regressions: {', '.join(verdict.regressions[:5])}"
             task.progress.append(ProgressEntry(note=progress_note or f"{chosen}: {summary}"))
             if open_issues is not None:
                 task.open_issues = open_issues
             if plan is not None:
                 task.plan = plan
-            failed = actual_success < self.settings.rollback_below and not task_complete
+            failed = verdict.failed and not task_complete
             action = rollback.apply_outcome(task, failed=failed, chosen=chosen, reason=failure_reason or summary,
                                             checkpoint=ckpt, max_attempts=self.settings.max_attempts)
             if task_complete:
@@ -300,6 +345,7 @@ class Platform:
                 "test_results_source": tests.source if tests else None,
                 "task_status": task.status,
                 "checkpoint_id": ckpt.id if ckpt else None,
+                "test_judgement": verdict.report(),
                 "rollback": action,
             }
             if recorded:

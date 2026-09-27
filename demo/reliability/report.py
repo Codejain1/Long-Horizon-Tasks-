@@ -98,6 +98,11 @@ def analyse(calls: list[dict]) -> dict:
                      and TEST_CMD.search(str(c["input"].get("command", ""))))
     last_record = last(lambda c: c["name"] == HORIZON + "record_outcome")
     before_edit = (lambda i: i is not None and (first_edit is None or i < first_edit))
+    # Baseline (PROJECT.md §9): a test run that happened after start_task and before the first recall.
+    ran_test = [i for i, c in enumerate(calls) if c["name"] == "Bash" and not c.get("error")
+                and TEST_CMD.search(str(c["input"].get("command", "")))]
+    baseline_run = start is not None and any(start < i < (recall if recall is not None else len(calls))
+                                             for i in ran_test)
 
     # Phase 3: after a record_outcome that returned a rollback, did the host restore and recall before editing again?
     rollback_at = first(lambda c: c["name"] == HORIZON + "record_outcome" and rollback_action(c) == "rollback")
@@ -115,6 +120,7 @@ def analyse(calls: list[dict]) -> dict:
         "recall_context": names.count(HORIZON + "recall_context"),
         "record_outcome": names.count(HORIZON + "record_outcome"),
         "started_before_edit": before_edit(start),
+        "baseline_run": baseline_run,
         "recalled_before_edit": before_edit(recall),
         "recorded_after_last_test": last_test is None or (last_record is not None and last_record > last_test),
         "ran_tests": last_test is not None,
@@ -143,7 +149,7 @@ def db_stats(out: Path) -> dict | None:
         return TaskStore(conn).stats()
 
 
-RATE_KEYS = ("started_before_edit", "recalled_before_edit", "recorded_after_last_test", "task_complete_sent")
+RATE_KEYS = ("started_before_edit", "baseline_run", "recalled_before_edit", "recorded_after_last_test", "task_complete_sent")
 
 
 def build_report(out: Path) -> dict:
@@ -174,7 +180,8 @@ def build_report(out: Path) -> dict:
 
 
 def print_report(report: dict) -> None:
-    cols = ("start_task", "recall_context", "record_outcome", "started_before_edit", "recalled_before_edit",
+    cols = ("start_task", "recall_context", "record_outcome", "started_before_edit", "baseline_run",
+            "recalled_before_edit",
             "recorded_after_last_test", "hooks_fired_as_expected", "rollback_returned",
             "restored_after_rollback", "recalled_after_rollback", "tests_pass_after")
     print("task".ljust(14) + "".join(c[:14].rjust(16) for c in cols))

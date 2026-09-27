@@ -27,6 +27,17 @@ def chunk(items: list, size: int) -> list[list]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+
+def _cap(word: str) -> str:
+    """Upper-case the first letter only: "mcDonald's" -> "McDonald's"."""
+    return word[:1].upper() + word[1:]
+
+
+def sentence_case(text: str) -> str:
+    """Capitalise the first letter of the text, leave the rest alone."""
+    return _cap(text)
+
+
 SMALL_WORDS = {"a", "an", "the", "and", "but", "or", "of", "in", "on", "at", "to", "for", "by"}
 
 

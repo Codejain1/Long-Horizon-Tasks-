@@ -91,6 +91,17 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - the committed task list (§18);
     - README and bench docs are up to date.
 
+- **Session 5 — owner round 5: zero-centred surprise, and judging outcomes against a baseline.**
+  - **Surprise** (`src/horizon/memrouter/surprise.py`, `MEMROUTER.md` §5): `0.6 × success_error + 0.4 × mean(efficiency_errors)`, where each efficiency error is `clamp((predicted − actual) / predicted, −1, 1)`. Missing or zero predictions are dropped. The ε setting is gone. A new test shows that 20,000 calibrated predictions average under 0.01.
+  - **Baseline** (`src/horizon/taskstate/judge.py`, `PROJECT.md` §9):
+    - The PostToolUse hook now stores failing test ids (pytest, unittest, go, cargo, jest, rspec).
+    - The test runs between `start_task` and the first `recall_context` become the task's baseline.
+    - Outcomes are judged on regressions and target tests. Pre-existing failures are excluded from success and reported in `test_judgement`, and only regressions trigger a rollback.
+    - Output that doesn't name every failure, or a task with no baseline run, falls back to the absolute rule.
+  - **Demo:** task 5 now produces a real regression (the shared `_cap` helper breaks `sentence_case`), and the report measures `baseline_run`.
+  - **Real Claude Code runs 7–10:** run 8 (Sonnet) exposed an ordering gap: it recorded the baseline run before its first recall. Fixed. Runs 9 and 10 (Opus, Sonnet) were clean on every metric, with every outcome judged by the baseline. See `demo/reliability/RESULTS.md`.
+  - **Tests:** 16 new (8 of them run on SQLite and Postgres).
+
 ## In progress
 
 - Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
@@ -107,7 +118,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 2. **MCP-first is confirmed.** The MCP server is the product. `MEMROUTER.md` §12 now maps its interfaces to MCP tools, and the Python SDK moves to "Later".
 3. **Basic memory moves to Phase 2.** Memrouter build step 1 (episodes, write path, basic similarity recall) now ships in Phase 2 with the MCP skeleton. Phase 6 adds the learning features: surprise-based links, spreading activation, decay, consolidation and fear memories.
    - In the docs, Phase 6 also covers MEMROUTER steps 3 (Jev attention filter) and 7 (predictor trust, simulation reuse). See open question 3.
-4. **Surprise is a signed prediction error** (`MEMROUTER.md` §5):
+4. **Surprise is a signed prediction error** (`MEMROUTER.md` §5; the formula below is superseded by round 5, decision 23):
    - `outcome_score = 0.6 × success + 0.4 × efficiency`
    - `success` = test pass rate (0 to 1)
    - `efficiency` = average of `min(1, predicted/actual)` over tokens, cost and latency
@@ -122,7 +133,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
    - Postgres + pgvector, pytest, and Docker, with everything containerised. Hosting is decided at launch.
 
 **Owner decisions, round 2**
-7. **Surprise edge cases** (`MEMROUTER.md` §5):
+7. **Surprise edge cases** (`MEMROUTER.md` §5; superseded by round 5, decision 23):
    - **Actual value is 0:** the ratio is 1, computed as `min(1, predicted / max(actual, ε))`.
    - **Predicted value missing:** drop that metric from the efficiency average. If all three are missing, score on success only (weights renormalised).
    - **No success probability:** use the historical success rate of similar episodes, or 0.5 if there are none. Mark the episode `lowConfidence` and halve its learning rate.
@@ -233,6 +244,23 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Episode provenance** is `client_info` `name/version` from the MCP initialize handshake (for example `claude-code/2.1.283`). It is client-supplied, so it's for tracing, not identity. Subagents share one connection, so they can't be told apart yet.
 - **`plan` on `record_outcome` replaces the plan**, like `open_issues`, and is redacted the same way.
 
+**Owner decisions, round 5**
+23. **Open question 34 (surprise bias):** replaced by the zero-centred formula above. `MEMROUTER.md` §5 and §14 are updated. The low-confidence rule for a missing success probability is unchanged.
+24. **Open questions 29 and 35 (pre-existing failures):** snapshot the failing tests at the start as a baseline. Success excludes baseline failures, rollback triggers only on regressions, and pre-existing failures are reported separately. Added to `PROJECT.md` §9.
+25. **Open questions 11–13:** my defaults are approved unless they contradict the docs. They are set in the Phase 4 plan.
+26. **Merge PR #3 and PR #4 once tests pass, then start Phase 4 on a new branch.**
+
+**Session 5 decisions (defaults chosen under the decision rule)**
+- **The baseline comes from the host's own test run**, which `start_task`'s `next`, the tool description and the CLAUDE.md snippet all ask for: "run the full suite once, before any edit". The server never runs tests itself (§12), and the hook doesn't know the project's test command.
+- **Baseline window = test runs after `start_task` and before the first `recall_context`.** Whichever of `recall_context` or `record_outcome` comes first takes it. Run 8 showed that hosts sometimes record the baseline run itself. This relies on recall coming before the first edit, which held in 50/50 real sessions.
+- **Target tests = `start_task`'s `target_tests` plus test files named in the goal** (a regex for test file paths). Target tests always count, even though they fail at the baseline. Without targets, a task's own failing tests would be excluded and success would look perfect.
+- **Regression = failing now and not failing at the baseline.** This includes new tests the host wrote that fail: only failing ids are visible in test output, so "passed at baseline" can't be checked.
+- **Absolute fallback** when the output didn't name every failure (for example `| tail -1`), when counts were host-reported, or when there's no baseline. `HORIZON_ROLLBACK_BELOW` now applies only there.
+- **Target tests still failing without a regression is not a rollback**, per rule 24. It lowers success and shows up under `target_tests_failing`, but nothing is restored.
+- **Test ids are stored with captures** (at most 500 per run) as names only, never output. `test_captures.failing` is an additive, nullable column, with the same migration pattern as `nudged_at`.
+- **Surprise ε removed** (`HORIZON_SURPRISE_EPSILON`): the new formula divides by the prediction, and zero predictions are dropped.
+- **Known flake:** one full-suite run on macOS aborted at interpreter exit (`libc++abi … recursive_mutex lock failed`), most likely onnxruntime (fastembed) tearing down. Three reruns were clean, and it doesn't come from test logic.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -283,9 +311,9 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 
 ### Decision layer and Jev
 
-11. **Jev access is unverified** (§15). Should the small-LLM comparison scorer (§5) be built first as a fallback behind the same interface?
-12. **Thresholds undefined.** There are no values yet for the "clear winner" and "close call" thresholds, the score weights, or crucial-decision detection.
-13. **"Ask human if high stakes."** A concrete rule is needed beyond the examples given.
+11. **(Default approved in round 5.)** **Jev access is unverified** (§15). Should the small-LLM comparison scorer (§5) be built first as a fallback behind the same interface?
+12. **(Default approved in round 5; values are set in the Phase 4 plan.)** **Thresholds undefined.** There are no values yet for the "clear winner" and "close call" thresholds, the score weights, or crucial-decision detection.
+13. **(Default approved in round 5; the rule is set in the Phase 4 plan.)** **"Ask human if high stakes."** A concrete rule is needed beyond the examples given.
 
 ### Memrouter spec gaps
 
@@ -322,7 +350,7 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 
 ### Raised in Phase 3 (the default used is in brackets)
 
-29. **Repos with failing tests before the task starts** would trigger a rollback on every attempt at the 1.0 threshold. [Threshold 1.0, configurable. The better rule is "worse than the pass rate at the checkpoint", but that needs a test run at checkpoint time.]
+29. **(Resolved in round 5; see decisions 23–24.)** **Repos with failing tests before the task starts** would trigger a rollback on every attempt at the 1.0 threshold. [Threshold 1.0, configurable. The better rule is "worse than the pass rate at the checkpoint", but that needs a test run at checkpoint time.]
 30. **Hosts without hooks get no checkpoints.** [Claude Code only, per decision 19. A `checkpoint` parameter on `recall_context` would cover Codex and Cursor later.]
 31. **Should a `severe` outcome escalate immediately** instead of after N attempts? [No. It follows the normal limit.]
 32. **We don't verify that the host actually restored.** [Streaks always target the first good checkpoint, which limits the damage. A hook could compare the tree with the snapshot on the next recall.]
@@ -330,16 +358,14 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 
 ### Raised in session 4 (the default used is in brackets)
 
-34. **Surprise is biased negative by design.** `efficiency = min(1, predicted/actual)` can't go above 1, but `predicted_score` assumes efficiency = 1. Coming in under budget earns nothing and any overrun is penalised, so even a perfectly calibrated predictor averages below 0, and Phase 6 links would slowly weaken. [Implemented exactly as `MEMROUTER.md` §5 says, because changing it would contradict the doc. Proposal: use the expected efficiency (for example, the running mean) in `predicted_score`, or let the ratio go above 1 with a cap.]
-35. **Hook-captured test counts can include unrelated failures.** In the demo, a host sometimes ran the whole suite, which included other tasks' stubs, before its targeted run. If that were the last run, `record_outcome` would see a pass rate below 1 and trigger a rollback. [This is the same root cause as open question 29. The default keeps the latest capture. The fix is to compare against the pass rate at the checkpoint.]
+34. **(Resolved in round 5; see decisions 23–24.)** **Surprise is biased negative by design.** `efficiency = min(1, predicted/actual)` can't go above 1, but `predicted_score` assumes efficiency = 1. Coming in under budget earns nothing and any overrun is penalised, so even a perfectly calibrated predictor averages below 0, and Phase 6 links would slowly weaken. [Implemented exactly as `MEMROUTER.md` §5 says, because changing it would contradict the doc. Proposal: use the expected efficiency (for example, the running mean) in `predicted_score`, or let the ratio go above 1 with a cap.]
+35. **(Resolved in round 5; see decisions 23–24.)** **Hook-captured test counts can include unrelated failures.** In the demo, a host sometimes ran the whole suite, which included other tasks' stubs, before its targeted run. If that were the last run, `record_outcome` would see a pass rate below 1 and trigger a rollback. [This is the same root cause as open question 29. The default keeps the latest capture. The fix is to compare against the pass rate at the checkpoint.]
 36. **Provenance can't tell subagents apart** (MEMROUTER §11). [It uses `client_info` only. An optional `agent_id` parameter on `record_outcome` would cover it when subagents arrive.]
 
 ## Next step
 
-1. **Owner:** decide on open questions 29/35 (rollback threshold against pre-existing failures) and 34 (surprise bias). Both affect Phase 6 learning.
-2. Optionally, allow `huggingface.co` and `*.hf.co` in the cloud session, so it can use the bge embedder and not the hash fallback.
-3. When credits and keys exist, set `real_runs: true` in `bench/config.yaml`:
+1. PR #3 and PR #4 are merged (session 5). **Phase 4: decision layer** is next, on `claude/phase-4-decision-layer`.
+2. **Owner:** when credits and keys exist, set `real_runs: true` in `bench/config.yaml`:
    - smoke run first (`horizon-bench run --stage smoke`, at most $10);
    - then the full baseline (`--stage full`, 3 repeats, at most $150).
-4. Review and merge PR #3, then the Phase 3 PR (#4) stacked on it. PR #4 now also carries the session 4 verification.
-5. Then **Phase 4: decision layer** (crucial-decision detection, Jev scoring, weights and thresholds). Open questions 11–13 need answers or defaults first.
+3. Optionally, allow `huggingface.co` and `*.hf.co` in the cloud session, so it can use the bge embedder and not the hash fallback.

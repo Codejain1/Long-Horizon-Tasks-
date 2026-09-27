@@ -1,12 +1,14 @@
 """Detect test commands and parse pass/fail counts from their output.
 
-Only counts leave this module: raw output is never stored (PROJECT.md §12).
+Only counts and failing test ids leave this module: raw output is never stored
+(PROJECT.md §12). Test ids are names, used to tell regressions from failures that
+already existed when the task started (PROJECT.md §9).
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 TEST_COMMAND = re.compile(
     r"""(^|[\s;&|(/])(
@@ -26,10 +28,16 @@ class TestCounts:
     runner: str
     passed: int
     failed: int
+    failing: tuple[str, ...] = ()  # ids of failing tests, as far as the output shows them
 
     @property
     def total(self) -> int:
         return self.passed + self.failed
+
+    @property
+    def failing_complete(self) -> bool:
+        """Whether every failure was identified (output cut short by `| tail` may hide some)."""
+        return len(self.failing) >= self.failed
 
 
 def is_test_command(command: str) -> bool:
@@ -106,10 +114,32 @@ def _rspec(text: str) -> TestCounts | None:
 
 _PARSERS = (_pytest, _cargo, _jest, _rspec, _unittest, _go)
 
+MAX_FAILING_IDS = 500
+_FAILING_IDS = {
+    "pytest": re.compile(r"^(?:FAILED|ERROR) (\S+)", re.M),  # short test summary info
+    "unittest": re.compile(r"^(?:FAIL|ERROR): (\w+) \(([\w.]+)\)", re.M),
+    "go": re.compile(r"^\s*--- FAIL: (\S+)", re.M),
+    "cargo": re.compile(r"^test (\S+) \.\.\. FAILED", re.M),
+    "jest": re.compile(r"^\s*● (.+?)\s*$", re.M),
+    "rspec": re.compile(r"^rspec (\./\S+)", re.M),
+}
+
+
+def failing_ids(runner: str, text: str) -> tuple[str, ...]:
+    pattern = _FAILING_IDS.get(runner)
+    if pattern is None:
+        return ()
+    ids = []
+    for m in pattern.finditer(text):
+        test_id = f"{m.group(2)}.{m.group(1)}" if runner == "unittest" else m.group(1)
+        if test_id not in ids:
+            ids.append(test_id)
+    return tuple(ids[:MAX_FAILING_IDS])
+
 
 def parse_test_output(text: str) -> TestCounts | None:
     for parser in _PARSERS:
         counts = parser(text or "")
         if counts is not None and counts.total > 0:
-            return counts
+            return replace(counts, failing=failing_ids(counts.runner, text or "")) if counts.failed else counts
     return None

@@ -3,5 +3,5 @@
   {"id": "2-duration", "check": "tests/test_duration.py", "prompt": "parse_duration in textkit/core.py can't handle combined durations like 1h30m. Fix it so tests/test_duration.py passes, without changing the tests."},
   {"id": "3-word-count", "check": "tests/test_word_count.py", "prompt": "word_count in textkit/core.py miscounts words around whitespace and punctuation. Fix it so tests/test_word_count.py passes."},
   {"id": "4-chunk", "check": "tests/test_chunk.py", "prompt": "Make chunk in textkit/core.py validate its size argument (see tests/test_chunk.py) and get those tests passing."},
-  {"id": "5-title-case", "check": "tests/test_title_case.py", "prompt": "Implement title_case in textkit/core.py. Try the simplest approach first: return text.title(), then run tests/test_title_case.py. If that fails, replace it with a proper implementation until the tests pass."}
+  {"id": "5-title-case", "check": "tests/test_title_case.py", "prompt": "Implement title_case in textkit/core.py. Try the simplest approach first: make the shared helper _cap return word.title() and build title_case on it, then run the whole test suite. If anything fails, replace it with a proper implementation until all tests pass."}
 ]

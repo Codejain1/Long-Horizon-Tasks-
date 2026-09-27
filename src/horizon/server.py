@@ -25,7 +25,8 @@ from horizon.taskstate.store import TaskStore
 
 INSTRUCTIONS = """\
 Horizon keeps task state and learns from outcomes across sessions. Use it on every coding task:
-1. At the start of a task, call start_task with the user's request verbatim as the goal.
+1. At the start of a task, call start_task with the user's request verbatim as the goal, then run the full
+   test suite once before any edit (the baseline).
 2. Before each significant decision or edit (choosing an approach, library, fix), call recall_context
    and use the returned task state and past outcomes.
 3. After implementing and running tests, call record_outcome with the real test counts.
@@ -36,8 +37,10 @@ Never skip record_outcome after a test run: it is how the memory learns what wor
 START_TASK = """\
 Create the task state for a new coding task. Call this FIRST, once per task, before any edits:
 whenever the user asks for a feature, fix, refactor or other multi-step change.
-Pass the user's request verbatim as `goal` (do not paraphrase), plus any constraints and your initial plan.
-Returns a task_id; keep it and pass it to recall_context and record_outcome."""
+Pass the user's request verbatim as `goal` (do not paraphrase), plus any constraints and your initial plan, and
+the tests this task must make pass as `target_tests`. Returns a task_id; keep it and pass it to recall_context
+and record_outcome. Then run the project's full test suite once, before any edit: tests that already fail
+are recorded as the baseline and are not counted against your changes."""
 
 RECALL_CONTEXT = """\
 Get the task state plus past outcomes of similar decisions from memory. Call this BEFORE each
@@ -54,8 +57,9 @@ that follows a change, whether tests passed or failed. Give the decision `situat
 recall_context), the option you implemented as `chosen`, the real test counts (tests_passed, tests_failed) and the recall_id.
 If hooks captured the test run, the captured counts are used instead of yours. Set predicted_success to
 the probability you expected it to work, if you estimated one. Set task_complete=true when the whole task
-is done. If tests failed, give `failure_reason` in one sentence; the response's `rollback` then says how to
-restore the last good checkpoint (action "rollback": restore, then recall_context and retry differently) or
+is done. If tests failed, give `failure_reason` in one sentence. Tests that already failed at the start of the task are
+reported in `test_judgement` and don't count; a rollback happens only for regressions. `rollback` then says how
+to restore the last good checkpoint (action "rollback": restore, then recall_context and retry differently) or
 that the retry limit is reached (action "escalate": restore, stop and ask the user)."""
 
 
@@ -97,8 +101,10 @@ def create_server(platform: Platform) -> MCPServer:
         plan: Annotated[list[str] | None, Field(description="Initial plan as short steps.")] = None,
         open_issues: Annotated[list[str] | None, Field(description="Known unknowns or blockers.")] = None,
         project_id: Annotated[str | None, Field(description="Stable project name, e.g. the repo name.")] = None,
+        target_tests: Annotated[list[str] | None, Field(description="Test files or ids this task must make pass, "
+                                                                    "e.g. tests/test_api.py.")] = None,
     ) -> dict[str, Any]:
-        return _call(platform.start_task, goal, constraints, plan, open_issues, project_id)
+        return _call(platform.start_task, goal, constraints, plan, open_issues, project_id, target_tests)
 
     @server.tool(description=RECALL_CONTEXT)
     def recall_context(

@@ -34,6 +34,7 @@ Without transcripts, the report shows only the Horizon-side numbers.
 | Per task | Meaning |
 |---|---|
 | `started_before_edit` | `start_task` was called before the first file edit |
+| `baseline_run` | a test run happened after `start_task` and before the first `recall_context`, so already-failing tests became the baseline |
 | `recalled_before_edit` | `recall_context` was called before the first file edit |
 | `recorded_after_last_test` | `record_outcome` came after the last test run |
 | `task_complete_sent` | the final `record_outcome` set `task_complete` |

@@ -204,6 +204,11 @@ class TaskState(BaseModel):
     # Git commit the working tree must match before the next recall_context, after a rollback.
     # Checked by the PreToolUse hook (once), cleared by the next recall that goes through.
     restore_check: str | None = None
+    # Baseline (PROJECT.md §9): tests already failing when the task started, captured from the test run the
+    # host makes between start_task and its first recall_context. Target tests are the ones the task must fix.
+    target_tests: list[str] = Field(default_factory=list)
+    baseline: Literal["pending", "captured", "missing"] = "pending"
+    baseline_failing: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
@@ -224,3 +229,4 @@ class TestCapture(BaseModel):
     created_at: datetime = Field(default_factory=now)
     consumed_by: str | None = None  # episode id that used it
     nudged_at: datetime | None = None  # when the Stop hook asked for record_outcome about it
+    failing: list[str] | None = None  # failing test ids; None when the output didn't identify every failure
