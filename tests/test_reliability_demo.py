@@ -50,6 +50,35 @@ def test_tool_calls_parses_stream_json(tmp_path):
     assert [c["name"] for c in report.tool_calls(t)] == [H + "start_task", "Edit"]
 
 
+def test_hooks_and_rollback_compliance(tmp_path):
+    t = tmp_path / "t.jsonl"
+    rollback = json.dumps({"rollback": {"action": "rollback", "restore": {"git": "git -C /p restore --source=abc"}}})
+
+    def use(i, name, **inp):
+        return json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": i, "name": name, "input": inp}]}})
+
+    def hook(event, outcome="success"):
+        return json.dumps({"type": "system", "subtype": "hook_response", "hook_event": event,
+                           "outcome": outcome, "exit_code": 0 if outcome == "success" else 1})
+
+    t.write_text("\n".join([
+        hook("SessionStart"),
+        use("1", H + "record_outcome"),
+        json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "1", "content": [{"type": "text", "text": rollback}]}]}}),
+        use("2", "Bash", command="git -C /p restore --source=abc --staged --worktree -- :/"),
+        hook("PostToolUse"), hook("Stop", "error"),
+        use("3", H + "recall_context"), use("4", "Edit"),
+    ]))
+    calls = report.tool_calls(t)
+    assert report.rollback_action(calls[0]) == "rollback"
+    row = report.analyse(calls)
+    assert row["rollback_returned"] and row["restored_after_rollback"] and row["recalled_after_rollback"]
+    assert report.hook_events(t) == {"SessionStart": {"ok": 1, "failed": 0}, "PostToolUse": {"ok": 1, "failed": 0},
+                                     "Stop": {"ok": 0, "failed": 1}}
+
+
 def test_tasks_json_matches_project():
     tasks = json.loads((DEMO / "tasks.json").read_text())
     assert 3 <= len(tasks) <= 5
@@ -100,11 +129,11 @@ def test_run_sh_end_to_end_with_fake_claude(tmp_path):
     assert "horizon:start" in (project / "CLAUDE.md").read_text()
 
     result = json.loads((out / "report.json").read_text())
-    assert set(result["tasks"]) == {"1-slugify", "2-duration", "3-word-count", "4-chunk"}
+    assert set(result["tasks"]) == {"1-slugify", "2-duration", "3-word-count", "4-chunk", "5-title-case"}
     assert result["rates"]["started_before_edit"] == 1.0
     assert result["rates"]["tasks_passing"] == 0.0  # the fake doesn't fix anything
     # The real hooks ran against the run's own store and captured the real test counts.
-    assert result["horizon_db"]["test_runs_captured"] == 4
+    assert result["horizon_db"]["test_runs_captured"] == 5
 
 
 def test_setup_only(tmp_path):

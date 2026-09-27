@@ -14,6 +14,8 @@ An MCP server that gives coding agents task state and outcome-learning memory. S
 - **Claude Code integration:** hooks, a CLAUDE.md snippet and an installer. See `docs/CLAUDE_CODE.md`.
 - **Storage:** SQLite for zero-setup local use, or Postgres + pgvector.
 
+**Phase 3 — checkpoints and rollback** (`src/horizon/taskstate/checkpoints.py`, `rollback.py`): a hook records a git and Claude Code checkpoint reference before each decision. A failed outcome returns a rollback (restore, the failure reasons fed back, a retry limit), and the task is escalated to the user after the limit. See `docs/CLAUDE_CODE.md`.
+
 ## Quick start
 
 ```bash

@@ -1,4 +1,4 @@
-"""MCP server: start_task, recall_context, record_outcome (PROJECT.md §11).
+"""MCP server: start_task, recall_context, record_outcome (PROJECT.md §11), with rollback rules (§8).
 
 Tool descriptions are deliberately directive: the host decides when to call
 us, so the descriptions say exactly when each tool must be called.
@@ -10,7 +10,7 @@ import hmac
 import os
 from typing import Annotated, Any, Literal
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
@@ -25,24 +25,31 @@ from horizon.taskstate.store import TaskStore
 
 INSTRUCTIONS = """\
 Horizon keeps task state and learns from outcomes across sessions. Use it on every coding task:
-1. At the start of a task, call start_task with the user's request verbatim as the goal.
+1. At the start of a task, call start_task with the user's request verbatim as the goal, then run the full
+   test suite once before any edit (the baseline).
 2. Before each significant decision or edit (choosing an approach, library, fix), call recall_context
    and use the returned task state and past outcomes.
 3. After implementing and running tests, call record_outcome with the real test counts.
+4. If record_outcome returns a rollback, restore the checkpoint it names and call recall_context before
+   retrying. If it returns an escalation, stop and ask the user.
 Never skip record_outcome after a test run: it is how the memory learns what works."""
 
 START_TASK = """\
 Create the task state for a new coding task. Call this FIRST, once per task, before any edits:
 whenever the user asks for a feature, fix, refactor or other multi-step change.
-Pass the user's request verbatim as `goal` (do not paraphrase), plus any constraints and your initial plan.
-Returns a task_id; keep it and pass it to recall_context and record_outcome."""
+Pass the user's request verbatim as `goal` (do not paraphrase), plus any constraints and your initial plan, and
+the tests this task must make pass as `target_tests`. Returns a task_id; keep it and pass it to recall_context
+and record_outcome. Then run the project's full test suite once, before any edit: tests that already fail
+are recorded as the baseline and are not counted against your changes."""
 
 RECALL_CONTEXT = """\
 Get the task state plus past outcomes of similar decisions from memory. Call this BEFORE each
 significant decision or edit (choosing an approach, library, architecture or fix), and again after a
 failed attempt before retrying. Describe the decision point in `situation`. Past memories show what was
 chosen, whether tests passed, and whether it went better or worse than predicted: prefer approaches that
-worked and avoid ones that failed under similar conditions. Keep the returned recall_id for record_outcome."""
+worked and avoid ones that failed under similar conditions, and never repeat an approach listed in
+task_state.retry.previous_failures. Keep the returned recall_id for record_outcome. If the task was escalated,
+ask the user and pass their answer as `human_guidance`."""
 
 RECORD_OUTCOME = """\
 Record what happened after you implemented a decision and ran the tests. Call this AFTER EVERY test run
@@ -50,7 +57,10 @@ that follows a change, whether tests passed or failed. Give the decision `situat
 recall_context), the option you implemented as `chosen`, the real test counts (tests_passed, tests_failed) and the recall_id.
 If hooks captured the test run, the captured counts are used instead of yours. Set predicted_success to
 the probability you expected it to work, if you estimated one. Set task_complete=true when the whole task
-is done."""
+is done. If tests failed, give `failure_reason` in one sentence. Tests that already failed at the start of the task are
+reported in `test_judgement` and don't count; a rollback happens only for regressions. `rollback` then says how
+to restore the last good checkpoint (action "rollback": restore, then recall_context and retry differently) or
+that the retry limit is reached (action "escalate": restore, stop and ask the user)."""
 
 
 def build_platform(settings: Settings, cwd: str | None = None) -> Platform:
@@ -62,6 +72,16 @@ def build_platform(settings: Settings, cwd: str | None = None) -> Platform:
         return MemRouter(store, make_embedder(settings.embedder, settings.embedding_dim), settings)
 
     return Platform(settings, tasks, memrouter, cwd=cwd)
+
+
+def client_agent(ctx: Context | None) -> str | None:
+    """Provenance for episodes (MEMROUTER.md §4, §11): the host that recorded it, e.g. "claude-code/2.1.283".
+    Client-supplied, so it traces memories; it is not an identity check."""
+    try:
+        info = ctx.session.client_params.client_info
+    except AttributeError:
+        return None
+    return f"{info.name}/{info.version}"[:100] if info else None
 
 
 def _call(fn, *args, **kwargs) -> dict:
@@ -81,8 +101,10 @@ def create_server(platform: Platform) -> MCPServer:
         plan: Annotated[list[str] | None, Field(description="Initial plan as short steps.")] = None,
         open_issues: Annotated[list[str] | None, Field(description="Known unknowns or blockers.")] = None,
         project_id: Annotated[str | None, Field(description="Stable project name, e.g. the repo name.")] = None,
+        target_tests: Annotated[list[str] | None, Field(description="Test files or ids this task must make pass, "
+                                                                    "e.g. tests/test_api.py.")] = None,
     ) -> dict[str, Any]:
-        return _call(platform.start_task, goal, constraints, plan, open_issues, project_id)
+        return _call(platform.start_task, goal, constraints, plan, open_issues, project_id, target_tests)
 
     @server.tool(description=RECALL_CONTEXT)
     def recall_context(
@@ -95,8 +117,10 @@ def create_server(platform: Platform) -> MCPServer:
         ] = None,
         token_budget: Annotated[int | None, Field(ge=100, le=20000,
                                                   description="Max tokens of memories to return.")] = None,
+        human_guidance: Annotated[str | None, Field(description="The user's answer after an escalation; "
+                                                                "resumes the task.")] = None,
     ) -> dict[str, Any]:
-        return _call(platform.recall_context, task_id, situation, conditions, token_budget)
+        return _call(platform.recall_context, task_id, situation, conditions, token_budget, human_guidance)
 
     @server.tool(description=RECORD_OUTCOME)
     def record_outcome(
@@ -128,6 +152,9 @@ def create_server(platform: Platform) -> MCPServer:
         progress_note: Annotated[str | None, Field(description="One line for the task's progress log.")] = None,
         open_issues: Annotated[list[str] | None, Field(description="Replaces the open issues list.")] = None,
         task_complete: Annotated[bool, Field(description="True when the whole task is done.")] = False,
+        failure_reason: Annotated[str | None, Field(description="If tests failed: why, in one sentence.")] = None,
+        plan: Annotated[list[str] | None, Field(description="Replaces the plan, if it changed.")] = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
         return _call(
             platform.record_outcome, task_id, situation, chosen,
@@ -137,7 +164,8 @@ def create_server(platform: Platform) -> MCPServer:
             predicted_cost_usd=predicted_cost_usd, predicted_latency_ms=predicted_latency_ms,
             tokens=tokens, cost_usd=cost_usd, latency_ms=latency_ms, signal_type=signal_type,
             severity=severity, recall_id=recall_id, progress_note=progress_note,
-            open_issues=open_issues, task_complete=task_complete,
+            open_issues=open_issues, task_complete=task_complete, failure_reason=failure_reason,
+            plan=plan, agent_id=client_agent(ctx),
         )
 
     return server

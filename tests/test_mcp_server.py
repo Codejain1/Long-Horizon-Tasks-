@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import sys
 
 import anyio
@@ -119,8 +120,6 @@ def unused_tcp_port():
 
 
 def run_hook_cli(name: str, body: dict, env: dict) -> dict | None:
-    import subprocess
-
     proc = subprocess.run([sys.executable, "-m", "horizon", "hook", name], input=json.dumps(body),
                           capture_output=True, text=True, env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
@@ -140,6 +139,12 @@ async def test_simulated_claude_code_session(settings, project_dir):
     with anyio.fail_after(60):
         async with Client(params) as client:
             task_id = payload(await client.call_tool("start_task", {"goal": "Fix the date bug"}))["task_id"]
+            subprocess.run(["git", "-C", project_dir, "init", "-q"], check=True)
+            subprocess.run(["git", "-C", project_dir, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q",
+                            "--allow-empty", "-m", "init"], check=True)
+            # Claude Code runs the PreToolUse hook before each recall_context: it snapshots the project.
+            run_hook_cli("pre-tool-use", {"cwd": project_dir, "session_id": "s1",
+                                          "tool_name": "mcp__horizon__recall_context"}, env)
             ctx = payload(await client.call_tool("recall_context", {"task_id": task_id,
                                                                     "situation": "fix timezone parsing"}))
             # The model runs the tests; the PostToolUse hook captures the real counts.
@@ -156,9 +161,27 @@ async def test_simulated_claude_code_session(settings, project_dir):
             out = payload(await client.call_tool("record_outcome", {
                 "task_id": task_id, "situation": "fix timezone parsing", "chosen": "use zoneinfo",
                 "tests_passed": 8, "tests_failed": 0, "recall_id": ctx["recall_id"],
+                "failure_reason": "DST edge case still wrong",
             }))
             assert out["test_results_source"] == "hook" and out["actual_success"] == 0.75
+            # 2 tests failed, so the host is told to roll back to the snapshot and retry.
+            assert out["rollback"]["action"] == "rollback"
+            assert out["rollback"]["restore"]["checkpoint_id"] == ctx["checkpoint_id"] is not None
+            assert out["rollback"]["restore"]["git"].startswith("git -C ")
             assert run_hook_cli("stop", {"cwd": project_dir, "stop_hook_active": False}, env) is None
 
     resumed = run_hook_cli("session-start", {"cwd": project_dir, "source": "resume"}, env)
     assert task_id in resumed["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.anyio
+async def test_record_outcome_sets_provenance_from_client_info(platform, memrouter):
+    async with Client(create_server(platform)) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        assert "ctx" not in tools["record_outcome"].input_schema["properties"]
+        task_id = payload(await client.call_tool("start_task", {"goal": "g"}))["task_id"]
+        out = payload(await client.call_tool("record_outcome", {
+            "task_id": task_id, "situation": "s", "chosen": "c", "success": 1.0, "plan": ["step 2"]}))
+    agent = memrouter.store.get(out["episode_id"], "local").provenance.agent_id
+    assert agent and "/" in agent  # "<client name>/<version>"
+    assert platform.tasks.get(task_id, "local").plan == ["step 2"]

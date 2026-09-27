@@ -102,7 +102,7 @@ Open experiment: on a sample of ties, run all options for real, then compare Jev
 Full spec in `MEMROUTER.md`. Summary of decisions:
 - **Memory types:** episodes (decision records) → consolidated into lessons and strategies by a periodic **"sleep" job**.
 - **Episodes are never deleted.** The sleep job archives low-value episodes to cold storage: excluded from retrieval, kept as world-model training data. Pruning applies only to links and the retrieval index.
-- **Link learning:** Hebbian, driven by **surprise** = signed prediction error (`outcome_score − predicted_score`, range −1 to 1; formula in `MEMROUTER.md` §5), weighted human > auto > implicit.
+- **Link learning:** Hebbian, driven by **surprise** = signed prediction error (zero-centred: success error and efficiency errors against their predictions, range −1 to 1; formula in `MEMROUTER.md` §5), weighted human > auto > implicit.
 - **Routing:** similarity + condition match → **spreading activation** through links → Jev as **attention filter** within a token budget.
 - **Decay:** usage-based with **spaced repetition**; pruning of weak links; nothing permanent.
 - **Conditions + reconsolidation:** outcomes carry conditions (stack, scale…); contradictions refine conditions instead of just weakening.
@@ -122,6 +122,7 @@ Full spec in `MEMROUTER.md`. Summary of decisions:
 ## 9. Outcome and testing layer
 
 - **Heavy testing after every implementation** is the ground truth.
+- **Judge against a baseline, not the absolute pass rate.** The tests already failing when the task starts are recorded as its baseline. Outcomes are judged on regressions (new failures) and on the task's target tests. Success is the pass rate with baseline failures excluded (target tests always count). A rollback is triggered only by regressions, and pre-existing failures are reported separately.
 - Signals, cheapest first: **automatic** (tests, builds, type/lint checks) → **implicit** (user accepts / edits / reverts) → **human approval** only when others are missing, confidence is low, or stakes are high (spending money, sending messages, deleting data).
 - Outcomes are **self-reported by the host** → risk of skipping or misreporting. Use **hooks** to capture real test output instead of trusting the model's summary.
 - Record: option chosen, what Jev and simulation predicted, what tests found.

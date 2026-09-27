@@ -43,6 +43,54 @@ class RecordResult:
     predicted_success_used: float
 
 
+# Ranking factors for recall (MEMROUTER.md §6 step 2 and §10). Defaults; tune with data.
+CONDITION_MISMATCH = 0.25  # every shared condition contradicts
+CONDITION_UNKNOWN = 0.75  # no shared condition that can be compared
+OTHER_SCOPE = 0.85  # episode from another project in the team (narrowest scope is preferred)
+
+
+def _holds(value, op: str, target) -> bool | None:
+    """Whether `value` satisfies `op target`; None when it can't be decided."""
+    try:
+        if op in ("=", "!="):
+            same = str(value).strip().lower() == str(target).strip().lower()
+            return same if op == "=" else not same
+        if op in (">", ">=", "<", "<="):
+            a, b = float(value), float(target)
+            return {">": a > b, ">=": a >= b, "<": a < b, "<=": a <= b}[op]
+        if op == "in":
+            return str(value).lower() in [str(t).lower() for t in target] if isinstance(target, list) else None
+        if op == "contains":
+            return str(target).lower() in str(value).lower()
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def condition_match(query: list[Condition], stored: list[Condition]) -> float:
+    """conditionMatch (MEMROUTER.md §6): how well a past episode's conditions fit the current ones.
+
+    Current conditions are usually facts ("framework = django", "rps = 20000"); stored ones may be
+    predicates ("rps > 10000"). A key present on both sides is compared when one side is a plain "="
+    fact; two predicates on the same key can't be compared and are skipped.
+    Returns 1.0 when every comparable key matches, CONDITION_MISMATCH when none do, and
+    CONDITION_UNKNOWN when nothing is comparable.
+    """
+    results = []
+    for q in query:
+        for s in stored:
+            if q.key.lower() != s.key.lower():
+                continue
+            if q.op == "=":
+                results.append(_holds(q.value, s.op, s.value))
+            elif s.op == "=":
+                results.append(_holds(s.value, q.op, q.value))
+    results = [r for r in results if r is not None]
+    if not results:
+        return CONDITION_UNKNOWN
+    return CONDITION_MISMATCH + (1 - CONDITION_MISMATCH) * sum(results) / len(results)
+
+
 def estimate_tokens(text: str) -> int:
     """Rough token count (≈4 characters per token); good enough for a budget cap."""
     return max(1, len(text) // 4)
@@ -105,7 +153,7 @@ class MemRouter:
             p_success = predicted.success
 
         result = compute_surprise(
-            p_success, predicted, actual, self.settings.surprise_weights, self.settings.surprise_epsilon
+            p_success, predicted, actual, self.settings.surprise_weights
         )
         episode = Episode(
             scope=Scope(team_id=team_id, project_id=project_id, task_id=task_id),
@@ -125,7 +173,7 @@ class MemRouter:
         self.store.add(episode, self._embed(text))
         return RecordResult(episode=episode, surprise=result, predicted_success_used=p_success)
 
-    # --- read path (MEMROUTER.md §6, steps 1-2 and 6) --------------------------
+    # --- read path (MEMROUTER.md §6, steps 1-2 and 6; §10 scope preference) ---
 
     def recall(
         self,
@@ -135,11 +183,20 @@ class MemRouter:
         conditions: list[Condition] | None = None,
         token_budget: int | None = None,
         task_id: str | None = None,
+        project_id: str | None = None,
     ) -> ContextSlice:
         budget = self.settings.recall_token_budget if token_budget is None else token_budget
         text = episode_text(situation, conditions or [])
         hits = self.store.search(team_id, self._embed(text), self.embedder.model_name, self.settings.recall_top_k)
         hits = [(ep, sim) for ep, sim in hits if sim >= self.settings.recall_min_similarity]
+
+        # Rank by similarity × conditionMatch, preferring the narrowest scope (MEMROUTER.md §6, §10).
+        def score(hit: tuple[Episode, float]) -> float:
+            ep, sim = hit
+            scope = 1.0 if project_id is None or ep.scope.project_id == project_id else OTHER_SCOPE
+            return sim * condition_match(conditions or [], ep.conditions) * scope
+
+        hits.sort(key=score, reverse=True)
 
         memories: list[MemoryItem] = []
         used = 0

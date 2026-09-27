@@ -98,3 +98,39 @@ def test_recall_respects_token_budget_and_item_cap(episode_store, settings):
 def test_dimension_mismatch_is_rejected(episode_store, settings):
     with pytest.raises(ValueError):
         MemRouter(episode_store, HashEmbedder(128), settings)
+
+
+def test_condition_match():
+    from horizon.memrouter.router import CONDITION_MISMATCH, CONDITION_UNKNOWN, condition_match
+    from horizon.models import Condition as C
+
+    now = [C(key="framework", value="Django"), C(key="rps", value=20000)]
+    assert condition_match(now, [C(key="framework", value="django")]) == 1.0
+    assert condition_match(now, [C(key="rps", op=">", value=10000)]) == 1.0  # predicate on the stored side
+    assert condition_match(now, [C(key="rps", op="<", value=1000)]) == CONDITION_MISMATCH
+    assert condition_match(now, [C(key="framework", value="django"), C(key="rps", op="<", value=1000)]) == \
+        CONDITION_MISMATCH + (1 - CONDITION_MISMATCH) / 2
+    assert condition_match(now, [C(key="db", value="postgres")]) == CONDITION_UNKNOWN  # nothing shared
+    assert condition_match([C(key="rps", op=">", value=5)], [C(key="rps", op="<", value=9)]) == CONDITION_UNKNOWN
+    assert condition_match([C(key="lang", value="py")], [C(key="lang", op="in", value=["py", "go"])]) == 1.0
+    assert condition_match([C(key="rps", value="lots")], [C(key="rps", op=">", value=1)]) == CONDITION_UNKNOWN
+
+
+def test_recall_ranks_by_conditions_and_prefers_the_same_project(memrouter):
+    from horizon.models import Actual, Condition as C
+
+    common = dict(team_id="local", situation="choose a rate limiting approach", actual=Actual(success=1.0))
+    memrouter.record(chosen="redis limiter", conditions=[C(key="rps", op=">", value=10000)], **common)
+    memrouter.record(chosen="in-memory limiter", conditions=[C(key="rps", op="<", value=1000)], **common)
+    for rps, first in ((50000, "redis limiter"), (500, "in-memory limiter")):
+        got = memrouter.recall(team_id="local", situation="choose a rate limiting approach",
+                               conditions=[C(key="rps", value=rps)])
+        assert got.memories[0].chosen == first
+
+    memrouter.record(chosen="other project's pick", project_id="b", team_id="local",
+                     situation="pick a csv library", actual=Actual(success=1.0))
+    memrouter.record(chosen="this project's pick", project_id="a", team_id="local",
+                     situation="pick a csv library", actual=Actual(success=1.0))
+    for project, first in (("a", "this project's pick"), ("b", "other project's pick")):
+        got = memrouter.recall(team_id="local", situation="pick a csv library", project_id=project)
+        assert got.memories[0].chosen == first

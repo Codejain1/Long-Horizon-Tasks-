@@ -53,9 +53,58 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - Tests: 20 new; 177 pass in total on SQLite and Postgres.
   - **Not done:** the committed 50-task list (`bench/tasks/swebench_verified_50.json`). `huggingface.co` is blocked in this session. See open question 26.
 
+- **Session 3 — Phase 3: checkpoint references and rollback rules** (`PROJECT.md` §8). Stacked on PR #3, which is not merged yet.
+  - **Checkpoint references** (`src/horizon/taskstate/checkpoints.py`): a new `PreToolUse` hook on `recall_context` records, just before each decision:
+    - a **git** snapshot of the working tree (`git stash create`, or `HEAD` when clean). This doesn't touch the working tree, index, HEAD or stash list;
+    - a **Claude Code** checkpoint reference: the latest real user prompt from the session transcript (uuid, time and a redacted snippet), which is what `/rewind` lists.
+    - `recall_context` attaches the checkpoint to the task. Each decision in task state records its `checkpoint_id`.
+  - **Rollback rules** (`src/horizon/taskstate/rollback.py`): when `record_outcome` reports a failure, it returns `rollback`:
+    - **restore:** a `git restore --source=<snapshot>` command, and/or `/rewind` instructions for the user;
+    - **failure reason fed back:** a new `failure_reason` parameter, defaulting to the test summary. `recall_context`'s `task_state.retry` lists every failed approach in the streak;
+    - **retry limit:** `HORIZON_MAX_ATTEMPTS`, default 3;
+    - **escalation:** at the limit the task becomes `escalated`, and the host is told to stop and ask the user. `recall_context(human_guidance=…)` resumes the task.
+  - Installer, CLAUDE.md snippet, tool descriptions and `docs/CLAUDE_CODE.md` are updated.
+  - **Tests:** 12 new ones, plus an extended simulated Claude Code session (real hook subprocesses and the stdio server). **126 pass on SQLite.** The git restore is checked against real repos. The transcript parser was checked against a real Claude Code transcript, which found and fixed one case: `[Request interrupted by user]` entries.
+  - **Not run:** the Postgres variants (48 skipped). This machine has no pgvector or Docker. No real Claude Code session was run either.
+
+- **Session 4 — verification of Phases 1–3** (run locally on the owner's Mac, not in the cloud session).
+  - **Test suite:** 204 pass on SQLite **and** on Postgres 14 + pgvector 0.8.1, with no skips. The Postgres variants had never run outside the cloud session before. pgvector was built from source against Homebrew's Postgres 14, and a throwaway cluster ran on `127.0.0.1:55432`.
+  - **Phase 1 dry run, end to end:**
+    - `select` wrote the **real committed task list** (`bench/tasks/swebench_verified_50.json`, closing open question 26). `huggingface.co` is reachable here. The split is 3 / 19 / 16 / 12 across 9 repos, and re-running `select` reproduces it.
+    - `run --stage smoke`: 10 tasks in 3 s.
+    - `run --stage full`: 50 × 3 in 45 s, with the report showing mean, stdev and range.
+  - **MCP reliability with real Claude Code:** 6 runs × 5 tasks, 30 headless sessions, on Opus 5.5 and Sonnet 5. Details in `demo/reliability/RESULTS.md`.
+    - The tools were called at the right moments in 30/30 sessions, and the hooks fired as expected in 30/30. `outcome_recording_rate` was 1.0 in every run.
+    - Two misses, both fixed and re-tested:
+      - Opus skipped the git restore after a rollback. The instructions are sharper now, and the hook enforces it.
+      - The demo's allowlist blocked `python3 -m pytest`.
+  - **Demo changes:**
+    - a new task 5 (`title_case`) that fails its first attempt, to exercise rollback;
+    - sessions isolated from the user's own hooks and MCP servers;
+    - the report now measures hook firing and rollback compliance;
+    - `CLAUDE_MODEL` selects the host model.
+  - **Gaps against the docs, now fixed:**
+    - recall ranks by `similarity × conditionMatch` (MEMROUTER §6 step 2) and prefers the narrowest scope (§10);
+    - episode `provenance.agent_id` comes from the MCP client info (§4, §11);
+    - `record_outcome` can update the task plan (§8);
+    - `horizon stats` reports checkpoint counts;
+    - the committed task list (§18);
+    - README and bench docs are up to date.
+
+- **Session 5 — owner round 5: zero-centred surprise, and judging outcomes against a baseline.**
+  - **Surprise** (`src/horizon/memrouter/surprise.py`, `MEMROUTER.md` §5): `0.6 × success_error + 0.4 × mean(efficiency_errors)`, where each efficiency error is `clamp((predicted − actual) / predicted, −1, 1)`. Missing or zero predictions are dropped. The ε setting is gone. A new test shows that 20,000 calibrated predictions average under 0.01.
+  - **Baseline** (`src/horizon/taskstate/judge.py`, `PROJECT.md` §9):
+    - The PostToolUse hook now stores failing test ids (pytest, unittest, go, cargo, jest, rspec).
+    - The test runs between `start_task` and the first `recall_context` become the task's baseline.
+    - Outcomes are judged on regressions and target tests. Pre-existing failures are excluded from success and reported in `test_judgement`, and only regressions trigger a rollback.
+    - Output that doesn't name every failure, or a task with no baseline run, falls back to the absolute rule.
+  - **Demo:** task 5 now produces a real regression (the shared `_cap` helper breaks `sentence_case`), and the report measures `baseline_run`.
+  - **Real Claude Code runs 7–10:** run 8 (Sonnet) exposed an ordering gap: it recorded the baseline run before its first recall. Fixed. Runs 9 and 10 (Opus, Sonnet) were clean on every metric, with every outcome judged by the baseline. See `demo/reliability/RESULTS.md`.
+  - **Tests:** 16 new (8 of them run on SQLite and Postgres).
+
 ## In progress
 
-- Nothing. The only remaining Phase 1 step is generating and committing the task list once `huggingface.co` is reachable.
+- Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
 
 ## Decisions made
 
@@ -69,7 +118,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 2. **MCP-first is confirmed.** The MCP server is the product. `MEMROUTER.md` §12 now maps its interfaces to MCP tools, and the Python SDK moves to "Later".
 3. **Basic memory moves to Phase 2.** Memrouter build step 1 (episodes, write path, basic similarity recall) now ships in Phase 2 with the MCP skeleton. Phase 6 adds the learning features: surprise-based links, spreading activation, decay, consolidation and fear memories.
    - In the docs, Phase 6 also covers MEMROUTER steps 3 (Jev attention filter) and 7 (predictor trust, simulation reuse). See open question 3.
-4. **Surprise is a signed prediction error** (`MEMROUTER.md` §5):
+4. **Surprise is a signed prediction error** (`MEMROUTER.md` §5; the formula below is superseded by round 5, decision 23):
    - `outcome_score = 0.6 × success + 0.4 × efficiency`
    - `success` = test pass rate (0 to 1)
    - `efficiency` = average of `min(1, predicted/actual)` over tokens, cost and latency
@@ -84,7 +133,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
    - Postgres + pgvector, pytest, and Docker, with everything containerised. Hosting is decided at launch.
 
 **Owner decisions, round 2**
-7. **Surprise edge cases** (`MEMROUTER.md` §5):
+7. **Surprise edge cases** (`MEMROUTER.md` §5; superseded by round 5, decision 23):
    - **Actual value is 0:** the ratio is 1, computed as `min(1, predicted / max(actual, ε))`.
    - **Predicted value missing:** drop that metric from the efficiency average. If all three are missing, score on success only (weights renormalised).
    - **No success probability:** use the historical success rate of similar episodes, or 0.5 if there are none. Mark the episode `lowConfidence` and halve its learning rate.
@@ -172,6 +221,46 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **No `episodes_archive` table yet:** the sleep job that fills it is Phase 6. The `archived_at` column exists, and recall excludes archived episodes.
 - **World-model logging** (open question 17, partly): each episode carries `schema_version: 1`.
 
+**Phase 3 decisions (defaults chosen under the decision rule)**
+- **Checkpoints are captured by a hook, not the model:** `PreToolUse` with matcher `mcp__horizon__recall_context`, the moment before each decision. This matches the Phase 2 test-capture pattern: the hook writes to a `checkpoints` table and the next `recall_context` for that directory claims it. The server never reads the repository (§12); only commit ids are stored.
+- **Git snapshot = `git stash create`, falling back to `HEAD`.** It captures uncommitted tracked changes without modifying anything. Untracked files aren't captured.
+- **Restore = `git restore --source=<snapshot> --staged --worktree -- :/`.** It resets tracked files, deletes tracked files added since, and leaves HEAD, history and untracked files alone. It is non-destructive to commits, and the failed attempt stays in Claude Code's own checkpoints.
+- **Snapshot commits aren't pinned under `refs/`**, so `git gc` could prune one after about 2 weeks. That's fine for in-task rollback. (`ponytail:` note in the code.)
+- **Claude Code checkpoint = the latest real user prompt** in the transcript. `/rewind` can only be run by the user, so it is given as an instruction; git is what the host runs itself.
+- **Failure = test pass rate below 1.0** (`HORIZON_ROLLBACK_BELOW`). See open question 29.
+- **Retry limit = 3 consecutive failed attempts per task** (`HORIZON_MAX_ATTEMPTS`): two rollbacks, then escalation. Streaks are counted per task, not per situation, because the host words the situation differently each time.
+- **Every rollback in a streak targets the checkpoint from before the first failure.** If the host skips a restore, the broken tree can't become the new baseline.
+- **Escalation = task status `escalated` plus a human-guidance resume on `recall_context`.** No new tool was added; MCP approvals (elicitation) are Phase 7. Escalated tasks still count as open for the SessionStart and Stop hooks, and SessionStart flags them.
+- **`task_complete: true` wins over a failing pass rate:** there is no rollback when the host says the task is done.
+- **At most 20 checkpoints are kept per task**, plus the rollback target.
+- **No data migration:** the new table is created if missing, and the new task-state fields have defaults, so existing stored tasks load unchanged.
+
+**Session 4 decisions (defaults chosen under the decision rule)**
+- **Postgres tests run against a throwaway local cluster** (Postgres 14 + pgvector 0.8.1 built from source). Docker isn't installed on this Mac.
+- **Reliability sessions are isolated** (`--setting-sources project,local --strict-mcp-config`). Otherwise the owner's own hooks and MCP servers (such as a user-scope memory server) would confound the measurement.
+- **Restore enforcement lives in the existing PreToolUse hook**, not in new hooks on Edit/Write. That hook already snapshots git, so it compares the snapshot's tree with the rollback target. It denies one recall at most per rollback, so a host that can't restore is never stuck. It checks git only, because a Claude Code `/rewind` can't be verified.
+- **conditionMatch default:** current conditions are treated as facts and stored ones may be predicates. A key is compared when one side is `=`. The factor is 1.0 when every comparable key matches, 0.25 when none do and 0.75 when nothing is comparable. Two predicates on the same key are skipped (this settles the mixed-operator part of open question 16). It ranks results and never filters them out.
+- **Scope preference:** an episode from another project in the team scores × 0.85. Same-project episodes are preferred but never exclusive.
+- **Episode provenance** is `client_info` `name/version` from the MCP initialize handshake (for example `claude-code/2.1.283`). It is client-supplied, so it's for tracing, not identity. Subagents share one connection, so they can't be told apart yet.
+- **`plan` on `record_outcome` replaces the plan**, like `open_issues`, and is redacted the same way.
+
+**Owner decisions, round 5**
+23. **Open question 34 (surprise bias):** replaced by the zero-centred formula above. `MEMROUTER.md` §5 and §14 are updated. The low-confidence rule for a missing success probability is unchanged.
+24. **Open questions 29 and 35 (pre-existing failures):** snapshot the failing tests at the start as a baseline. Success excludes baseline failures, rollback triggers only on regressions, and pre-existing failures are reported separately. Added to `PROJECT.md` §9.
+25. **Open questions 11–13:** my defaults are approved unless they contradict the docs. They are set in the Phase 4 plan.
+26. **Merge PR #3 and PR #4 once tests pass, then start Phase 4 on a new branch.**
+
+**Session 5 decisions (defaults chosen under the decision rule)**
+- **The baseline comes from the host's own test run**, which `start_task`'s `next`, the tool description and the CLAUDE.md snippet all ask for: "run the full suite once, before any edit". The server never runs tests itself (§12), and the hook doesn't know the project's test command.
+- **Baseline window = test runs after `start_task` and before the first `recall_context`.** Whichever of `recall_context` or `record_outcome` comes first takes it. Run 8 showed that hosts sometimes record the baseline run itself. This relies on recall coming before the first edit, which held in 50/50 real sessions.
+- **Target tests = `start_task`'s `target_tests` plus test files named in the goal** (a regex for test file paths). Target tests always count, even though they fail at the baseline. Without targets, a task's own failing tests would be excluded and success would look perfect.
+- **Regression = failing now and not failing at the baseline.** This includes new tests the host wrote that fail: only failing ids are visible in test output, so "passed at baseline" can't be checked.
+- **Absolute fallback** when the output didn't name every failure (for example `| tail -1`), when counts were host-reported, or when there's no baseline. `HORIZON_ROLLBACK_BELOW` now applies only there.
+- **Target tests still failing without a regression is not a rollback**, per rule 24. It lowers success and shows up under `target_tests_failing`, but nothing is restored.
+- **Test ids are stored with captures** (at most 500 per run) as names only, never output. `test_captures.failing` is an additive, nullable column, with the same migration pattern as `nudged_at`.
+- **Surprise ε removed** (`HORIZON_SURPRISE_EPSILON`): the new formula divides by the prediction, and zero predictions are dropped.
+- **Known flake:** one full-suite run on macOS aborted at interpreter exit (`libc++abi … recursive_mutex lock failed`), most likely onnxruntime (fastembed) tearing down. Three reruns were clean, and it doesn't come from test logic.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -222,9 +311,9 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 
 ### Decision layer and Jev
 
-11. **Jev access is unverified** (§15). Should the small-LLM comparison scorer (§5) be built first as a fallback behind the same interface?
-12. **Thresholds undefined.** There are no values yet for the "clear winner" and "close call" thresholds, the score weights, or crucial-decision detection.
-13. **"Ask human if high stakes."** A concrete rule is needed beyond the examples given.
+11. **(Default approved in round 5.)** **Jev access is unverified** (§15). Should the small-LLM comparison scorer (§5) be built first as a fallback behind the same interface?
+12. **(Default approved in round 5; values are set in the Phase 4 plan.)** **Thresholds undefined.** There are no values yet for the "clear winner" and "close call" thresholds, the score weights, or crucial-decision detection.
+13. **(Default approved in round 5; the rule is set in the Phase 4 plan.)** **"Ask human if high stakes."** A concrete rule is needed beyond the examples given.
 
 ### Memrouter spec gaps
 
@@ -252,20 +341,31 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 
 ### Raised in Phase 1 (the default used is in brackets)
 
-26. **(Blocks the committed task list.) `huggingface.co` is blocked in the cloud session**, so `horizon-bench select` can't read SWE-bench Verified. [Everything else is built and tested on a synthetic pool. Allowing `huggingface.co` and `*.hf.co` (the same domains as the fastembed download) unblocks it: then run `horizon-bench select` and commit `bench/tasks/swebench_verified_50.json`.]
+26. **(Resolved in session 4: generated and committed from the owner's Mac.) `huggingface.co` is blocked in the cloud session**, so `horizon-bench select` can't read SWE-bench Verified. [Everything else is built and tested on a synthetic pool. Allowing `huggingface.co` and `*.hf.co` (the same domains as the fastembed download) unblocks it: then run `horizon-bench select` and commit `bench/tasks/swebench_verified_50.json`.]
 27. **Verify on the first real smoke run:**
     - litellm's Anthropic usage fields: the harness assumes `prompt_tokens` includes cache reads and writes;
     - the key sb-cli uses for resolved ids in its report: the harness reads `resolved_ids`, falling back to `resolved`.
     [Both are handled defensively, and the smoke run exists to catch exactly this.]
 28. **Real-run spend.** The caps bound the worst case at $10 for the smoke run and $150 for the full 50 × 3. [No real runs until the owner sets `real_runs: true` and provides the keys.]
 
+### Raised in Phase 3 (the default used is in brackets)
+
+29. **(Resolved in round 5; see decisions 23–24.)** **Repos with failing tests before the task starts** would trigger a rollback on every attempt at the 1.0 threshold. [Threshold 1.0, configurable. The better rule is "worse than the pass rate at the checkpoint", but that needs a test run at checkpoint time.]
+30. **Hosts without hooks get no checkpoints.** [Claude Code only, per decision 19. A `checkpoint` parameter on `recall_context` would cover Codex and Cursor later.]
+31. **Should a `severe` outcome escalate immediately** instead of after N attempts? [No. It follows the normal limit.]
+32. **We don't verify that the host actually restored.** [Streaks always target the first good checkpoint, which limits the damage. A hook could compare the tree with the snapshot on the next recall.]
+33. **Phase 3 has no benchmark run** (§13). [Same as open question 10: it doesn't change the baseline agent, which is mini-SWE-agent without MCP.]
+
+### Raised in session 4 (the default used is in brackets)
+
+34. **(Resolved in round 5; see decisions 23–24.)** **Surprise is biased negative by design.** `efficiency = min(1, predicted/actual)` can't go above 1, but `predicted_score` assumes efficiency = 1. Coming in under budget earns nothing and any overrun is penalised, so even a perfectly calibrated predictor averages below 0, and Phase 6 links would slowly weaken. [Implemented exactly as `MEMROUTER.md` §5 says, because changing it would contradict the doc. Proposal: use the expected efficiency (for example, the running mean) in `predicted_score`, or let the ratio go above 1 with a cap.]
+35. **(Resolved in round 5; see decisions 23–24.)** **Hook-captured test counts can include unrelated failures.** In the demo, a host sometimes ran the whole suite, which included other tasks' stubs, before its targeted run. If that were the last run, `record_outcome` would see a pass rate below 1 and trigger a rollback. [This is the same root cause as open question 29. The default keeps the latest capture. The fix is to compare against the pass rate at the checkpoint.]
+36. **Provenance can't tell subagents apart** (MEMROUTER §11). [It uses `client_info` only. An optional `agent_id` parameter on `record_outcome` would cover it when subagents arrive.]
+
 ## Next step
 
-1. **Owner:**
-   - allow `huggingface.co` and `*.hf.co` in the environment's network settings;
-   - optionally run `demo/reliability/run.sh` to measure how reliably Claude Code calls the tools.
-2. Run `horizon-bench select` and commit the 50-task list. Review and merge PR #3.
-3. When credits and keys exist, set `real_runs: true` in `bench/config.yaml`:
+1. PR #3 and PR #4 are merged (session 5). **Phase 4: decision layer** is next, on `claude/phase-4-decision-layer`.
+2. **Owner:** when credits and keys exist, set `real_runs: true` in `bench/config.yaml`:
    - smoke run first (`horizon-bench run --stage smoke`, at most $10);
    - then the full baseline (`--stage full`, 3 repeats, at most $150).
-4. Then **Phase 3 — task state checkpoint references and rollback rules.**
+3. Optionally, allow `huggingface.co` and `*.hf.co` in the cloud session, so it can use the bge embedder and not the hash fallback.

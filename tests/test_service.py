@@ -51,6 +51,7 @@ def test_full_loop_records_episode_and_updates_task(platform, memrouter):
 
 def test_hook_captured_tests_override_self_report(platform, task_store, project_dir):
     task_id = platform.start_task("fix the parser")["task_id"]
+    platform.recall_context(task_id, "fix tokenizer bug")  # runs before the first recall are the baseline
     task_store.add_capture(TestCapture(cwd=project_dir, command="pytest", runner="pytest",
                                        passed=2, failed=3, total=5))
     out = platform.record_outcome(task_id, "fix tokenizer bug", "rewrite regex", tests_passed=5, tests_failed=0,

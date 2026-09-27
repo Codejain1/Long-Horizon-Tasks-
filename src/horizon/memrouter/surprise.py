@@ -1,4 +1,9 @@
-"""Surprise = signed prediction error (MEMROUTER.md §5, step 2)."""
+"""Surprise = signed, zero-centred prediction error (MEMROUTER.md §5, step 2).
+
+An accurate prediction gives surprise ≈ 0 on average: success and each efficiency
+metric are errors against their own prediction, so better-than-predicted and
+worse-than-predicted outcomes can both happen and cancel out.
+"""
 
 from __future__ import annotations
 
@@ -13,26 +18,23 @@ _METRICS = ("tokens", "cost_usd", "latency_ms")
 @dataclass(frozen=True)
 class SurpriseResult:
     surprise: float
-    outcome_score: float
-    predicted_score: float
-    efficiency: float | None  # None when no metric had both a prediction and an actual
+    success_error: float
+    efficiency_error: float | None  # None when no metric had a valid prediction and an actual
 
 
-def metric_ratio(predicted: float, actual: float, epsilon: float) -> float:
-    """``min(1, predicted / max(actual, ε))``; an actual of 0 always gives 1 (§5 edge case)."""
-    if actual <= epsilon:
-        return 1.0
-    return min(1.0, predicted / max(actual, epsilon))
+def metric_error(predicted: float, actual: float) -> float:
+    """``clamp((predicted − actual) / predicted, −1, 1)``: positive when cheaper than predicted."""
+    return max(-1.0, min(1.0, (predicted - actual) / predicted))
 
 
-def efficiency(predicted: Predicted, actual: Actual, epsilon: float) -> float | None:
-    ratios = []
+def efficiency_error(predicted: Predicted, actual: Actual) -> float | None:
+    errors = []
     for name in _METRICS:
         p, a = getattr(predicted, name), getattr(actual, name)
-        if p is None or a is None:
-            continue  # predicted (or actual) missing: drop the metric
-        ratios.append(metric_ratio(p, a, epsilon))
-    return sum(ratios) / len(ratios) if ratios else None
+        if not p or a is None:
+            continue  # missing or zero prediction (or no actual): drop the metric
+        errors.append(metric_error(p, a))
+    return sum(errors) / len(errors) if errors else None
 
 
 def compute_surprise(
@@ -40,21 +42,14 @@ def compute_surprise(
     predicted: Predicted,
     actual: Actual,
     weights: SurpriseWeights = SurpriseWeights(),
-    epsilon: float = 1e-9,
 ) -> SurpriseResult:
-    """``predicted_success`` is the probability actually used (the host's, or the fallback)."""
-    eff = efficiency(predicted, actual, epsilon)
+    """``predicted_success`` is the probability actually used (the host's, or the low-confidence fallback)."""
+    success_error = actual.success - predicted_success
+    eff = efficiency_error(predicted, actual)
     if eff is None:
-        # No efficiency metric: score on success only (weights renormalised).
-        outcome, expected = actual.success, predicted_success
+        surprise = success_error
     else:
-        total = weights.success + weights.efficiency
-        ws, we = weights.success / total, weights.efficiency / total
-        outcome = ws * actual.success + we * eff
-        expected = ws * predicted_success + we  # the prediction assumes it lands on budget
-    return SurpriseResult(
-        surprise=max(-1.0, min(1.0, outcome - expected)),
-        outcome_score=outcome,
-        predicted_score=expected,
-        efficiency=eff,
-    )
+        total = weights.success + weights.efficiency  # normalised, so the range stays −1..1
+        surprise = (weights.success * success_error + weights.efficiency * eff) / total
+    return SurpriseResult(surprise=max(-1.0, min(1.0, surprise)), success_error=success_error,
+                          efficiency_error=eff)

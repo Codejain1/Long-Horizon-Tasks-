@@ -145,6 +145,43 @@ class DecisionEntry(BaseModel):
     reason: str | None = None
     episode_id: str | None = None
     success: float | None = None
+    checkpoint_id: str | None = None  # the state before this decision was implemented (PROJECT.md §8)
+
+
+class GitRef(BaseModel):
+    """A commit whose tree is the working tree at checkpoint time (HEAD, or a `git stash create` commit)."""
+
+    repo: str
+    commit: str
+
+
+class ClaudeCodeRef(BaseModel):
+    """A Claude Code checkpoint: the user prompt to pick in /rewind."""
+
+    session_id: str
+    message_uuid: str | None = None
+    prompt: str | None = None  # redacted snippet, so a human can find it in the /rewind list
+    at: datetime | None = None
+
+
+class Checkpoint(BaseModel):
+    """A reference to the host's own checkpoint mechanisms. We never store the code itself."""
+
+    id: str = Field(default_factory=lambda: new_id("ckpt"))
+    cwd: str
+    session_id: str | None = None
+    git: GitRef | None = None
+    claude_code: ClaudeCodeRef | None = None
+    recall_id: str | None = None  # set when a recall_context attaches it to a task
+    created_at: datetime = Field(default_factory=now)
+
+
+class FailureEntry(BaseModel):
+    at: datetime = Field(default_factory=now)
+    attempt: int
+    chosen: str
+    reason: str
+    checkpoint_id: str | None = None
 
 
 class TaskState(BaseModel):
@@ -157,8 +194,21 @@ class TaskState(BaseModel):
     progress: list[ProgressEntry] = Field(default_factory=list)
     decisions: list[DecisionEntry] = Field(default_factory=list)
     open_issues: list[str] = Field(default_factory=list)
-    status: Literal["active", "completed"] = "active"
+    # "escalated": the retry limit was hit and the task waits for a human (PROJECT.md §8).
+    status: Literal["active", "escalated", "completed"] = "active"
     cwd: str | None = None
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    attempts: int = 0  # consecutive failed outcomes; reset by a success or by human guidance
+    failures: list[FailureEntry] = Field(default_factory=list)  # the current failure streak
+    rollback_to: str | None = None  # checkpoint id: the last known-good state of the current streak
+    # Git commit the working tree must match before the next recall_context, after a rollback.
+    # Checked by the PreToolUse hook (once), cleared by the next recall that goes through.
+    restore_check: str | None = None
+    # Baseline (PROJECT.md §9): tests already failing when the task started, captured from the test run the
+    # host makes between start_task and its first recall_context. Target tests are the ones the task must fix.
+    target_tests: list[str] = Field(default_factory=list)
+    baseline: Literal["pending", "captured", "missing"] = "pending"
+    baseline_failing: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
@@ -179,3 +229,4 @@ class TestCapture(BaseModel):
     created_at: datetime = Field(default_factory=now)
     consumed_by: str | None = None  # episode id that used it
     nudged_at: datetime | None = None  # when the Stop hook asked for record_outcome about it
+    failing: list[str] | None = None  # failing test ids; None when the output didn't identify every failure

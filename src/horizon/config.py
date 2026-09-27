@@ -30,7 +30,6 @@ class Settings:
     embedder: str = "fastembed"
     embedding_dim: int = 384
     surprise_weights: SurpriseWeights = field(default_factory=SurpriseWeights)
-    surprise_epsilon: float = 1e-9
     fallback_success_probability: float = 0.5
     # Episodes at or above this similarity count as "similar" for the fallback success rate.
     similar_min_similarity: float = 0.5
@@ -41,6 +40,10 @@ class Settings:
     recall_token_budget: int = 1500
     # Static key for the HTTP transport until real API keys (Phase 7).
     dev_api_key: str | None = None
+    # Rollback rules (PROJECT.md §8): an outcome below this pass rate is a failure, and this many
+    # consecutive failures escalate the task to a human.
+    rollback_below: float = 1.0
+    max_attempts: int = 3
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -60,7 +63,6 @@ class Settings:
                 success=get("SURPRISE_W_SUCCESS", base.surprise_weights.success, float),
                 efficiency=get("SURPRISE_W_EFFICIENCY", base.surprise_weights.efficiency, float),
             ),
-            surprise_epsilon=get("SURPRISE_EPSILON", base.surprise_epsilon, float),
             fallback_success_probability=get("FALLBACK_SUCCESS", base.fallback_success_probability, float),
             similar_min_similarity=get("SIMILAR_MIN_SIMILARITY", base.similar_min_similarity, float),
             similar_top_k=get("SIMILAR_TOP_K", base.similar_top_k, int),
@@ -69,4 +71,6 @@ class Settings:
             recall_max_items=get("RECALL_MAX_ITEMS", base.recall_max_items, int),
             recall_token_budget=get("RECALL_TOKEN_BUDGET", base.recall_token_budget, int),
             dev_api_key=get("DEV_API_KEY", None),
+            rollback_below=get("ROLLBACK_BELOW", base.rollback_below, float),
+            max_attempts=get("MAX_ATTEMPTS", base.max_attempts, int),
         )
