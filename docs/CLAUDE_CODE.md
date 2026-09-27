@@ -9,6 +9,7 @@ Horizon is an MCP server. Claude Code decides when to call it, so reliable calli
 | Hook | Event | What it does |
 |---|---|---|
 | `horizon hook session-start` | `SessionStart` | Injects the workflow rules and lists active tasks for this project, so a resumed session continues the same task. |
+| `horizon hook pre-tool-use` | `PreToolUse` (matcher `mcp__horizon__recall_context`) | Just before each `recall_context`, records a **checkpoint reference**: a git commit of the working tree (`git stash create`, or `HEAD` when clean; nothing in the repo changes) and the latest user prompt, which is the Claude Code checkpoint to pick in `/rewind`. The recall attaches it to the task, and the next decision records it. Silent. |
 | `horizon hook post-tool-use` | `PostToolUse` (matcher `Bash`) | When the command is a test run (pytest, unittest, jest, vitest, go, cargo, rspec, …), it parses the pass/fail **counts** and stores them. `record_outcome` then uses these real counts instead of the model's summary (`PROJECT.md` §9). It also nudges the model to call `record_outcome`. Raw output is never stored. |
 | `horizon hook stop` | `Stop` | Quiet by default. It speaks only when an active task has an **unrecorded outcome**: a test run from this session that no `record_outcome` has used. Then it blocks the stop once and asks for `record_outcome`. It nudges at most once per test run and never loops. |
 
@@ -46,6 +47,16 @@ Everything is set through environment variables (see `src/horizon/config.py`):
 | `HORIZON_TEAM_ID` | `local` | Memory is isolated per team. |
 | `HORIZON_PROJECT_DIR` | server's working directory | Used to match hook-captured test runs to tasks. |
 | `HORIZON_DEV_API_KEY` | none | Required for `horizon serve --transport http`. |
+| `HORIZON_ROLLBACK_BELOW` | `1.0` | An outcome with a lower test pass rate counts as a failed attempt. |
+| `HORIZON_MAX_ATTEMPTS` | `3` | Consecutive failed attempts before the task is escalated to the user. |
+
+## Rollback rules (`PROJECT.md` §8)
+
+When `record_outcome` reports a pass rate below `HORIZON_ROLLBACK_BELOW`, its response carries `rollback`:
+
+- **`action: "rollback"`** (attempts 1 to N−1): `restore.git` is a command that puts tracked files back to the last known-good checkpoint (`git restore --source=<snapshot> --staged --worktree -- :/`). HEAD and history are untouched, and untracked files are left alone. `restore.claude_code` names the prompt to pick in `/rewind`, which only the user can run. The host restores, then calls `recall_context`. That response's `task_state.retry` lists every failed approach and its reason, so the retry doesn't repeat one.
+- **`action: "escalate"`** (attempt N): the task becomes `escalated`. The host restores, stops and asks the user. Calling `recall_context` with their answer as `human_guidance` resumes the task with a fresh streak.
+- Every attempt in a streak rolls back to the checkpoint taken before the **first** failure, so a host that skipped a restore can't make a broken tree the new baseline. A passing outcome ends the streak.
 
 ## Privacy
 

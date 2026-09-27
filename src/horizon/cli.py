@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=8000)
 
     p = sub.add_parser("hook", help="Run a Claude Code hook (reads the hook JSON on stdin).")
-    p.add_argument("name", choices=["session-start", "post-tool-use", "stop"])
+    p.add_argument("name", choices=["session-start", "pre-tool-use", "post-tool-use", "stop"])
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
