@@ -47,7 +47,7 @@ Episode {
   conditions: Condition[],   // stack, scale, project size, domain...
   chosen: OptionRef,
   alternatives: OptionRef[],
-  predicted: { success, tokens, costUsd, latencyMs, confidence, source: "jev" | "sim" | "memory" | "host" },
+  predicted: { success, tokens, costUsd, latencyMs, confidence, source: "jev" | "sim" | "memory" | "host" | "llm" },
                              // predicted.success = probability of success, 0..1
                              // source "host" = the host LLM's own estimate (the only source before Jev and simulation exist)
   actual:    { success, tokens, costUsd, latencyMs, testResults, signalType: "auto" | "implicit" | "human" },
@@ -82,7 +82,7 @@ Link {
 Condition { key, op, value }   // e.g. { key: "rps", op: ">", value: 10000 }
 
 PredictorStats {                // tracks whose forecasts can be trusted
-  source: "jev" | "sim" | "memory" | "host", taskType,
+  source: "jev" | "sim" | "memory" | "host" | "llm", taskType,   // llm = the small-LLM comparison scorer (PROJECT.md §5)
   calibration, accuracy, samples
 }
 ```

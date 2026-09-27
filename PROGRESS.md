@@ -102,6 +102,28 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Real Claude Code runs 7–10:** run 8 (Sonnet) exposed an ordering gap: it recorded the baseline run before its first recall. Fixed. Runs 9 and 10 (Opus, Sonnet) were clean on every metric, with every outcome judged by the baseline. See `demo/reliability/RESULTS.md`.
   - **Tests:** 16 new (8 of them run on SQLite and Postgres).
 
+- **Session 6 — PR #5 and Phase 4: decision layer** (branch `claude/phase-4-decision-layer`, not yet in a PR).
+  - **Merging.** PR #3 and PR #4 had already been merged by the owner, but #4 was merged into #3's branch *after* #3 reached `main`. That left Phase 3, session 4 and round 5 off `main`. Opened and merged **PR #5** (same branch into `main`). `main` passes all 230 tests.
+  - **Plan and acceptance criteria (`PROJECT.md` §5, §13 item 4):**
+    1. Crucial-decision detection, so routine steps skip the flow.
+    2. Scoring with one question per dimension per option, run in parallel. Measurable dimensions are computed in code; judgements come from the scorer.
+    3. Configurable weights and thresholds (clear winner, close call).
+    4. The second-tie rule: the cheaper or more reversible option, or ask a human if stakes are high.
+    5. Memory feeds evidence and fear warnings.
+    6. Jev behind a swappable interface, plus the small-LLM comparison scorer.
+    7. The scorer's prediction is recorded with the outcome (§9).
+    8. The host calls the tool at a crucial choice.
+
+    **All eight are met.** Criterion 6 is met with mocked transports only: there are no API keys. See open questions 37 and 38.
+  - **Built:**
+    - `src/horizon/decision/`:
+      - `scorers.py`: `JevScorer` on the official `typesafe-sdk`, `LLMScorer` on the official `anthropic` SDK with structured outputs, both behind one `Scorer` interface;
+      - `layer.py`: the questions, composite, rules and fallback.
+    - The **`evaluate_options`** MCP tool. The tool description, server instructions, SessionStart text and CLAUDE.md snippet all tell the host to call it before a crucial choice.
+    - The `[decision]` extra, settings (`HORIZON_SCORER`, weights, thresholds), and docs in `docs/CLAUDE_CODE.md`.
+  - **Real Claude Code:** a new demo task 6 contains a crucial choice. Opus 5.5 and Sonnet 5 both called `evaluate_options` before their first edit, with four sensible options each. One finding, now fixed: `unscored` must not name a `chosen` option (details in `demo/reliability/RESULTS.md`).
+  - **Tests:** 258 pass on SQLite and Postgres (16 new for Phase 4). The Jev and LLM adapters are tested through the real SDKs over a mocked HTTP transport, which checks the request shape and response parsing.
+
 ## In progress
 
 - Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
@@ -261,6 +283,21 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Surprise ε removed** (`HORIZON_SURPRISE_EPSILON`): the new formula divides by the prediction, and zero predictions are dropped.
 - **Known flake:** one full-suite run on macOS aborted at interpreter exit (`libc++abi … recursive_mutex lock failed`), most likely onnxruntime (fastembed) tearing down. Three reruns were clean, and it doesn't come from test logic.
 
+**Phase 4 decisions (defaults under the decision rule; open questions 11–13 approved in round 5)**
+- **Open question 11:** the **small-LLM comparison scorer is built alongside Jev** behind the same interface, and `HORIZON_SCORER` picks `jev`, `llm` or `none`. The default is `none` until the owner enables one; then options are ranked on estimates only and nothing is chosen.
+- **Open question 12, thresholds:**
+  - **crucial** if any of *hard to reverse*, *shapes many later steps* or *real cost* is ≥ 0.5 (an "any serious signal" rule, not a weighted average);
+  - **clear winner** if the composite lead is ≥ 0.10 and the leader's scorer confidence is ≥ 0.5;
+  - otherwise a **close call**.
+- **Open question 12, weights:** success 0.30, compatibility 0.20, architecture fit 0.20, cost 0.15, tokens 0.10, latency 0.05. They are renormalised over the dimensions available. Measured dimensions count only when every option has an estimate: best = 1, others = best / value.
+- **Open question 13, high stakes:** the scorer's *would any option spend money, message people, or delete or overwrite data* ≥ 0.5 (the §9 examples), **or** a severe past failure among the recalled memories. High stakes only matters on a close call: a clear winner doesn't need a human.
+- **One scorer request per decision**, including the crucial-detection questions. §16 worries about per-decision overhead, but the host calls this tool only at decision points, and one parallel request is faster than two sequential ones.
+- **Accuracy is scored as a Noul**, *will this option work?*, so it doubles as the calibrated predicted success probability recorded on the episode (source `jev` or `llm`). The prediction is used when `record_outcome`'s `chosen` matches the evaluated option (case-insensitive containment) and the host gave none of its own.
+- **`llm` is a new prediction source** (`MEMROUTER.md` §4 updated), so Jev's predictor trust (Phase 6) is never mixed with the comparison scorer's.
+- **The LLM scorer model is `claude-haiku-4-5`**, overridable: §5 asks for a *small* LLM. It answers through a JSON-schema structured output and gives no confidence, so its answers never block a clear winner.
+- **A scorer failure or missing key degrades to `unscored`**, the same failure isolation as memrouter. The scorer is created lazily, and creation is retried on the next call.
+- **Demo has 6 tasks**, one more than the owner's "3–5": task 6 is the only one with a crucial choice. Run it alone with a one-task `tasks.json`, as done here.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -362,10 +399,16 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 35. **(Resolved in round 5; see decisions 23–24.)** **Hook-captured test counts can include unrelated failures.** In the demo, a host sometimes ran the whole suite, which included other tasks' stubs, before its targeted run. If that were the last run, `record_outcome` would see a pass rate below 1 and trigger a rollback. [This is the same root cause as open question 29. The default keeps the latest capture. The fix is to compare against the pass rate at the checkpoint.]
 36. **Provenance can't tell subagents apart** (MEMROUTER §11). [It uses `client_info` only. An optional `agent_id` parameter on `record_outcome` would cover it when subagents arrive.]
 
+### Raised in Phase 4 (the default used is in brackets)
+
+37. **(Needs credentials.) Jev has never been called for real.** This needs a `TYPESAFE_API_KEY` from console.typesafe.ai. The docs publish no pricing or rate limits (§15 "test Jev access for real" is still open). [Built and tested against the SDK over a mocked transport; `HORIZON_SCORER=none` by default.]
+38. **(Needs credentials and spend.) The LLM scorer has never been called for real.** It needs Claude API credentials. [Same as above.]
+39. **Weights and thresholds are untuned.** §5's experiment (Jev against the small LLM on real decisions, then against real outcomes) is what should set them. [Defaults above. Every raw dimension is returned, so re-weighting doesn't need re-scoring.]
+40. **Phase 4 has no benchmark run.** mini-SWE-agent doesn't speak MCP (same as open question 10). [The demo measures invocation instead.]
+
 ## Next step
 
-1. PR #3 and PR #4 are merged (session 5). **Phase 4: decision layer** is next, on `claude/phase-4-decision-layer`.
-2. **Owner:** when credits and keys exist, set `real_runs: true` in `bench/config.yaml`:
-   - smoke run first (`horizon-bench run --stage smoke`, at most $10);
-   - then the full baseline (`--stage full`, 3 repeats, at most $150).
-3. Optionally, allow `huggingface.co` and `*.hf.co` in the cloud session, so it can use the bge embedder and not the hash fallback.
+1. **Owner:** create a TypeSafe API key and set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev`. Then rerun demo task 6 to see real Jev decisions, and whether the host follows them. Optionally set `HORIZON_SCORER=llm` with Claude API credentials for the comparison.
+2. Review the Phase 4 branch and open its PR when ready (the owner asked for PRs in batches).
+3. Then **Phase 5: consequence checking**: static checks, memory lookup, local spikes, and a Jev re-score on close calls.
+4. When credits and keys exist, run the Phase 1 real benchmark (smoke run first).

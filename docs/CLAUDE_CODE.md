@@ -50,6 +50,31 @@ Everything is set through environment variables (see `src/horizon/config.py`):
 | `HORIZON_ROLLBACK_BELOW` | `1.0` | Only for the absolute fallback (see below): an outcome with a lower test pass rate counts as a failed attempt. |
 | `HORIZON_MAX_ATTEMPTS` | `3` | Consecutive failed attempts before the task is escalated to the user. |
 
+## Decision layer (`PROJECT.md` §5)
+
+`evaluate_options(task_id, situation, options)` is called before a crucial choice, with 2–4 options and optional `est_cost_usd` / `est_tokens` / `est_latency_ms` on each. A single scorer request answers every question in parallel:
+- whether the decision is **crucial** (hard to reverse, shapes many later steps, or has real cost);
+- whether it is **high stakes** (money, messages or data);
+- for each option: its **chance of success**, **compatibility**, **architecture fit** and **reversibility**.
+
+The scorer sees the goal, the constraints and the recalled past outcomes as evidence. Code combines the dimensions with the weights and applies these rules:
+
+| `decision` | When |
+|---|---|
+| `routine` | No crucial signal reaches `HORIZON_CRUCIAL_THRESHOLD` (0.5). |
+| `clear_winner` | The top composite leads by at least `HORIZON_CLEAR_MARGIN` (0.10), and its scorer confidence is at least `HORIZON_MIN_CONFIDENCE` (0.5). |
+| `close_call` | Otherwise. Among the nearly tied options, it takes the cheaper one (by estimate), else the more reversible one. |
+| `ask_human` | A close call that is high stakes (`HORIZON_HIGH_STAKES_THRESHOLD` 0.5, or a matching severe past failure). |
+| `unscored` | No scorer is configured, or it failed. Nothing is chosen; `cheapest_by_estimates` lists the options by the host's estimates, as information only. |
+
+The chosen option's predicted success is recorded on the episode when `record_outcome` names that option, with source `jev` or `llm` (`PROJECT.md` §9). Phase 5 will add consequence checking to close calls.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HORIZON_SCORER` | `none` | `jev` (needs `TYPESAFE_API_KEY`) or `llm`, the small-LLM comparison scorer (needs Claude API credentials). Install the `[decision]` extra. |
+| `HORIZON_JEV_MODEL` / `HORIZON_LLM_SCORER_MODEL` | `jev-latest` / `claude-haiku-4-5` | |
+| `HORIZON_DECISION_WEIGHTS` | success 0.30, compatibility 0.20, architecture_fit 0.20, cost_usd 0.15, tokens 0.10, latency_ms 0.05 | JSON. Renormalised over the dimensions available. |
+
 ## Rollback rules (`PROJECT.md` §8)
 
 **Baseline first (`PROJECT.md` §9).** After `start_task`, the host runs the full test suite once, before any edit. The PostToolUse hook captures the failing test ids. The first `recall_context` (or a `record_outcome` made before it) takes those runs as the task's **baseline**. Every later outcome is judged against it, and the result is reported in `test_judgement`:

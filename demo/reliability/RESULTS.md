@@ -34,3 +34,16 @@ Measured on 2026-09-28 with Claude Code 2.1.283, headless (`claude -p`), on a lo
 - **Run 5, no `record_outcome`.** Sonnet ran `python3 -m pytest`, which the demo's permission allowlist didn't cover. The tests never ran, so there was nothing to record, and the Stop hook correctly stayed quiet. This was a harness problem, not a Horizon one. The allowlist now includes `python3`, and the report ignores test commands that were denied. Run 6 was clean.
 
 **Caveats:** these are small single-file tasks with one prompt each. Real multi-hour sessions, interactive use (where the user approves each tool) and other hosts aren't covered. The numbers show the wiring works and the instructions are followed, not that this holds at scale.
+
+## Phase 4: `evaluate_options` at a crucial choice (2026-09-28)
+
+Task 6 only, on Opus 5.5 and on Sonnet 5, with no scorer configured (`HORIZON_SCORER=none`). The prompt asks for a persistent cache that "will later be shared by several worker processes" and never mentions Horizon.
+
+| Host model | `evaluate_options` before the first edit | options passed | baseline run | recall before edit | record after last test | hooks fired | tests pass |
+|---|---|---|---|---|---|---|---|
+| Opus 5.5 | yes (1 call) | SQLite (WAL), shelve/dbm, JSON + atomic rename, Redis | yes | yes | yes | yes | yes |
+| Sonnet 5 | yes (1 call) | sqlite3, JSON + locking, dbm/shelve, Redis | yes | yes | yes | yes | yes |
+
+**Finding and fix.** With no scorer, the first version returned the cheapest option by the host's own estimates as `chosen` (shelve/dbm), and shelve can't serve several processes. Both hosts ignored it and built sqlite3 ("I'll decide based on engineering merit rather than the token-cost ranking"). `unscored` now returns `chosen: null`, and the estimate ranking comes back separately as `cheapest_by_estimates`. Estimates show what's cheap, not what works.
+
+Not measured yet: real Jev or LLM scores (no API keys). With a scorer, the same run would also test whether hosts follow `clear_winner`, `close_call` and `ask_human`.

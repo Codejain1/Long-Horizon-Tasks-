@@ -26,6 +26,8 @@ from horizon.models import (
     TestResults,
 )
 from horizon.redact import MAX_CONDITION_VALUE, MAX_NOTE, MAX_OPTION, MAX_SITUATION, redact, redact_list
+from horizon.decision.layer import Option, evaluate
+from horizon.decision.scorers import Scorer
 from horizon.taskstate import rollback
 from horizon.taskstate.judge import judge, targets_from_goal
 from horizon.taskstate.store import TaskStore
@@ -41,6 +43,14 @@ def redact_conditions(conditions: list[Condition] | None) -> list[Condition] | N
         return None
     return [c.model_copy(update={"value": redact(c.value, MAX_CONDITION_VALUE)}) if isinstance(c.value, str) else c
             for c in conditions]
+
+
+def same_option(a: str | None, b: str | None) -> bool:
+    """Whether the host implemented the option that was evaluated (labels get reworded a little)."""
+    if not a or not b:
+        return False
+    a, b = a.strip().lower(), b.strip().lower()
+    return a == b or a in b or b in a
 
 
 class ToolInputError(ValueError):
@@ -77,11 +87,13 @@ class Platform:
         tasks: TaskStore,
         memrouter_factory: Callable[[], MemRouter],
         cwd: str | None = None,
+        scorer_factory: Callable[[], Scorer | None] = lambda: None,
     ):
         self.settings = settings
         self.tasks = tasks
         self._memrouter_factory = memrouter_factory
         self._memrouter: MemRouter | None = None
+        self._scorer_factory = scorer_factory
         self.cwd = os.path.realpath(cwd or os.getcwd())
 
     # --- memrouter access, failure-isolated -----------------------------------
@@ -210,6 +222,58 @@ class Platform:
 
         return self._logged("recall_context", task_id, run)
 
+    def evaluate_options(
+        self,
+        task_id: str,
+        situation: str,
+        options: list[Option],
+        conditions: list[Condition] | None = None,
+        crucial: bool | None = None,
+    ) -> dict:
+        """Decision layer (PROJECT.md §5): score the host's options before it commits to a crucial choice."""
+        situation = redact(situation, MAX_SITUATION)
+        conditions = redact_conditions(conditions)
+        options = [Option(label=redact(o.label, MAX_OPTION), description=redact(o.description, MAX_NOTE) or "",
+                          est_cost_usd=o.est_cost_usd, est_tokens=o.est_tokens, est_latency_ms=o.est_latency_ms)
+                   for o in options]
+
+        def run() -> dict:
+            if not 1 <= len(options) <= 6:
+                raise ToolInputError("Pass 2-4 options (at most 6), each with a short label.")
+            task = self._task(task_id)
+            # Memory feeds the scorer evidence: track records and fear warnings (§5, MEMROUTER §13).
+            slice_, memory_status = self._call_memory(lambda m: m.recall(
+                team_id=self.settings.team_id, situation=situation, conditions=conditions,
+                token_budget=self.settings.recall_token_budget, task_id=task_id, project_id=task.project_id))
+            memories = slice_.memories if slice_ is not None else []
+            state = {
+                "goal": task.goal,
+                "constraints": task.constraints,
+                "situation": situation,
+                "conditions": [c.model_dump(mode="json") for c in conditions or []],
+                "options": [{"label": o.label, "description": o.description} for o in options],
+                "past_outcomes": [{"situation": m.situation, "chosen": m.chosen, "outcome": m.outcome,
+                                   "severity": m.severity} for m in memories],
+            }
+            try:
+                scorer = self._scorer_factory()
+            except Exception as exc:  # e.g. no API key: rank on estimates, never block the host
+                log.warning("scorer unavailable: %s", exc)
+                scorer, broken = None, True
+            else:
+                broken = False
+            result = evaluate(state, options, scorer, self.settings, crucial_hint=crucial,
+                              fear_warnings=sum(m.severity == "severe" for m in memories))
+            if broken:
+                result["scorer_status"] = "unavailable"
+            task.last_evaluation = {"situation": situation, "decision": result["decision"],
+                                    "chosen": result["chosen"], "predicted_success": result["predicted_success"],
+                                    "source": result["scorer"]}
+            self.tasks.save(task)
+            return {"task_id": task_id, "memory_status": memory_status, **result}
+
+        return self._logged("evaluate_options", task_id, run)
+
     def _take_baseline(self, task: TaskState) -> int:
         """Test runs made since start_task and before the first recall_context (so before any decision or
         edit) are the baseline (PROJECT.md §9). Taken by whichever of recall_context and record_outcome
@@ -293,8 +357,13 @@ class Platform:
             actual_success = verdict.success
             actual = Actual(success=actual_success, tokens=tokens, cost_usd=cost_usd, latency_ms=latency_ms,
                             test_results=tests, signal_type=signal)
-            predicted = Predicted(success=predicted_success, tokens=predicted_tokens,
-                                  cost_usd=predicted_cost_usd, latency_ms=predicted_latency_ms)
+            source, p_success = "host", predicted_success
+            ev = task.last_evaluation
+            if p_success is None and ev and ev.get("predicted_success") is not None and ev.get("source") \
+                    and same_option(ev.get("chosen"), chosen):
+                source, p_success = ev["source"], ev["predicted_success"]  # what the scorer predicted (§9)
+            predicted = Predicted(success=p_success, tokens=predicted_tokens, cost_usd=predicted_cost_usd,
+                                  latency_ms=predicted_latency_ms, source=source)
 
             recorded, status = self._call_memory(lambda m: m.record(
                 team_id=self.settings.team_id,

@@ -5,6 +5,7 @@ Defaults follow MEMROUTER.md §14. Everything here is easy to change later.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,12 @@ from pathlib import Path
 
 def default_db_url() -> str:
     return f"sqlite:///{Path.home() / '.horizon' / 'horizon.db'}"
+
+
+# Composite weights (PROJECT.md §5). Judged by the scorer: success, compatibility, architecture_fit.
+# Measured in code from the host's estimates: cost_usd, tokens, latency_ms. Renormalised over what's available.
+DEFAULT_DECISION_WEIGHTS = {"success": 0.30, "compatibility": 0.20, "architecture_fit": 0.20,
+                            "cost_usd": 0.15, "tokens": 0.10, "latency_ms": 0.05}
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,17 @@ class Settings:
     # consecutive failures escalate the task to a human.
     rollback_below: float = 1.0
     max_attempts: int = 3
+    # Decision layer (PROJECT.md §5). "none" until the owner enables a scorer: then options are ranked on
+    # measured values only. "jev" needs TYPESAFE_API_KEY; "llm" (the small-LLM comparison scorer) needs Claude
+    # API credentials.
+    scorer: str = "none"
+    jev_model: str = "jev-latest"
+    llm_scorer_model: str = "claude-haiku-4-5"
+    decision_weights: dict = field(default_factory=lambda: dict(DEFAULT_DECISION_WEIGHTS))
+    crucial_threshold: float = 0.5  # any crucial signal at or above this makes the decision crucial
+    clear_margin: float = 0.10  # composite lead over the runner-up that counts as a clear winner
+    min_confidence: float = 0.5  # Jev Score confidence below this is never a clear winner
+    high_stakes_threshold: float = 0.5  # spending money, messaging people, deleting data: ask a human
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -73,4 +91,12 @@ class Settings:
             dev_api_key=get("DEV_API_KEY", None),
             rollback_below=get("ROLLBACK_BELOW", base.rollback_below, float),
             max_attempts=get("MAX_ATTEMPTS", base.max_attempts, int),
+            scorer=get("SCORER", base.scorer),
+            jev_model=get("JEV_MODEL", base.jev_model),
+            llm_scorer_model=get("LLM_SCORER_MODEL", base.llm_scorer_model),
+            decision_weights=get("DECISION_WEIGHTS", base.decision_weights, json.loads),
+            crucial_threshold=get("CRUCIAL_THRESHOLD", base.crucial_threshold, float),
+            clear_margin=get("CLEAR_MARGIN", base.clear_margin, float),
+            min_confidence=get("MIN_CONFIDENCE", base.min_confidence, float),
+            high_stakes_threshold=get("HIGH_STAKES_THRESHOLD", base.high_stakes_threshold, float),
         )

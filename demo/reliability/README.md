@@ -1,6 +1,6 @@
 # Horizon reliability demo
 
-This demo measures whether Claude Code calls Horizon's tools unprompted (`PROJECT.md` §14: "rate of reliable MCP invocation by the host"). It uses 5 small tasks on a tiny Python package (`project/`). Each task starts with failing tests.
+This demo measures whether Claude Code calls Horizon's tools unprompted (`PROJECT.md` §14: "rate of reliable MCP invocation by the host"). It uses 6 small tasks on a tiny Python package (`project/`). Each task starts with failing tests.
 
 ## Run it headless (recommended)
 

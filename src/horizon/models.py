@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 EPISODE_SCHEMA_VERSION = 1
 
 SignalType = Literal["auto", "implicit", "human"]
-PredictionSource = Literal["jev", "sim", "memory", "host"]
+PredictionSource = Literal["jev", "sim", "memory", "host", "llm"]
 Severity = Literal["normal", "severe"]
 ConditionOp = Literal["=", "!=", ">", ">=", "<", "<=", "in", "contains"]
 
@@ -209,6 +209,8 @@ class TaskState(BaseModel):
     target_tests: list[str] = Field(default_factory=list)
     baseline: Literal["pending", "captured", "missing"] = "pending"
     baseline_failing: list[str] = Field(default_factory=list)
+    # The latest evaluate_options result (PROJECT.md §5), so record_outcome can store what the scorer predicted.
+    last_evaluation: dict | None = None
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 

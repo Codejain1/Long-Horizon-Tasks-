@@ -36,7 +36,7 @@ Instructions for every Claude session in this repository.
 
 ## Development
 
-- Code lives in `src/horizon/`, tests in `tests/`. Set up with `uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench]"`.
+- Code lives in `src/horizon/`, tests in `tests/`. Set up with `uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision]"`.
 - Run `.venv/bin/pytest`. Set `HORIZON_TEST_PG_URL` to a Postgres database with pgvector to run the Postgres variants too. Without it they are skipped.
 
 ## End of every session
