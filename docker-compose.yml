@@ -1,0 +1,27 @@
+# Local stack: Postgres + pgvector and the Horizon MCP server over HTTP.
+#   HORIZON_DEV_API_KEY=change-me docker compose up --build
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: horizon
+      POSTGRES_PASSWORD: horizon
+      POSTGRES_DB: horizon
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U horizon"]
+      interval: 2s
+      retries: 30
+
+  horizon:
+    build: .
+    environment:
+      HORIZON_DB_URL: postgresql://horizon:horizon@postgres:5432/horizon
+      HORIZON_DEV_API_KEY: ${HORIZON_DEV_API_KEY:?set HORIZON_DEV_API_KEY}
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+volumes:
+  pgdata:

@@ -1,0 +1,1 @@
+`swebench_verified_50.json` is written by `horizon-bench select`. It needs `huggingface.co`, which is blocked in the build session, so the file isn't committed yet. Once it exists, it is committed and every run uses it.

@@ -47,8 +47,9 @@ Episode {
   conditions: Condition[],   // stack, scale, project size, domain...
   chosen: OptionRef,
   alternatives: OptionRef[],
-  predicted: { success, tokens, costUsd, latencyMs, confidence, source: "jev" | "sim" | "memory" },
+  predicted: { success, tokens, costUsd, latencyMs, confidence, source: "jev" | "sim" | "memory" | "host" },
                              // predicted.success = probability of success, 0..1
+                             // source "host" = the host LLM's own estimate (the only source before Jev and simulation exist)
   actual:    { success, tokens, costUsd, latencyMs, testResults, signalType: "auto" | "implicit" | "human" },
                              // actual.success = test pass rate, 0..1
   surprise,                  // signed, -1..1 (see §5)
@@ -81,7 +82,7 @@ Link {
 Condition { key, op, value }   // e.g. { key: "rps", op: ">", value: 10000 }
 
 PredictorStats {                // tracks whose forecasts can be trusted
-  source: "jev" | "sim" | "memory", taskType,
+  source: "jev" | "sim" | "memory" | "host", taskType,
   calibration, accuracy, samples
 }
 ```
@@ -116,7 +117,7 @@ Embeddings sit behind an embedding interface so the model can be swapped. The de
    - The **sign** of `surprise` sets the direction (better than predicted → strengthen, worse → weaken); its **magnitude** sets the size.
    - `signalWeight`: human > auto > implicit (e.g. 1.0 / 0.7 / 0.4).
    - Expected outcomes barely change weights; surprising ones change them a lot.
-4. **Update predictor stats** for Jev / simulation / memory (were their predictions right?).
+4. **Update predictor stats** for Jev / simulation / memory / host (were their predictions right?).
 5. **Severe failure?** Create a fear lesson immediately (see §9).
 6. **Contradiction?** If an outcome contradicts a recalled lesson, trigger reconsolidation (see §8).
 
