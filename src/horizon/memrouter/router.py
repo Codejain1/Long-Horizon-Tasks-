@@ -153,7 +153,7 @@ class MemRouter:
             p_success = predicted.success
 
         result = compute_surprise(
-            p_success, predicted, actual, self.settings.surprise_weights, self.settings.surprise_epsilon
+            p_success, predicted, actual, self.settings.surprise_weights
         )
         episode = Episode(
             scope=Scope(team_id=team_id, project_id=project_id, task_id=task_id),

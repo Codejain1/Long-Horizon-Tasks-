@@ -30,7 +30,6 @@ class Settings:
     embedder: str = "fastembed"
     embedding_dim: int = 384
     surprise_weights: SurpriseWeights = field(default_factory=SurpriseWeights)
-    surprise_epsilon: float = 1e-9
     fallback_success_probability: float = 0.5
     # Episodes at or above this similarity count as "similar" for the fallback success rate.
     similar_min_similarity: float = 0.5
@@ -64,7 +63,6 @@ class Settings:
                 success=get("SURPRISE_W_SUCCESS", base.surprise_weights.success, float),
                 efficiency=get("SURPRISE_W_EFFICIENCY", base.surprise_weights.efficiency, float),
             ),
-            surprise_epsilon=get("SURPRISE_EPSILON", base.surprise_epsilon, float),
             fallback_success_probability=get("FALLBACK_SUCCESS", base.fallback_success_probability, float),
             similar_min_similarity=get("SIMILAR_MIN_SIMILARITY", base.similar_min_similarity, float),
             similar_top_k=get("SIMILAR_TOP_K", base.similar_top_k, int),

@@ -96,21 +96,20 @@ Embeddings sit behind an embedding interface so the model can be swapped. The de
 ## 5. Write path (after every outcome)
 
 1. **Record episode** with predicted vs actual outcome, conditions, provenance.
-2. **Compute surprise** as a signed prediction error:
+2. **Compute surprise** as a signed, zero-centred prediction error:
    ```
-   success         = actual test pass rate                       (0..1)
-   efficiency      = mean over {tokens, cost, latency} of
-                     min(1, predicted / actual)                  (0..1)
-   outcome_score   = 0.6 × success + 0.4 × efficiency
-   predicted_score = 0.6 × predicted_success_probability + 0.4
-   surprise        = outcome_score − predicted_score             (−1..1)
+   success           = actual test pass rate (see PROJECT.md §9 for the baseline rule)   (0..1)
+   success_error     = success − predicted_success_probability                        (−1..1)
+   efficiency_error  = for each of tokens, cost, latency with a valid prediction:
+                       clamp((predicted − actual) / predicted, −1, 1)                 (+ = cheaper than predicted)
+   surprise          = 0.6 × success_error + 0.4 × mean(efficiency_errors)             (−1..1)
    ```
-   - `predicted_score` assumes the prediction expects to land on budget (efficiency = 1).
+   - An accurate predictor gets surprise ≈ 0 on average. Better-than-predicted and worse-than-predicted outcomes are both possible for success and for every efficiency metric.
    - The weights (0.6 / 0.4) are configurable defaults (§14).
 
    **Edge cases:**
-   - **Actual value is 0:** that metric's ratio is 1. Computed as `min(1, predicted / max(actual, ε))`.
-   - **Predicted value missing:** drop that metric from the efficiency average. If all three are missing, score on success only by renormalising the weights: `outcome_score = success`, `predicted_score = predicted_success_probability`.
+   - **Predicted value missing or 0:** drop that metric (no valid ratio). If none remain: `surprise = success_error`.
+   - **Actual value is 0:** the metric's error is +1 (as cheap as possible).
    - **No success probability:** use memrouter's historical success rate for similar episodes (basic similarity recall, §6 step 2). If there are none, use 0.5. Mark the episode `lowConfidence` and halve its learning rate in step 3.
 3. **Update links** among memories that were recalled for this decision:
    `Δweight = learningRate × surprise × signalWeight` (× 0.5 if the episode is `lowConfidence`)
@@ -223,7 +222,6 @@ Inspection is served by `show_memories` and `delete_memory` (`PROJECT.md` §11).
 | New semantic link weight | 0.1 |
 | Learning rate | 0.2 |
 | Surprise weights (success / efficiency) | 0.6 / 0.4 |
-| Surprise ε (floor on actual values) | 1e-9 |
 | Fallback success probability (no history) | 0.5 |
 | Learning-rate multiplier for low-confidence episodes | 0.5 |
 | Embedding model | `BAAI/bge-small-en-v1.5` (fastembed, 384 dims) |
