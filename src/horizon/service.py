@@ -214,6 +214,7 @@ class Platform:
                 out["recall_id"] = slice_.recall_id
                 out["memories"] = [m.model_dump(mode="json") for m in slice_.memories]
                 out["memories_truncated"] = slice_.truncated
+                out["fear_warnings"] = slice_.fear_warnings
             if task.status == "escalated":
                 out["next"] = ("This task is escalated after repeated failures: ask the user how to proceed "
                                "and call recall_context again with their answer as human_guidance.")
@@ -282,6 +283,9 @@ class Platform:
                                          fear_warnings=fear, stage="from past spike results")
                     record["passes"].append(_pass_log(2, result))
                     result["settled_by"] = "memory"
+                    result["spike_tokens_avoided"] = int(sum(
+                        ((p["result"].get("spike") or {}).get("metrics") or {}).get("tokens", 0)
+                        for p in plan["from_memory"].values()))
                 elif plan["mode"] == "try_and_rollback":
                     top = plan["order"][0]
                     result = {**first, "decision": "try_and_rollback", "chosen": top,
@@ -396,6 +400,116 @@ class Platform:
                                 "predicted_success": result["predicted_success"], "source": result["scorer"]}
         self.tasks.save(task)
         return {"task_id": task.id, "decision_id": record["id"], **result}
+
+    # --- inspection tools (PROJECT.md §10-11) ------------------------------------------
+
+    def explain_decision(self, task_id: str, decision_id: str | None = None) -> dict:
+        """Why a decision went the way it did: evidence, scores per pass, consequences, and what happened."""
+
+        def run() -> dict:
+            task = self._task(task_id)
+            did = decision_id or (task.last_evaluation or {}).get("decision_id")
+            record = self.decisions.get(did, self.settings.team_id) if did else None
+            if record is None or record["task_id"] != task.id:
+                raise ToolInputError("No such decision for this task. Pass a decision_id from evaluate_options, or "
+                                     "omit it to explain the task's latest decision.")
+            passes = [p["result"] for p in record["passes"]]
+            last, first = passes[-1], passes[0]
+            eliminated = set(last.get("eliminated") or [])
+            plan = (record["consequences"] or {}).get("plan") or {}
+            submitted = (record["consequences"] or {}).get("submitted") or []
+            return {
+                "task_id": task.id,
+                "decision_id": record["id"],
+                "situation": record["state"]["situation"],
+                "stage": record["stage"],
+                "final": record["final"],
+                "scorer": record["scorer"],
+                "crucial_signals": first.get("crucial_signals"),
+                "high_stakes": first.get("high_stakes"),
+                "passes": [{"pass": p["pass"], "decision": p["result"]["decision"],
+                            "margin": p["result"].get("margin")} for p in record["passes"]],
+                "options": [{**{k: o[k] for k in ("label", "composite", "confidence", "dimensions")},
+                             "eliminated": o["label"] in eliminated} for o in last["options"]],
+                "evidence": {"past_outcomes": record["state"]["past_outcomes"],
+                             "consequence_mode": plan.get("mode"),
+                             "reused_from_memory": sorted(plan.get("from_memory") or {}),
+                             "checks": [{"option": r["option"],
+                                         "static_checks_failed": sum(c["passed"] is False for c in r["static_checks"]),
+                                         "spike": r.get("spike")} for r in submitted]},
+                "outcomes": record["outcomes"],
+            }
+
+        return self._logged("explain_decision", task_id, run)
+
+    def show_memories(self, query: str | None = None, kinds: list[str] | None = None, limit: int = 20) -> dict:
+        query = redact(query, MAX_SITUATION)
+
+        def run() -> dict:
+            memories, status = self._call_memory(lambda m: m.inspect(self.settings.team_id, query, kinds, limit))
+            return {"memory_status": status, "memories": memories or []}
+
+        return self._logged("show_memories", None, run)
+
+    def delete_memory(self, memory_id: str, reason: str, removed_by: str | None = None) -> dict:
+        reason = redact(reason, MAX_NOTE)
+
+        def run() -> dict:
+            try:
+                return self._memory().remove(self.settings.team_id, memory_id, reason, removed_by)
+            except ValueError as exc:
+                raise ToolInputError(str(exc)) from exc
+
+        return self._logged("delete_memory", None, run)
+
+    def clear_fear(self, lesson_id: str, by_human: str) -> dict:
+        """Human only (MEMROUTER §9, §12): the MCP tool asks the user through elicitation first."""
+
+        def run() -> dict:
+            try:
+                les = self._memory().clear_fear(self.settings.team_id, lesson_id, by_human)
+            except ValueError as exc:
+                raise ToolInputError(str(exc)) from exc
+            return {"lesson_id": les.id, "statement": les.statement, "cleared_by": les.cleared_by}
+
+        return self._logged("clear_fear", None, run)
+
+    # --- human approvals (PROJECT.md §10) --------------------------------------------------
+
+    def log_approval(self, task_id: str | None, kind: str, action: str, question: str,
+                     answer: str | None = None, approver: str | None = None) -> None:
+        self.tasks.log_approval(self.settings.team_id, task_id, kind, action, question, answer, approver)
+
+    def human_choice(self, task_id: str, decision_id: str, choice: str, approver: str | None) -> dict:
+        """A human picked the option for a high-stakes close call: that is the decision."""
+        task = self._task(task_id)
+        record = self.decisions.get(decision_id, self.settings.team_id)
+        if record is None or record["task_id"] != task.id:
+            raise ToolInputError(f"Unknown decision_id {decision_id!r}.")
+        rows = record["passes"][-1]["result"]["options"]
+        row = next((r for r in rows if same_option(r["label"], choice)), None)
+        if row is None:
+            raise ToolInputError(f"{choice!r} is not one of the options.")
+        record["final"] = {**(record["final"] or {}), "decision": "human_choice", "chosen": row["label"],
+                           "predicted_success": row["dimensions"].get("success"), "approver": approver,
+                           "reason": f"Chosen by {approver or 'the user'} (high stakes)."}
+        record["stage"] = "decided"
+        self.decisions.save(record)
+        task.last_evaluation = {**(task.last_evaluation or {}), "decision_id": record["id"],
+                                "decision": "human_choice", "chosen": row["label"],
+                                "predicted_success": row["dimensions"].get("success")}
+        self.tasks.save(task)
+        return record["final"]
+
+    def resume_with_guidance(self, task_id: str, guidance: str) -> dict:
+        """The human answered an escalation (Phase 3): resume the task with their guidance."""
+        guidance = redact(guidance, MAX_NOTE)
+        task = self._task(task_id)
+        task.progress.append(ProgressEntry(note=f"Human guidance: {guidance}"))
+        if task.status == "escalated":
+            rollback.resume(task)
+        self.tasks.save(task)
+        return self._compact(task)
 
     def _take_baseline(self, task: TaskState) -> int:
         """Test runs made since start_task and before the first recall_context (so before any decision or

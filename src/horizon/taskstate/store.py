@@ -35,6 +35,9 @@ _SCHEMA = {
         """CREATE TABLE IF NOT EXISTS checkpoints (
             id TEXT PRIMARY KEY, cwd TEXT NOT NULL, data TEXT NOT NULL,
             created_at TEXT NOT NULL, consumed_by TEXT)""",
+        """CREATE TABLE IF NOT EXISTS approvals (
+            id TEXT PRIMARY KEY, team_id TEXT NOT NULL, task_id TEXT, kind TEXT NOT NULL, action TEXT NOT NULL,
+            question TEXT NOT NULL, answer TEXT, approver TEXT, created_at TEXT NOT NULL)""",
     ],
     "postgres": [
         """CREATE TABLE IF NOT EXISTS tasks (
@@ -52,6 +55,9 @@ _SCHEMA = {
         """CREATE TABLE IF NOT EXISTS checkpoints (
             id TEXT PRIMARY KEY, cwd TEXT NOT NULL, data JSONB NOT NULL,
             created_at TIMESTAMPTZ NOT NULL, consumed_by TEXT)""",
+        """CREATE TABLE IF NOT EXISTS approvals (
+            id TEXT PRIMARY KEY, team_id TEXT NOT NULL, task_id TEXT, kind TEXT NOT NULL, action TEXT NOT NULL,
+            question TEXT NOT NULL, answer TEXT, approver TEXT, created_at TIMESTAMPTZ NOT NULL)""",
     ],
 }
 _INDEXES = [
@@ -165,6 +171,23 @@ class TaskStore:
             self.db.execute("UPDATE checkpoints SET consumed_by = %s WHERE id = %s", (task_id, cid))
         return Checkpoint.model_validate(load_json(rows[0][1])) if rows else None
 
+    # --- human approvals (PROJECT.md §10; §14 "human approval rate should fall") -------------------
+
+    def log_approval(self, team_id: str, task_id: str | None, kind: str, action: str, question: str,
+                     answer: str | None = None, approver: str | None = None) -> None:
+        from horizon.models import new_id
+
+        self.db.execute("INSERT INTO approvals (id, team_id, task_id, kind, action, question, answer, approver,"
+                        " created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (new_id("apr"), team_id, task_id, kind, action, question[:500], answer and answer[:500],
+                         approver, ts(self.db, now())))
+
+    def approvals(self, team_id: str) -> list[dict]:
+        rows = self.db.fetchall("SELECT task_id, kind, action, answer, approver, created_at FROM approvals"
+                                " WHERE team_id = %s ORDER BY created_at", (team_id,))
+        return [{"task_id": r[0], "kind": r[1], "action": r[2], "answer": r[3], "approver": r[4], "at": str(r[5])}
+                for r in rows]
+
     # --- invocation log --------------------------------------------------------
 
     def log_call(self, tool: str, task_id: str | None, ok: bool, error: str | None = None) -> None:
@@ -180,6 +203,7 @@ class TaskStore:
                 "SELECT tool, COUNT(*), SUM(CASE WHEN ok THEN 1 ELSE 0 END) FROM tool_calls GROUP BY tool")
         }
         tasks = dict(self.db.fetchall("SELECT status, COUNT(*) FROM tasks GROUP BY status"))
+        approvals = dict(self.db.fetchall("SELECT action, COUNT(*) FROM approvals GROUP BY action"))
         captured, consumed = self.db.fetchone(
             "SELECT COUNT(*), SUM(CASE WHEN consumed_by IS NOT NULL THEN 1 ELSE 0 END) FROM test_captures")
         consumed = int(consumed or 0)
@@ -195,4 +219,7 @@ class TaskStore:
             # Phase 3: checkpoints captured by the PreToolUse hook, and how many a recall attached to a task.
             "checkpoints_captured": int(ckpts),
             "checkpoints_attached": int(claimed or 0),
+            # Phase 7: human approvals asked through MCP, by what the human did (accept / decline / cancel /
+            # unsupported when the client can't ask). §14: this rate should fall over time.
+            "approvals": {k: int(v) for k, v in approvals.items()},
         }

@@ -16,6 +16,11 @@ An MCP server that gives coding agents task state and outcome-learning memory. S
 
 **Phase 4 — decision layer** (`src/horizon/decision/`): the `evaluate_options` tool scores the host's options for a crucial choice. It uses Jev (or the small-LLM comparison scorer) plus the host's cost estimates, with weights and thresholds in code. See `docs/CLAUDE_CODE.md`.
 
+**Phase 7 — inspection, approvals, accounts:**
+- **Inspection tools:** `explain_decision`, `show_memories`, `delete_memory` and `clear_fear`.
+- **Human approvals** through MCP user-input requests, for high-stakes ties, escalations, deleting a memory and clearing a fear.
+- **The hosted server** (`horizon serve --transport http`): team API keys and metered credits for MCP at `/mcp`, and an account page at `/` for keys, credits, usage and savings per session.
+
 **Phase 6 — memrouter learning** (`src/horizon/memrouter/`):
 - **learning:** links learnt from surprise (Hebbian), spaced-repetition decay and pruning;
 - **recall:** 2-hop spreading activation, then the Jev attention filter within a token budget;
@@ -31,7 +36,7 @@ An MCP server that gives coding agents task state and outcome-learning memory. S
 ## Quick start
 
 ```bash
-uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision,export]"
+uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision,export,web]"
 .venv/bin/pytest                                   # SQLite tests
 HORIZON_TEST_PG_URL=postgresql://user:pass@localhost/db .venv/bin/pytest   # also Postgres + pgvector
 
