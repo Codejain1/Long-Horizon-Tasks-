@@ -147,6 +147,20 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - A real Sonnet session given a forced close call followed the whole protocol: it built multi-process stress-test spikes and submitted structured metrics (dbm lost 28/360 writes and was eliminated).
     - Three fixes came out of these runs: the spike location, a redaction false positive, and the pass-2 confidence gate (see `demo/reliability/RESULTS.md`).
 
+- **Session 9 — Phase 6: memrouter learning** (branch `claude/phase-6-memrouter-learning`, stacked on Phase 5).
+  - **Acceptance criteria (MEMROUTER.md §5–§9, build steps 2–7), all met with tests:**
+    1. **Surprise-based link learning:** `Δweight = lr × surprise × signalWeight`, × 0.5 when low-confidence. New semantic links start at 0.1.
+    2. **Spreading activation:** 2 hops, × 0.5 per hop, scaled by link weight.
+    3. **Jev attention filter** within the token budget.
+    4. **Spaced-repetition decay and pruning.**
+    5. **The sleep job:** replay, extract, merge, archive to `episodes_archive`, prune, refresh, Parquet export.
+    6. **Conditions and reconsolidation.**
+    7. **Fear memories:** created instantly, always surfaced, weakened visibly, cleared by a human only.
+    8. **Predictor trust** per source and task type.
+  - **Headline test:** a simulated agent repeats one decision where stale successes sit closest to the query. **Top-3 precision rises 0.00 → 0.33 → 0.67 → 1.00 by round 4 with learning, and stays at 0.00 for 11 rounds without it** (Phase 2 similarity-only memory). Both are asserted in `tests/test_learning.py`.
+  - **Live Jev as the attention filter:** out of 5 candidates it kept only the 2 relevant memories (what worked, and the warning), dropping three that shared "public REST api". It took 0.6 s.
+  - **Tests:** 328 pass on SQLite and on Postgres 14 + pgvector (19 new learning tests, 38 with both backends). One Postgres-only bug was fixed: pgvector returns `Vector` objects.
+
 ## In progress
 
 - Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
@@ -340,6 +354,33 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **JSONL, not Parquet, for now.** MEMROUTER §14 ties the Parquet export to the Phase 6 consolidation run.
 - **Redaction (Phase 2 bug found live):** the symbol-ratio rule needs at least 3 symbols, so labels like `dbm (stdlib)` survive.
 
+**Phase 6 decisions (defaults under the decision rule; these settle open question 15 and the mixed-operator part of 16)**
+- **Strength and stability are kept for every memory** (episodes too, not only lessons and strategies) in `memory_state`, so the same learning ranks all three kinds. Strength starts at 0.5 and stability at 1.
+- **Candidate score** = similarity × conditionMatch × scope × (0.2 + 0.8 × strength). The strength factor is bounded, so learning can reorder memories but never erase a highly similar one. (An unbounded base-level term swamped relevance in the owner's earlier memrouter experiments.)
+- **Credit assignment:** only recalled memories about the **option the host implemented** "fed" the decision and learn from its surprise. Other recalled memories had a usage opportunity and didn't help: strength − 0.02 / stability.
+- **"Helpful" (open question 15)** = surprise ≥ 0 **and** success ≥ 0.5. A helpful recall multiplies stability by 1.5 (capped at 20, so nothing is permanent).
+- **Strength change** = lr × signal × surprise, the same rule as links. A loss is divided by √stability, so proven memories decay slower.
+- **Hebbian co-success links** join the fed memories and the new episode. They start at the semantic weight (0.1) and move by the same Δ. Links with weight 0 or below never spread activation. Pruning happens in the sleep job.
+- **Spreading activation** traverses semantic, co-success and derived-from links in both directions, never `contradicts`. Memories reached only through links get the condition and scope factors too. Archived episodes drop out.
+- **Attention filter:** one Jev Noul per shortlisted memory ("would it help decide `situation` well?"), kept at ≥ 0.5 in descending order. Without Jev, or on failure, the activation order stands.
+- **Sleep job:**
+  - replays the last 1,000 episodes and clusters them by same option plus similarity ≥ 0.8;
+  - 3+ episodes at ≥ 80 % success become a strategy, and at ≤ 30 % a failure lesson; mixed clusters are left to reconsolidation;
+  - conditions = those shared by every episode in the cluster;
+  - merges into an existing lesson at similarity ≥ 0.85, keeps the newest 3 evidence episodes in retrieval and archives the rest;
+  - runs inline every 200 episodes (failure-isolated), or from `horizon consolidate` or cron.
+- **Reconsolidation:** a contradicting outcome on a recalled lesson or strategy about the same option looks for a condition that every supporting episode shares and the new one doesn't:
+  - for numbers, the bound becomes `<=` the maximum or `>=` the minimum;
+  - for categories, it becomes `=` the shared value.
+  - With no such condition, contradictions are counted, and at 2 the lesson's strength halves and it gets a `contradicts` link.
+- **Fear lessons:**
+  - created at strength 1.0 and maximum stability;
+  - surfaced when similarity ≥ 0.5 and conditions don't rule them out, even beyond the token budget or the attention filter's choice;
+  - a success of ≥ 0.8 with the same option under matching conditions multiplies strength by 0.7 and records it;
+  - cleared only through `horizon clear-fear --by <name>`, a CLI a human runs. The MCP `clear_fear` tool is Phase 7.
+- **Predictor trust:** after every episode with a prediction, per source and `task_type` (a condition; default "general"): calibration (mean predicted − mean actual), accuracy (1 − mean absolute error) and Brier score. When memory's history stood in for a missing prediction, memory is the source scored.
+- **Parquet** needs the new `[export]` extra (pyarrow). One flat row per episode, archived ones included, plus the full JSON.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -454,9 +495,16 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 42. **Possible high-stakes false positive:** "Celery with Redis vs RQ vs APScheduler" scored as high stakes. [Only matters on a second tie (then a human is asked). Watch it in the decision log.]
 43. **Spikes cost the host's tokens and time** (about 6 extra tool calls per option in the live runs). [The plan caps each spike at `HORIZON_SPIKE_BUDGET_MINUTES` (10), static checks can skip a spike, and memory reuse avoids repeats.]
 
+### Raised in Phase 6 (the default used is in brackets)
+
+44. **The headline improvement comes from one constructed scenario.** The owner's earlier memrouter experiments (open question 1: `~/Desktop/memrouter`) found that on real data, scoped walls plus a shared schema tier beat activation-based routing, and that the working-set cap did most of the work. They also found bugs that only a live use log exposed. [Built to spec, with a bounded strength factor. Next evidence: repeated real benchmark runs (§15) and a comparison with a standard memory layer such as mem0.]
+45. **Predictor trust is tracked but doesn't yet change scoring.** [Reported in `horizon stats` and the consolidation report. Shrinking a poorly calibrated source's predictions needs samples first.]
+46. **Past spike results aren't yet part of the recall slice** (§6 step 6 lists them). [They're used where they matter, in the decision layer's memory lookup (Phase 5).]
+
 ## Next step
 
 1. **Owner:** to use Jev in your own projects, set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev` in the environment Claude Code starts from. Optionally set `HORIZON_SCORER=llm` with Claude API credentials to run the Jev-vs-small-LLM comparison (open question 39).
 2. Review the Phase 4 branch and open its PR when ready (the owner asked for PRs in batches).
-3. Phase 5 is on `claude/phase-5-consequences`. Next is **Phase 6: memrouter learning** (surprise-based links, spreading activation, the Jev attention filter, decay, consolidation, fear memories, predictor trust). Open questions 15–16 (decay maths, condition matching) are relevant there.
+3. Phases 5 and 6 are in one PR stacked on the Phase 4 branch. **Merge Phase 4 into `main` first, then retarget and merge the Phase 5–6 PR.** Next is **Phase 7**: the inspection tools (`explain_decision`, `show_memories`, `delete_memory`, `clear_fear` over MCP), approvals, and the key/credits web page.
+4. Schedule `horizon consolidate` nightly where Horizon runs (cron) if 200-episode batches are too infrequent.
 4. When credits and keys exist, run the Phase 1 real benchmark (smoke run first).

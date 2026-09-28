@@ -94,6 +94,28 @@ Every decision is logged as one versioned record (`schema: "horizon.decision"`, 
 | `HORIZON_JEV_MODEL` / `HORIZON_LLM_SCORER_MODEL` | `jev-latest` / `claude-haiku-4-5` | |
 | `HORIZON_DECISION_WEIGHTS` | success 0.30, compatibility 0.20, architecture_fit 0.20, cost_usd 0.15, tokens 0.10, latency_ms 0.05 | JSON. Renormalised over the dimensions available. |
 
+## Memory that learns (`MEMROUTER.md`, Phase 6)
+
+- **Recall** (`recall_context`):
+  - Candidates are episodes, lessons and strategies, ranked by similarity × condition match × scope × strength.
+  - Activation spreads two hops through learned links, and the top 25 are shortlisted.
+  - Jev (when `HORIZON_SCORER=jev`) keeps the memories it judges relevant, within the token budget.
+  - **Fear lessons always surface** when their conditions don't rule them out.
+  - Each item carries its `kind`, `strength`, `evidence` and `activation`.
+- **Learning** (`record_outcome`): the memories about the option the host implemented learn from the outcome's surprise (lr × surprise × signal weight):
+  - their links to each other and to the new episode change;
+  - their strength moves the same way;
+  - a helpful recall also grows their stability, so later decay is slower;
+  - recalled memories about other options lose a little strength.
+- **Sleep job:** runs every `HORIZON_CONSOLIDATION_EVERY` episodes (200), or with `horizon consolidate` (for example, nightly from cron). It:
+  - turns 3+ agreeing episodes into a strategy (≥ 80 % success) or a lesson (≤ 30 %), and merges duplicates;
+  - archives older evidence to `episodes_archive` (never deleted);
+  - prunes links below 0.05;
+  - writes a Parquet export of all episodes to `HORIZON_EXPORT_DIR` (needs the `[export]` extra).
+- **Reconsolidation:** a contradicted lesson first gets narrower conditions (e.g. `rps <= 3000`). It is weakened and linked `contradicts` only when same-condition contradictions repeat.
+- **Fear memories:** a `severity: "severe"` outcome creates one at once. Contrary evidence weakens it visibly. Only a human clears it: `horizon clear-fear <lesson_id> --by <name>`.
+- **Predictor trust:** calibration, accuracy and Brier score per prediction source and task type (a `task_type` condition), in `horizon stats`.
+
 ## Rollback rules (`PROJECT.md` §8)
 
 **Baseline first (`PROJECT.md` §9).** After `start_task`, the host runs the full test suite once, before any edit. The PostToolUse hook captures the failing test ids. The first `recall_context` (or a `record_outcome` made before it) takes those runs as the task's **baseline**. Every later outcome is judged against it, and the result is reported in `test_judgement`:

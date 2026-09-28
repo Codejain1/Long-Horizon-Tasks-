@@ -89,13 +89,14 @@ to restore the last good checkpoint (action "rollback": restore, then recall_con
 that the retry limit is reached (action "escalate": restore, stop and ask the user)."""
 
 
+def build_memrouter(settings: Settings, attention=None) -> MemRouter:
+    store = EpisodeStore(connect(settings.db_url), settings.embedding_dim)
+    return MemRouter(store, make_embedder(settings.embedder, settings.embedding_dim), settings, attention=attention)
+
+
 def build_platform(settings: Settings, cwd: str | None = None) -> Platform:
     """Task state and memrouter get separate connections so one failing can't block the other."""
     tasks = TaskStore(connect(settings.db_url))
-
-    def memrouter() -> MemRouter:
-        store = EpisodeStore(connect(settings.db_url), settings.embedding_dim)
-        return MemRouter(store, make_embedder(settings.embedder, settings.embedding_dim), settings)
 
     scorers: dict = {}
 
@@ -103,6 +104,9 @@ def build_platform(settings: Settings, cwd: str | None = None) -> Platform:
         if "s" not in scorers:  # built on first use; a failure (e.g. no API key) is retried next time
             scorers["s"] = make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)
         return scorers["s"]
+
+    def memrouter() -> MemRouter:
+        return build_memrouter(settings, attention=scorer)  # the scorer is also the attention filter (§6 step 5)
 
     return Platform(settings, tasks, memrouter, cwd=cwd, scorer_factory=scorer)
 

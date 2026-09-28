@@ -118,10 +118,39 @@ def episode_text(situation: str, conditions: list[Condition]) -> str:
     return "\n".join(parts)
 
 
-class MemoryItem(BaseModel):
-    """One recalled memory, as returned to the host."""
+class TrackRecord(BaseModel):
+    successes: int = 0
+    failures: int = 0
+    human_weighted: float = 0.0  # successes minus failures, human signals counted double
 
-    episode_id: str
+
+class Lesson(BaseModel):
+    """A lesson ("what is true"), a strategy ("what works") or a fear lesson (MEMROUTER.md §3, §4, §9).
+
+    Strength and stability live in the graph's memory_state, shared with episodes."""
+
+    id: str = Field(default_factory=lambda: new_id("les"))
+    scope: Scope
+    kind: Literal["lesson", "strategy"] = "lesson"
+    statement: str
+    situation: str  # the decision point it is about (embedded for retrieval)
+    option: str  # the option it is about
+    conditions: list[Condition] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)  # episode ids
+    track_record: TrackRecord = Field(default_factory=TrackRecord)
+    is_fear: bool = False
+    cleared_by: str | None = None  # fear lessons are cleared by a human only (§9)
+    contradictions: int = 0  # contradicting outcomes with the same conditions (§8)
+    refinements: list[str] = Field(default_factory=list)  # how reconsolidation narrowed its conditions
+    created_at: datetime = Field(default_factory=now)
+    updated_at: datetime = Field(default_factory=now)
+
+
+class MemoryItem(BaseModel):
+    """One recalled memory, as returned to the host (MEMROUTER.md §6 step 6)."""
+
+    episode_id: str  # the memory's id: an episode, lesson or strategy
+    kind: Literal["episode", "lesson", "strategy", "fear"] = "episode"
     situation: str
     chosen: str
     outcome: str
@@ -131,6 +160,9 @@ class MemoryItem(BaseModel):
     conditions: list[Condition] = Field(default_factory=list)
     severity: Severity = "normal"
     recorded_at: datetime
+    strength: float | None = None  # evidence strength (§6 step 6)
+    evidence: int | None = None  # episodes behind a lesson or strategy
+    activation: float | None = None  # after spreading activation (§6 step 3)
 
 
 class ProgressEntry(BaseModel):

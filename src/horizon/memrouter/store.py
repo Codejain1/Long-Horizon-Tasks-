@@ -57,8 +57,37 @@ class EpisodeStore:
         )
 
     def get(self, episode_id: str, team_id: str) -> Episode | None:
-        row = self.db.fetchone("SELECT data FROM episodes WHERE id = %s AND team_id = %s", (episode_id, team_id))
-        return Episode.model_validate(load_json(row[0])) if row else None
+        """Also finds archived episodes: evidence references stay valid (MEMROUTER.md §7)."""
+        for table in ("episodes", "episodes_archive"):
+            try:
+                row = self.db.fetchone(f"SELECT data FROM {table} WHERE id = %s AND team_id = %s", (episode_id, team_id))
+            except Exception:  # the archive table exists once the graph is set up
+                row = None
+            if row:
+                return Episode.model_validate(load_json(row[0]))
+        return None
+
+    def get_many(self, ids: list[str], team_id: str) -> dict[str, Episode]:
+        if not ids:
+            return {}
+        marks = ", ".join(["%s"] * len(ids))
+        rows = self.db.fetchall(f"SELECT data FROM episodes WHERE team_id = %s AND id IN ({marks})",
+                                (team_id, *ids))
+        return {e.id: e for e in (Episode.model_validate(load_json(r[0])) for r in rows)}
+
+    def recent(self, team_id: str, limit: int) -> list[Episode]:
+        rows = self.db.fetchall("SELECT data FROM episodes WHERE team_id = %s ORDER BY created_at DESC LIMIT %s",
+                                (team_id, limit))
+        return [Episode.model_validate(load_json(r[0])) for r in rows]
+
+    def vectors(self, ids: list[str]) -> dict[str, np.ndarray]:
+        if not ids:
+            return {}
+        marks = ", ".join(["%s"] * len(ids))
+        rows = self.db.fetchall(f"SELECT id, embedding FROM episodes WHERE id IN ({marks})", tuple(ids))
+        if self.db.kind == "postgres":
+            return {i: np.asarray(v.to_numpy() if hasattr(v, "to_numpy") else v, dtype=np.float32) for i, v in rows}
+        return {i: np.frombuffer(v, dtype=np.float32) for i, v in rows}
 
     def search(
         self, team_id: str, vector: np.ndarray, model: str, k: int, project_id: str | None = None
