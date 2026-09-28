@@ -8,3 +8,4 @@ build/
 .horizon/
 *.db
 bench/runs/
+.env

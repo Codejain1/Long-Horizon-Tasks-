@@ -134,3 +134,44 @@ def test_cli_hook_subprocess(settings, project_dir, tmp_path):
                           timeout=60)
     assert proc.returncode == 0
     assert "start_task" in json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_stored_test_commands_carry_no_inline_code():
+    from horizon.hooks import command_summary
+
+    assert command_summary('python -c "import os; os.remove(p)" && pytest -q') == 'python -c "…" && pytest -q'
+    assert command_summary("python - <<EOF\nimport secret_module\nEOF") == "python - <<EOF"
+    assert command_summary("pytest -q tests/test_api.py") == "pytest -q tests/test_api.py"
+
+
+def test_hosted_hooks_send_parsed_facts_only(monkeypatch, tmp_path):
+    """Hosted mode: no test output, no code and no paths leave the machine; the project is a hash."""
+    from horizon.hooks import Remote, project_key
+
+    sent = []
+    monkeypatch.setattr(Remote, "_post", lambda self, op, body: sent.append((op, body)) or None)
+    monkeypatch.setenv("HORIZON_API_KEY", "hzn_test")
+    output = "FAILED tests/test_a.py::test_x - AssertionError: secret_value=42\n==== 1 failed, 3 passed in 0.1s ===="
+    payload = {"session_id": "s1", "cwd": str(tmp_path), "tool_name": "Bash",
+               "tool_input": {"command": 'python -c "import app; app.run()" && pytest -q'},
+               "tool_response": {"stdout": output, "stderr": "Traceback ... private"}}
+    run_hook("post-tool-use", json.dumps(payload), remote="https://horizon.example.com")
+    [(op, body)] = sent
+    assert op == "capture" and body["project"] == project_key(str(tmp_path)) and body["project"].startswith("prj_")
+    assert body["capture"] == {"command": 'python -c "…" && pytest -q', "runner": "pytest", "passed": 3,
+                               "failed": 1, "failing": ["tests/test_a.py::test_x"]}
+    wire = json.dumps(sent)
+    assert "secret_value" not in wire and "Traceback" not in wire and str(tmp_path) not in wire
+
+
+def test_hosted_hook_api_needs_a_team_key(settings):
+    import dataclasses
+
+    from fastapi.testclient import TestClient
+
+    from horizon.server import http_app
+
+    api = TestClient(http_app(dataclasses.replace(settings)))
+    assert api.post("/api/hooks/session-start", json={"project": "prj_x"}).status_code == 401
+    assert api.post("/api/hooks/session-start", json={"project": "prj_x"},
+                    headers={"Authorization": "Bearer hzn_nope"}).status_code == 401

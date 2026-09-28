@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("hook", help="Run a Claude Code hook (reads the hook JSON on stdin).")
     p.add_argument("name", choices=["session-start", "pre-tool-use", "post-tool-use", "stop"])
+    p.add_argument("--remote", help="Hosted server URL: send parsed facts there (key in HORIZON_API_KEY).")
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
@@ -41,9 +42,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="-", help="Output file (default: stdout).")
     p.add_argument("--with-outcomes-only", action="store_true", help="Only decisions with a recorded outcome.")
 
+    p = sub.add_parser("install-codex", help="Add the MCP server, hooks and AGENTS.md snippet for Codex.")
+    p.add_argument("--dir", default=".", help="Project directory (default: current).")
+    p.add_argument("--no-agents-md", action="store_true", help="Don't touch AGENTS.md.")
+    p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
+
     p = sub.add_parser("install-claude-code", help="Add the MCP server, hooks and CLAUDE.md snippet to a project.")
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
+    p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
 
     args = parser.parse_args(argv)
     from horizon.config import Settings
@@ -55,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "hook":
         from horizon.hooks import run_hook
 
-        out = run_hook(args.name, sys.stdin.read())
+        out = run_hook(args.name, sys.stdin.read(), remote=args.remote)
         if out:
             print(out)
     elif args.cmd == "stats":
@@ -72,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
                                "links": graph.link_count(settings.team_id),
                                "archived_episodes": graph.archived_count(settings.team_id),
                                "predictor_trust": graph.predictor_stats(settings.team_id)}
+            from horizon.decision.log import DecisionLog
+
+            stats["decisions"] = DecisionLog(db).stats(settings.team_id)
             print(json.dumps(stats, indent=2))
     elif args.cmd in ("create-team", "add-credits"):
         from horizon.accounts import FREE_STARTER_CREDITS, Accounts
@@ -115,10 +125,16 @@ def main(argv: list[str] | None = None) -> int:
             if out is not sys.stdout:
                 out.close()
                 print(f"Wrote {n} decisions to {args.out}")
+    elif args.cmd == "install-codex":
+        from horizon.install import install_codex
+
+        changed = install_codex(Path(args.dir), agents_md=not args.no_agents_md, hosted=args.hosted)
+        print("Updated: " + ", ".join(changed))
+        print("Then in Codex: trust the project and review its hooks with /hooks (Codex asks once).")
     elif args.cmd == "install-claude-code":
         from horizon.install import install
 
-        changed = install(Path(args.dir), claude_md=not args.no_claude_md)
+        changed = install(Path(args.dir), claude_md=not args.no_claude_md, hosted=args.hosted)
         print("Updated: " + ", ".join(changed))
     return 0
 

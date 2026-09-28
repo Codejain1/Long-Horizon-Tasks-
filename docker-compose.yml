@@ -1,27 +1,51 @@
-# Local stack: Postgres + pgvector and the Horizon MCP server over HTTP.
-#   HORIZON_DEV_API_KEY=change-me docker compose up --build
+# Horizon hosted stack: Postgres + pgvector, the server, and the nightly sleep job. See docs/HOSTING.md.
+#   cp .env.example .env   # set POSTGRES_PASSWORD and HORIZON_STATE_SECRET
+#   docker compose up -d --build
+#   docker compose exec horizon horizon create-team "My team"   # prints the first API key
+x-horizon-env: &horizon-env
+  HORIZON_DB_URL: postgresql://horizon:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/horizon
+  HORIZON_STATE_SECRET: ${HORIZON_STATE_SECRET:?set HORIZON_STATE_SECRET in .env}
+  HORIZON_SCORER: ${HORIZON_SCORER:-none}
+  TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  HORIZON_DEV_API_KEY: ${HORIZON_DEV_API_KEY:-}
+  HORIZON_CONSOLIDATION_EVERY: "0"  # the sleep service below runs it nightly instead
+  FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}  # "*" behind your TLS proxy, so cookies are Secure
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: horizon
-      POSTGRES_PASSWORD: horizon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: horizon
-    ports: ["5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U horizon"]
       interval: 2s
       retries: 30
+    restart: unless-stopped
+    # Not published: only the other services reach it.
 
   horizon:
     build: .
-    environment:
-      HORIZON_DB_URL: postgresql://horizon:horizon@postgres:5432/horizon
-      HORIZON_DEV_API_KEY: ${HORIZON_DEV_API_KEY:?set HORIZON_DEV_API_KEY}
-    ports: ["8000:8000"]
+    environment: *horizon-env
+    ports: ["${HORIZON_PORT:-8000}:8000"]
+    volumes: [exports:/data/exports]
     depends_on:
       postgres: {condition: service_healthy}
+    restart: unless-stopped
+
+  sleep:
+    # MEMROUTER.md §7: consolidation, archiving, link pruning and the Parquet export, once a day.
+    build: .
+    environment: *horizon-env
+    volumes: [exports:/data/exports]
+    command: ["sh", "-c", "while true; do horizon consolidate > /dev/null && echo \"consolidated $$(date -u)\"; sleep 86400; done"]
+    depends_on:
+      horizon: {condition: service_healthy}
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  exports:

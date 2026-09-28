@@ -35,8 +35,9 @@ def db_url(request, tmp_path):
 
 
 @pytest.fixture
-def settings(db_url):
-    return dataclasses.replace(Settings(), db_url=db_url, embedder="hash")
+def settings(db_url, tmp_path):
+    # Exports go to the test's temp dir: the default (~/.horizon/exports) is the user's real one.
+    return dataclasses.replace(Settings(), db_url=db_url, embedder="hash", export_dir=str(tmp_path / "exports"))
 
 
 @pytest.fixture

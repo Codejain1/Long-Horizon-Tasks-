@@ -1,6 +1,6 @@
 [project]
 name = "long-horizon-platform"
-version = "0.2.0"
+version = "1.0.0rc1"
 description = "MCP server for long-horizon agents: task state and outcome-learning memory (memrouter)."
 readme = "README.md"
 requires-python = ">=3.12"

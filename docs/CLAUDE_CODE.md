@@ -1,9 +1,11 @@
 # Connecting Horizon to Claude Code
 
+> Using Codex? See [CODEX.md](CODEX.md): same hooks and tools, a different installer. Running a shared server? See [HOSTING.md](HOSTING.md) and `horizon install-claude-code --hosted URL`.
+
 Horizon is an MCP server. Claude Code decides when to call it, so reliable calling comes from three layers (`PROJECT.md` §11):
 
 1. **Directive tool descriptions**: each tool says exactly when it must be called.
-2. **Instruction snippet** in the project's `CLAUDE.md` (source: `src/horizon/data/CLAUDE.snippet.md`).
+2. **Instruction snippet** in the project's `CLAUDE.md` (source: `src/horizon/data/agent.snippet.md`, shared with Codex's `AGENTS.md`).
 3. **Hooks** that run on their own, without the model deciding to call them:
 
 | Hook | Event | What it does |

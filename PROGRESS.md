@@ -174,6 +174,22 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Tests:** 17 new Phase 7 tests (both MCP protocol paths, forged-state rejection, metered hosted MCP over real HTTP, the web page and API, the CLI).
   - **Real Claude Code check** (Sonnet 5, headless): it used `show_memories` correctly and refused on its own to clear a recent fear lesson without the user's confirmation. When told "I confirm, my name is Kartik", its `clear_fear` call got a user-input request that headless mode cancelled, so nothing was cleared: an agent can't approve on the user's behalf.
 
+- **Session 11 — Phase 8: launch preparation** (branch `claude/phase-8-launch`, from `main`, which has Phases 1–7; PR #8 merged).
+  - **README** rewritten around a measured setup of under 5 minutes (≈ 1 min cold from a fresh clone, plus the host's one-time approval).
+  - **Codex:**
+    - `horizon install-codex` writes `.codex/config.toml` (tools pre-approved, env passthrough), `.codex/hooks.json` (Claude-format hooks work unchanged) and the AGENTS.md snippet; `docs/CODEX.md` documents it;
+    - **verified in real `codex exec` sessions**: tools, hooks, baseline and checkpoints all worked;
+    - the runs found and fixed two issues: MCP calls needed pre-approval, and the server used a different database until `env_vars` was added.
+  - **One snippet for both hosts** (`agent.snippet.md`, into CLAUDE.md and AGENTS.md), now covering the inspection tools.
+  - **Data and privacy policy:** `docs/PRIVACY.md`, served at `/privacy` (a test keeps the two copies identical). Every storage path was reviewed (below).
+  - **Docker:** all hosted extras, a non-root user, the embedding model prefetched, `/healthz` with a Docker HEALTHCHECK, a nightly `sleep` service, Postgres not published, `.env.example`, and `docs/HOSTING.md`. The image build is unverified (no Docker here); the same steps passed in a clean Python 3.12 environment.
+  - **Hosted hook bridge (a launch blocker the end-to-end test found):**
+    - Before this, hooks wrote straight to the database, which can't work against a hosted server.
+    - Now, with `--hosted URL`: hooks parse locally and send only facts to `/api/hooks/*` with the team key, and the project is a hashed key sent in an MCP header. `install-* --hosted` writes both host configs.
+  - **End-to-end test** (`tests/test_e2e.py`): the whole flow against the hosted server over real HTTP, from team creation to the account page's savings.
+  - **Tests:** 367 pass on SQLite and Postgres (8 new). A test-isolation leak was fixed: the sleep job's exports had been written to the real `~/.horizon/exports` (29 test files). Those files, and one demo task a Codex run put in `~/.horizon/horizon.db`, were confirmed as artifacts and removed.
+  - **Launch checklist:** `docs/LAUNCH.md` separates what's ready from what waits on the owner.
+
 ## In progress
 
 - Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
@@ -406,6 +422,33 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Savings per session are counted events only**, with no invented token savings. "Tokens saved" is reported only where past spikes recorded their token cost. With 2026-07-28 (stateless HTTP, no `mcp-session-id`), a Horizon task stands in for the session.
 - **The web page is server-rendered HTML** with no JavaScript and a dark-mode style. It needs the `[web]` extra (FastAPI, python-multipart). The MCP app is mounted under it, and its lifespan runs the MCP session manager.
 
+**Phase 8 review against PROJECT.md: what was missing or inconsistent, and what was done**
+
+| § | Finding | Resolution |
+|---|---|---|
+| 11 | No AGENTS.md snippet or Codex install | `install-codex`, the shared snippet, `docs/CODEX.md`; verified with real Codex |
+| 11 | The instructions and snippet didn't mention the inspection tools | Added (item 7 of the snippet; server instructions) |
+| 3, 9, 11 | **Hooks couldn't work against a hosted server** (direct database writes; the server can't know the client's project dir) | The hosted hook bridge (`--remote`, `/api/hooks/*`, hashed `X-Horizon-Project`), covered by the end-to-end test |
+| 12 | The hook stored the raw test command (could hold inline code) | The first line only, with quoted strings elided (`command_summary`) |
+| 12 | The approval log stored raw question and answer text | Redacted |
+| 10, 12 | No public data policy page | `docs/PRIVACY.md`, and `/privacy` |
+| 14 | "Share of close calls settled from memory" wasn't reported | `horizon stats` → `decisions` (plus `host_followed_share`) |
+| 17 | Stale Docker setup | Rebuilt: extras, non-root, healthcheck, nightly sleep job, secrets from `.env` |
+| — | Tests wrote exports into the user's real home directory | The test settings now use a temp dir |
+| — | Demo: `tests/test_cache.py` broke collection for the whole suite | Added a `textkit/cache.py` stub |
+| 10 | Tracing tool (Langfuse) not integrated | **Open (50):** needs an account |
+| 13 (8) | Publishing the repo, benchmarks, write-up | **Owner** (`docs/LAUNCH.md`): public release is hard to reverse; benchmarks cost money |
+| 18 | The platform benchmark needs an MCP-capable agent (Claude Code headless, "later") | **Owner** decision (`docs/LAUNCH.md`) |
+
+**Phase 8 decisions (defaults under the decision rule)**
+- **Codex tool pre-approval:** `default_tools_approval_mode = "approve"` for Horizon only, the counterpart of Claude Code's `enabledMcpjsonServers`. Human-only actions still ask through MCP user input.
+- **Codex `env_vars` passthrough** lists names only (the database URL, team, embedder, scorer, export dir, state secret, scorer keys). No values go into the project's config file.
+- **Hosted hooks parse on the user's machine.** Only counts, failing test names, the elided command, commit ids and a hashed project key are sent. Restore commands say `git -C .` (no path). In Claude Code, the redacted 120-character prompt snippet for `/rewind` is still sent (disclosed in the policy).
+- **Project identity in hosted mode** = `prj_` + SHA-256(realpath)[:24], set by the installer as an MCP header and recomputed by each hook. It's never a path.
+- **Snippet file renamed** `agent.snippet.md` (one text for CLAUDE.md and AGENTS.md). The Claude-only `/rewind` line is phrased for both hosts.
+- **Version `1.0.0rc1`.** `v1.0.0` is tagged at launch, after the benchmark and the owner's go-ahead.
+- **The README states the repo is private until launch.** Making it public waits for the owner.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -532,10 +575,14 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 48. **Pricing, the free tier and payments** (§15 "credit pricing, free tier limits"). [Placeholder prices and 1,000 free credits; operator top-ups; no payment provider.]
 49. **Interactive approval UX is untested with a human in Claude Code.** Headless runs prove the safe path (cancel → nothing happens), but not how the choice or guidance form looks. [Try `evaluate_options` on a high-stakes tie in an interactive session.]
 
+### Raised in Phase 8 (the default used is in brackets)
+
+50. **Tracing (§10, "existing tracing tool, e.g. Langfuse").** [Not integrated: it needs a Langfuse account. The tool-call log, decision log and `horizon stats` cover internal debugging for now.]
+51. **Codex and MCP user-input requests are untested.** [Every fallback is safe; see `docs/CODEX.md`.]
+52. **Codex sometimes records an outcome for its baseline test run after the first recall.** Seen once: it's recorded as a low-success decision. [Harmless: the final outcome was judged correctly. A "no new test run since the baseline" guard could skip it.]
+
 ## Next step
 
-1. **Owner:** to use Jev in your own projects, set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev` in the environment Claude Code starts from. Optionally set `HORIZON_SCORER=llm` with Claude API credentials to run the Jev-vs-small-LLM comparison (open question 39).
-2. Review the Phase 4 branch and open its PR when ready (the owner asked for PRs in batches).
-3. Phase 7 is on `claude/phase-7-inspection-approvals` (from `main`). Next is **Phase 8: launch**: publish the repo, benchmarks and a write-up. That needs the real benchmark runs (API credits) and the owner's call on hosting (§17), pricing (48) and public release (hard to reverse).
-4. Schedule `horizon consolidate` nightly where Horizon runs (cron) if 200-episode batches are too infrequent.
-4. When credits and keys exist, run the Phase 1 real benchmark (smoke run first).
+1. **Owner:** review `docs/LAUNCH.md`. The launch waits on your go-ahead to make the repo public, API credits for the benchmark, a hosting provider and pricing.
+2. Build the Docker image once on a machine with Docker (`docker compose up --build`).
+3. Launch day: merge, tag `v1.0.0`, run and publish the benchmark, go public, deploy.

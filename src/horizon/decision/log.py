@@ -53,6 +53,26 @@ class DecisionLog:
         row = self.db.fetchone("SELECT data FROM decisions WHERE id = %s AND team_id = %s", (decision_id, team_id))
         return load_json(row[0]) if row else None
 
+    def stats(self, team_id: str) -> dict:
+        """PROJECT.md §14: decisions by outcome, and the share of close calls settled from memory."""
+        by_decision: dict[str, int] = {}
+        close = from_memory = followed = with_outcome = 0
+        for record in self.export(team_id):
+            final = record.get("final") or {}
+            kind = final.get("decision") or record["stage"]
+            by_decision[kind] = by_decision.get(kind, 0) + 1
+            passes = record["passes"]
+            if passes and passes[0]["result"].get("decision") == "close":
+                close += 1
+                from_memory += final.get("settled_by") == "memory"
+            if record["outcomes"]:
+                with_outcome += 1
+                followed += record["outcomes"][0].get("followed_decision", False)
+        return {"by_decision": by_decision, "close_calls": close,
+                "settled_from_memory_share": round(from_memory / close, 3) if close else None,
+                "with_outcome": with_outcome,
+                "host_followed_share": round(followed / with_outcome, 3) if with_outcome else None}
+
     def export(self, team_id: str | None = None, with_outcomes_only: bool = False) -> Iterator[dict]:
         sql, params = "SELECT data FROM decisions", ()
         if team_id is not None:
