@@ -148,7 +148,7 @@ class Platform:
                 raise ToolInputError("goal must not be empty; pass the user's request verbatim.")
             task = self.tasks.create(TaskState(
                 team_id=self.settings.team_id,
-                project_id=project_id,
+                project_id=(project_id or "").strip()[:100] or None,
                 goal=goal,  # verbatim (PROJECT.md §8); everything else is redacted
                 constraints=redact_list(constraints, MAX_NOTE) or [],
                 plan=redact_list(plan, MAX_NOTE) or [],

@@ -175,3 +175,32 @@ def test_hosted_hook_api_needs_a_team_key(settings):
     assert api.post("/api/hooks/session-start", json={"project": "prj_x"}).status_code == 401
     assert api.post("/api/hooks/session-start", json={"project": "prj_x"},
                     headers={"Authorization": "Bearer hzn_nope"}).status_code == 401
+
+
+def test_hosted_teams_with_the_same_project_path_stay_isolated(settings):
+    """Two teams' users with the same path hash to the same project key: their hooks must not mix."""
+    import dataclasses
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    from horizon.accounts import Accounts
+    from horizon.db import connect
+    from horizon.server import hosted_scope, http_app
+    from horizon.taskstate.store import TaskStore
+
+    app = http_app(dataclasses.replace(settings))
+    api = TestClient(app)
+    accounts = Accounts(connect(settings.db_url))
+    (a, key_a), (b, key_b) = accounts.create_team("A"), accounts.create_team("B")
+    cap = {"command": "pytest", "runner": "pytest", "passed": 1, "failed": 2, "failing": ["t::x", "t::y"]}
+    api.post("/api/hooks/capture", json={"project": "prj_same", "session_id": "s", "capture": cap},
+             headers={"Authorization": f"Bearer {key_a}"})
+    store = TaskStore(connect(settings.db_url))
+    assert len(store.pending_captures(hosted_scope(a, "prj_same"))) == 1
+    assert store.pending_captures(hosted_scope(b, "prj_same")) == []
+    ckpt = {"id": "ckpt_x", "cwd": hosted_scope(b, "prj_same"), "git": {"repo": ".", "commit": "abc"}}
+    api.post("/api/hooks/checkpoint", json={"checkpoint": ckpt}, headers={"Authorization": f"Bearer {key_a}"})
+    # A client naming another team's scope gets it re-scoped under its own team.
+    assert store.take_checkpoint(hosted_scope(b, "prj_same"), datetime(2000, 1, 1, tzinfo=UTC), "t") is None
+    assert store.take_checkpoint(f"{a}/{b}/prj_same", datetime(2000, 1, 1, tzinfo=UTC), "t") is not None

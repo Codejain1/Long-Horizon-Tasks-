@@ -209,10 +209,12 @@ Tokens saved are counted only where past spikes reported their token cost.</p>
         from horizon.hooks import Local
         from horizon.models import Checkpoint
 
+        from horizon.server import hosted_scope
+
         team = api_team(authorization)
         body = await request.json()
         local = Local(tasks, team)
-        project = str(body.get("project") or "")[:64]
+        project = hosted_scope(team, str(body.get("project") or ""))
         if op == "session-start":
             return local.session_start(project)
         if op == "capture":
@@ -220,14 +222,16 @@ Tokens saved are counted only where past spikes reported their token cost.</p>
             cap = {"command": str(cap["command"])[:200], "runner": str(cap["runner"])[:20],
                    "passed": int(cap["passed"]), "failed": int(cap["failed"]),
                    "failing": None if cap.get("failing") is None else [str(t)[:300] for t in cap["failing"][:500]]}
-            return local.capture(project, body.get("session_id"), cap)
+            return local.capture(project, str(body.get("session_id") or "")[:100] or None, cap)
         if op == "restore-checks":
             return local.restore_checks(project)
         if op == "checkpoint":
-            local.checkpoint(Checkpoint.model_validate(body["checkpoint"]))
+            ckpt = Checkpoint.model_validate(body["checkpoint"])
+            ckpt.cwd = hosted_scope(team, ckpt.cwd)  # a client can't put a checkpoint into another team's scope
+            local.checkpoint(ckpt)
             return None
         if op == "stop":
-            return local.stop(project, body.get("session_id"))
+            return local.stop(project, str(body.get("session_id") or "")[:100] or None)
         raise HTTPException(404, "unknown hook")
 
     # --- JSON API ------------------------------------------------------------------------

@@ -210,7 +210,7 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
         ctx: Context | None = None,
     ) -> dict[str, Any] | InputRequiredResult:
         return await gw.run(ctx, "start_task", lambda p: p.start_task(goal, constraints, plan, open_issues, project_id,
-                                                                      target_tests, cwd=gw.project(ctx)))
+                                                                      target_tests, cwd=gw.project_scope(ctx)))
 
     @server.tool(description=RECALL_CONTEXT)
     async def recall_context(
@@ -445,15 +445,17 @@ class Gateway:
     def __init__(self, platform_for, accounts: Accounts | None = None, dev_key: str | None = None):
         self.platform_for, self.accounts, self.dev_key = platform_for, accounts, dev_key
 
-    def project(self, ctx: Context | None) -> str | None:
-        """Hosted mode: the client's hashed project key (X-Horizon-Project), matched against its hooks."""
-        if self.accounts is None:
+    def project_scope(self, ctx: Context | None) -> str | None:
+        """Hosted mode: where this client's hooks report, `<team>/<hashed project key>` (X-Horizon-Project).
+        Scoped by team: two teams' users can have the same project path, so the same key."""
+        team = self.team(ctx)
+        if team is None:
             return None
         try:
             value = ctx.headers.get("x-horizon-project") if ctx is not None and ctx.headers else None
         except Exception:
             return None
-        return value[:64] if value and value.startswith("prj_") else None
+        return hosted_scope(team, value) if value and value.startswith("prj_") else None
 
     def team(self, ctx: Context | None) -> str | None:
         try:
@@ -527,6 +529,11 @@ class Gateway:
         except Exception:
             pass
         self.accounts.charge(team, tool, session_id=session, task_id=task_id, signals=signals)
+
+
+def hosted_scope(team: str, project: str) -> str:
+    """The project key hooks and tasks are matched on in hosted mode: never shared across teams."""
+    return f"{team}/{project[:64]}"
 
 
 def bearer_token(authorization: str | None, x_api_key: str | None = None) -> str:
