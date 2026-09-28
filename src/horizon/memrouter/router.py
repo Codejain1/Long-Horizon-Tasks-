@@ -399,6 +399,9 @@ class MemRouter:
             item.pop("activation")
             item["memory_id"] = item.pop("episode_id")
             item.update(stability=round(st.stability, 2), recalls=st.recalls, helpful_recalls=st.helpful,
+                        # MEMROUTER §11: why its strength is what it is (the last few logged changes)
+                        history=[{k: h[k] for k in ("field", "after", "reason", "at")}
+                                 for h in self.graph.weight_history(n.id)[-5:]],
                         provenance=(n.obj.provenance.model_dump(mode="json") if isinstance(n.obj, Episode)
                                     else {"evidence": n.obj.evidence[:10], "refinements": n.obj.refinements,
                                           "cleared_by": n.obj.cleared_by}))

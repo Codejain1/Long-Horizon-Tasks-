@@ -77,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "stats":
         from horizon.db import connected
         from horizon.memrouter.graph import Graph
+        from horizon.memrouter.store import EpisodeStore
         from horizon.taskstate.store import TaskStore
 
         settings = Settings.from_env()
@@ -87,7 +88,9 @@ def main(argv: list[str] | None = None) -> int:
                                "fear_lessons": len(graph.lessons(settings.team_id, fear_only=True)),
                                "links": graph.link_count(settings.team_id),
                                "archived_episodes": graph.archived_count(settings.team_id),
-                               "predictor_trust": graph.predictor_stats(settings.team_id)}
+                               "predictor_trust": graph.predictor_stats(settings.team_id),
+                               "removed": len(graph.removals(settings.team_id)),
+                               **EpisodeStore(db, settings.embedding_dim).context_tokens(settings.team_id)}
             from horizon.decision.log import DecisionLog
 
             stats["decisions"] = DecisionLog(db).stats(settings.team_id)

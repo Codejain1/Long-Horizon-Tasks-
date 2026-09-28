@@ -88,6 +88,7 @@ async def test_show_memories(settings, task_store, episode_store, project_dir):
         assert {"strategy", "fear", "episode"} <= kinds
         strategy = next(m for m in everything if m["kind"] == "strategy")
         assert strategy["evidence"] == 3 and "stability" in strategy and strategy["provenance"]["evidence"]
+        assert strategy["history"] and strategy["history"][0]["field"] in ("strength", "stability")
         fears = (await call(client, "show_memories", kinds=["fear"]))["memories"]
         assert len(fears) == 1 and fears[0]["severity"] == "severe"
         found = (await call(client, "show_memories", query="choose a code formatter"))["memories"]
