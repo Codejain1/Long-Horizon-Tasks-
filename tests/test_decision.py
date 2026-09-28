@@ -286,3 +286,17 @@ def test_after_evidence_a_large_lead_stands_despite_low_confidence(settings):
     assert r["decision"] == "clear_winner" and r["margin"] >= 2 * settings.clear_margin
     small = FakeScorer(**CLOSE, confidence=0.3, second={"success": (0.75, 0.6)})  # lead < 2x margin: still close
     assert decide(OPTS, small, settings, {})["decision"] == "close_call"
+
+
+def test_a_measured_scorer_bias_is_corrected_but_the_raw_prediction_is_recorded(settings, task_store, memrouter,
+                                                                                 project_dir):
+    for _ in range(20):  # Jev has been 0.3 too optimistic over 20 outcomes
+        memrouter.graph.update_predictor("local", "jev", "general", 0.8, 0.5)
+    platform = with_scorer(settings, task_store, memrouter, project_dir, FakeScorer())
+    task_id = platform.start_task("x")["task_id"]
+    r = platform.evaluate_options(task_id, "choose a database", OPTS)
+    assert r["calibration_bias"] == pytest.approx(0.3)
+    pg = next(o for o in r["options"] if o["label"] == "PostgreSQL")
+    assert pg["dimensions"]["success"] == pytest.approx(0.5) and pg["success_raw"] == 0.8
+    out = platform.record_outcome(task_id, "choose a database", "PostgreSQL", success=1.0)
+    assert memrouter.store.get(out["episode_id"], "local").predicted.success == 0.8  # raw, for trust

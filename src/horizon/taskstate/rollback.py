@@ -38,9 +38,13 @@ def checkpoint_for_decision(task: TaskState, recall_id: str | None) -> Checkpoin
 
 
 def apply_outcome(task: TaskState, *, failed: bool, chosen: str, reason: str,
-                  checkpoint: Checkpoint | None, max_attempts: int) -> dict | None:
-    """Update the retry state for one outcome. Returns the rollback or escalation for a failure."""
+                  checkpoint: Checkpoint | None, max_attempts: int, severe: bool = False) -> dict | None:
+    """Update the retry state for one outcome. Returns the rollback or escalation for a failure.
+
+    A severe outcome (data loss, security issue, destructive action, large unplanned spend) escalates to a
+    human at once, whatever the retry count: PROJECT.md §9 asks for a human when stakes are high."""
     task.restore_check = None
+    failed = failed or severe
     if not failed:
         task.attempts, task.failures, task.rollback_to = 0, [], None
         return None
@@ -56,7 +60,7 @@ def apply_outcome(task: TaskState, *, failed: bool, chosen: str, reason: str,
     restore = restore_steps(target)
     failures = [{"attempt": f.attempt, "chosen": f.chosen, "reason": f.reason} for f in task.failures]
 
-    if task.attempts >= max_attempts:
+    if task.attempts >= max_attempts or severe:
         task.status = "escalated"
         return {
             "action": "escalate",
@@ -64,8 +68,10 @@ def apply_outcome(task: TaskState, *, failed: bool, chosen: str, reason: str,
             "max_attempts": max_attempts,
             "failures": failures,
             "restore": restore,
-            "next": ("Retry limit reached: stop retrying. Restore the checkpoint, then show the user these "
-                     "failures and ask how to proceed. Pass their answer to recall_context as human_guidance."),
+            "severe": severe,
+            "next": (("A severe outcome: stop now. " if severe else "Retry limit reached: stop retrying. ") +
+                     "Restore the checkpoint, then show the user these failures and ask how to proceed. Pass "
+                     "their answer to recall_context as human_guidance."),
         }
     if target and target.git:
         task.restore_check = target.git.commit

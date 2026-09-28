@@ -343,3 +343,50 @@ def test_without_learning_retrieval_does_not_improve(settings, tmp_path):
     learned = simulate(router_with(settings, EpisodeStore(connect(f"sqlite:///{tmp_path / 'learn.db'}"),
                                                           settings.embedding_dim), consolidation_every=4), rounds=12)
     assert sum(learned[-4:]) > sum(static[-4:])
+
+
+# --- review pass: scope, spike results, audit, context tokens, purge ------------------------------
+
+def test_retrieval_prefers_task_then_project_and_can_wall_off_projects(settings, episode_store):
+    import dataclasses
+
+    mr = router_with(settings, episode_store, consolidation_every=0)
+    for project, task in (("other", "t9"), ("shop", "t2"), ("shop", "t1")):
+        mr.record(team_id=T, situation="choose a cache", chosen=f"{project}-{task}", actual=Actual(success=1.0),
+                  predicted=Predicted(success=0.5), project_id=project, task_id=task)
+    got = mr.recall(team_id=T, situation="choose a cache", project_id="shop", task_id="t1").memories
+    assert [m.chosen for m in got[:3]] == ["shop-t1", "shop-t2", "other-t9"]
+    walled = router_with(settings, episode_store, consolidation_every=0, other_project_factor=0.0)
+    assert "other-t9" not in [m.chosen for m in walled.recall(team_id=T, situation="choose a cache",
+                                                                project_id="shop").memories]
+
+
+def test_past_spike_results_join_the_slice(mr):
+    mr.record_spike(team_id=T, situation="choose a date parsing library", option="pendulum",
+                    result={"option": "pendulum", "spike": {"ran": True, "passed": False, "tests_failed": 3,
+                                                           "metrics": {"latency_ms": 9}}})
+    [spike] = [m for m in mr.recall(team_id=T, situation="choose a date parsing library").memories if m.kind == "spike"]
+    assert spike.chosen == "pendulum" and spike.success == 0.0 and "failed" in spike.outcome and "latency_ms" in spike.outcome
+
+
+def test_every_weight_change_is_logged_with_its_reason(mr):
+    seed = rec(mr, "choose an http client", "httpx", 1.0, 0.5)
+    rc = mr.recall(team_id=T, situation="choose an http client")
+    ep = rec(mr, "choose an http client", "httpx", 1.0, 0.6, recall_id=rc.recall_id)
+    history = mr.graph.weight_history(seed.id)
+    assert any(h["field"] == "strength" and h["after"] > 0.5 and ep.id in h["reason"] for h in history)
+    assert mr.store.context_tokens(T)["recalls"] == 1 and mr.store.context_tokens(T)["avg_context_tokens"] > 0
+
+
+def test_purge_erases_an_episode_everywhere(settings, episode_store, tmp_path):
+    mr = router_with(settings, episode_store, consolidation_every=0, export_dir=str(tmp_path))
+    eps = [rec(mr, "choose a migration tool", "alembic", 1.0, 0.7) for _ in range(4)]
+    mr.consolidate(T)  # a strategy with the episodes as evidence, the oldest archived
+    target = eps[0]
+    out = mr.purge(T, target.id, "erasure request", by="operator")
+    assert out["purged"] and out["lessons_updated"] == 1 and out["exports_to_rebuild"]
+    assert episode_store.get(target.id, T) is None and mr.graph.weight_history(target.id) == []
+    assert all(target.id not in les.evidence for les in mr.graph.lessons(T))
+    assert mr.graph.removals(T)[-1] == {**mr.graph.removals(T)[-1], "memory_id": target.id, "reason": "erasure request"}
+    with pytest.raises(ValueError):
+        mr.purge(T, target.id, "again", by="operator")

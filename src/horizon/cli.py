@@ -38,6 +38,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("lesson_id")
     p.add_argument("--by", required=True, help="Your name, recorded on the lesson.")
 
+    p = sub.add_parser("purge-memory", help="Operator only: erase one episode for good (e.g. a legal request).")
+    p.add_argument("episode_id")
+    p.add_argument("--reason", required=True)
+    p.add_argument("--by", required=True, help="Who authorised the erasure (recorded).")
+    p.add_argument("--yes", action="store_true", help="Confirm: this can't be undone.")
+
     p = sub.add_parser("export-decisions", help="Write the world-model decision log as JSON Lines.")
     p.add_argument("--out", default="-", help="Output file (default: stdout).")
     p.add_argument("--with-outcomes-only", action="store_true", help="Only decisions with a recorded outcome.")
@@ -100,6 +106,15 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
                 accounts.grant(args.team_id, args.credits, args.reason)
                 print(f"{args.team_id}: {accounts.balance(args.team_id)} credits")
+    elif args.cmd == "purge-memory":
+        if not args.yes:
+            print("This erases the episode for good and can't be undone. Re-run with --yes.", file=sys.stderr)
+            return 1
+        from horizon.server import build_memrouter
+
+        settings = Settings.from_env()
+        print(json.dumps(build_memrouter(settings).purge(settings.team_id, args.episode_id, args.reason, args.by),
+                         indent=2))
     elif args.cmd in ("consolidate", "clear-fear"):
         from horizon.server import build_memrouter
 

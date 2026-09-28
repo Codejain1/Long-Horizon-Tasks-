@@ -76,7 +76,7 @@ def consolidate(router, team_id: str) -> dict:
                 st = graph.states([existing.id])[existing.id]
                 st.strength = min(1.0, st.strength + 0.1)
                 st.stability = min(20.0, st.stability * 1.2)
-                graph.set_state(existing.id, team_id, st)
+                graph.set_state(existing.id, team_id, st, reason=f"sleep job merged {len(new)} new episodes")
                 report["merged"].append(existing.id)
             lesson = existing
         else:

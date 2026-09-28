@@ -56,7 +56,7 @@ class RecordResult:
 # Ranking factors for recall (MEMROUTER.md §6 step 2 and §10). Defaults; tune with data.
 CONDITION_MISMATCH = 0.25  # every shared condition contradicts
 CONDITION_UNKNOWN = 0.75  # no shared condition that can be compared
-OTHER_SCOPE = 0.85  # episode from another project in the team (narrowest scope is preferred)
+SAME_PROJECT = 0.95  # the same project, another task (the task's own memories rank highest)
 
 
 def _holds(value, op: str, target) -> bool | None:
@@ -123,7 +123,27 @@ MAX_STABILITY = 20.0  # proven memories decay very slowly but are never permanen
 STABILITY_GROWTH = 1.5  # each helpful recall slows future decay
 OPPORTUNITY_DECAY = 0.02  # recalled but not used: a small loss, divided by stability (§8 "usage opportunities")
 FEAR_SIMILARITY = 0.5  # fear lessons this similar (and not ruled out by conditions) always surface (§9)
+SPIKE_SIMILARITY = 0.5  # past spike results this similar join the slice (§6 step 6)
+SPIKES_IN_SLICE = 2
 CONTRADICTION_LIMIT = 2  # same-condition contradictions before a lesson is weakened (§8)
+
+
+def spike_item(past: dict, similarity: float) -> MemoryItem:
+    """A past spike as a memory: what was tried and measured when a similar decision was a close call."""
+    spike = (past["result"] or {}).get("spike") or {}
+    checks = (past["result"] or {}).get("static_checks") or []
+    failed_checks = [c["name"] for c in checks if c.get("passed") is False]
+    parts = ["spike " + ("passed" if spike.get("passed") else "failed" if spike.get("passed") is False else "not run")]
+    if spike.get("tests_passed") is not None or spike.get("tests_failed") is not None:
+        parts.append(f"tests {spike.get('tests_passed') or 0} passed, {spike.get('tests_failed') or 0} failed")
+    if spike.get("metrics"):
+        parts.append(", ".join(f"{k} {v}" for k, v in list(spike["metrics"].items())[:5]))
+    if failed_checks:
+        parts.append("failed checks: " + ", ".join(failed_checks[:3]))
+    ok = spike.get("passed") is True and not failed_checks
+    return MemoryItem(episode_id=past["id"], kind="spike", situation=past["situation"], chosen=past["option"],
+                      outcome="; ".join(parts), success=1.0 if ok else 0.0, surprise=0.0,
+                      similarity=round(similarity, 3), recorded_at=past["created_at"])
 
 
 def task_type(conditions: list[Condition]) -> str:
@@ -283,14 +303,16 @@ class MemRouter:
                     st.stability = min(MAX_STABILITY, st.stability * STABILITY_GROWTH)
             else:
                 st.strength -= OPPORTUNITY_DECAY / st.stability
-            self.graph.set_state(n.id, team_id, st)
+            self.graph.set_state(n.id, team_id, st, reason=f"{'fed' if n.id in fed_ids else 'unused in'} "
+                                                           f"{episode.id}, surprise {episode.surprise:+.2f}")
         # Hebbian co-success links among the memories that fed the decision and the new episode.
         members = [n.id for n in fed] + [episode.id]
         for i, a in enumerate(members):
             for b in members[i + 1:]:
                 w = self.graph.link_weight(a, b, "co-success")
                 w = self.settings.semantic_link_weight if w is None else w
-                self.graph.set_link(team_id, a, b, "co-success", w + delta)
+                self.graph.set_link(team_id, a, b, "co-success", w + delta,
+                                    reason=f"co-recalled for {episode.id}, surprise {episode.surprise:+.2f}")
         for n in fed:
             if n.kind in ("lesson", "strategy"):
                 self._reconsolidate(team_id, n.obj, episode)
@@ -331,7 +353,7 @@ class MemRouter:
                 continue  # different conditions: not contrary evidence
             st = self.graph.states([les.id])[les.id]
             st.strength *= 0.7
-            self.graph.set_state(les.id, team_id, st)
+            self.graph.set_state(les.id, team_id, st, reason=f"fear weakened by contrary evidence {episode.id}")
             les.refinements.append(f"weakened by contrary evidence {episode.id}")
             les.track_record.successes += 1
             self.graph.save_lesson(les)
@@ -346,7 +368,7 @@ class MemRouter:
         les.cleared_by = by_human
         les.refinements.append(f"cleared by {by_human}")
         self.graph.save_lesson(les)
-        self.graph.set_state(les.id, team_id, State(strength=0.1, stability=1.0))
+        self.graph.set_state(les.id, team_id, State(strength=0.1, stability=1.0), reason=f"fear cleared by {by_human}")
         return les
 
     # --- inspection (PROJECT.md §10: show, delete; MEMROUTER §11 provenance) ---------------------
@@ -405,6 +427,43 @@ class MemRouter:
         self.graph.log_removal(team_id, memory_id, les.kind, les.model_dump(mode="json"), reason, removed_by)
         return {"memory_id": memory_id, "kind": les.kind, "action": "deleted", "links_removed": links}
 
+    def purge(self, team_id: str, episode_id: str, reason: str, by: str) -> dict:
+        """Operator-only hard erasure of one episode (e.g. a legal request): the one exception to "episodes are
+        never deleted" (decision 5). Removes it from `episodes` and `episodes_archive` with its links, state and
+        weight history, drops it from lessons' evidence and from decision-log outcomes, and logs the purge
+        without content. Past Parquet/JSONL exports can't be edited here: they are listed for rebuilding."""
+        from pathlib import Path
+
+        from horizon.decision.log import DecisionLog
+
+        if self.store.get(episode_id, team_id) is None:
+            raise ValueError(f"No episode {episode_id!r} in this team.")
+        db = self.store.db
+        links = self.graph.unlink(episode_id)
+        for table in ("episodes", "episodes_archive"):
+            db.execute(f"DELETE FROM {table} WHERE id = %s AND team_id = %s", (episode_id, team_id))
+        db.execute("DELETE FROM memory_state WHERE id = %s", (episode_id,))
+        db.execute("DELETE FROM weight_log WHERE target = %s OR target LIKE %s OR target LIKE %s",
+                   (episode_id, f"{episode_id}|%", f"%|{episode_id}|%"))
+        lessons = 0
+        for les in self.graph.lessons(team_id):
+            if episode_id in les.evidence:
+                les.evidence.remove(episode_id)
+                self.graph.save_lesson(les)
+                lessons += 1
+        log_ = DecisionLog(db)
+        decisions = 0
+        for record in log_.export(team_id):
+            if any(o.get("episode_id") == episode_id for o in record["outcomes"]):
+                record["outcomes"] = [{"purged": True} if o.get("episode_id") == episode_id else o
+                                      for o in record["outcomes"]]
+                log_.save(record)
+                decisions += 1
+        self.graph.log_removal(team_id, episode_id, "episode", {"purged": True}, reason, by)
+        exports = sorted(str(p) for p in Path(self.settings.export_dir).glob(f"episodes-{team_id}-*.parquet"))
+        return {"episode_id": episode_id, "purged": True, "links_removed": links, "lessons_updated": lessons,
+                "decisions_updated": decisions, "exports_to_rebuild": exports}
+
     # --- reconsolidation (§8) ------------------------------------------------------------
 
     def _reconsolidate(self, team_id: str, les: Lesson, episode: Episode) -> None:
@@ -432,8 +491,8 @@ class MemRouter:
         if les.contradictions >= CONTRADICTION_LIMIT:
             st = self.graph.states([les.id])[les.id]
             st.strength *= 0.5
-            self.graph.set_state(les.id, team_id, st)
-            self.graph.set_link(team_id, episode.id, les.id, "contradicts", 1.0)
+            self.graph.set_state(les.id, team_id, st, reason=f"contradicted again by {episode.id}")
+            self.graph.set_link(team_id, episode.id, les.id, "contradicts", 1.0, reason="repeated contradiction")
 
     def _distinguishing_condition(self, team_id: str, les: Lesson, episode: Episode) -> Condition | None:
         """A condition every supporting episode shares and the contradicting one doesn't, e.g. rps <= 5000."""
@@ -523,7 +582,15 @@ class MemRouter:
                 nodes[les.id] = Node(les.id, "fear" if les.is_fear and not les.cleared_by else les.kind, les, sim)
 
         def fit(n: Node) -> float:
-            scope = 1.0 if project_id is None or n.project_id in (None, project_id) else OTHER_SCOPE
+            """MEMROUTER §10: retrieval prefers the narrowest matching scope (task, then project, then team).
+            Project-less memories (shared lessons) count as in scope everywhere. `other_project_factor` 0 makes
+            projects hard walls (what the owner's earlier memrouter evaluation favoured on real data)."""
+            if isinstance(n.obj, Episode) and task_id and n.obj.scope.task_id == task_id:
+                scope = 1.0
+            elif project_id is None or n.project_id in (None, project_id):
+                scope = SAME_PROJECT if isinstance(n.obj, Episode) and task_id else 1.0
+            else:
+                scope = self.settings.other_project_factor
             return condition_match(conditions, n.conditions) * scope
 
         states = self.graph.states(list(nodes))
@@ -563,9 +630,20 @@ class MemRouter:
             items.append(item)
             used += cost
         truncated = truncated or len(items) < len(fears) + len(chosen)
+        # §6 step 6: past spike results for similar decisions, after the memories, within the same budget.
+        for past, sim in self.spikes.search(team_id, vector, model, SPIKES_IN_SLICE):
+            if sim < SPIKE_SIMILARITY:
+                continue
+            item = spike_item(past, sim)
+            cost = estimate_tokens(json.dumps(item.model_dump(mode="json")))
+            if len(items) >= self.settings.recall_max_items or used + cost > budget:
+                truncated = True
+                break
+            items.append(item)
+            used += cost
 
         recall_id = new_id("rc")
-        self.store.log_recall(recall_id, team_id, task_id, situation, [m.episode_id for m in items])
+        self.store.log_recall(recall_id, team_id, task_id, situation, [m.episode_id for m in items], tokens=used)
         return ContextSlice(recall_id=recall_id, memories=items, candidates=len(nodes), truncated=truncated,
                             filtered_by=filtered_by, fear_warnings=len(fears))
 

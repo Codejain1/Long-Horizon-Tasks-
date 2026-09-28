@@ -225,10 +225,14 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
                                                   description="Max tokens of memories to return.")] = None,
         human_guidance: Annotated[str | None, Field(description="The user's answer after an escalation; "
                                                                 "resumes the task.")] = None,
+        checkpoint_commit: Annotated[str | None, Field(description="Only if Horizon's hooks aren't installed: the "
+                                                                   "git commit (e.g. `git stash create` or HEAD) "
+                                                                   "to roll back to if this step fails.")] = None,
         ctx: Context | None = None,
     ) -> dict[str, Any] | InputRequiredResult:
         return await gw.run(ctx, "recall_context",
-                            lambda p: p.recall_context(task_id, situation, conditions, token_budget, human_guidance),
+                            lambda p: p.recall_context(task_id, situation, conditions, token_budget, human_guidance,
+                                                       checkpoint_commit),
                             signals=lambda r: {"fear_warnings": r.get("fear_warnings", 0)})
 
     @server.tool(description=EVALUATE_OPTIONS)
@@ -289,6 +293,8 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
         task_complete: Annotated[bool, Field(description="True when the whole task is done.")] = False,
         failure_reason: Annotated[str | None, Field(description="If tests failed: why, in one sentence.")] = None,
         plan: Annotated[list[str] | None, Field(description="Replaces the plan, if it changed.")] = None,
+        subagent: Annotated[str | None, Field(description="If a subagent did this work: its name, for "
+                                                          "provenance.")] = None,
         ctx: Context | None = None,
     ) -> dict[str, Any] | InputRequiredResult:
         return await gw.run(ctx, "record_outcome", lambda p: p.record_outcome(
@@ -300,7 +306,7 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
             tokens=tokens, cost_usd=cost_usd, latency_ms=latency_ms, signal_type=signal_type,
             severity=severity, recall_id=recall_id, progress_note=progress_note,
             open_issues=open_issues, task_complete=task_complete, failure_reason=failure_reason,
-            plan=plan, agent_id=client_agent(ctx),
+            plan=plan, agent_id=client_agent(ctx), subagent=subagent,
         ), signals=lambda r: {"rollback": (r.get("rollback") or {}).get("action")}, approval=ESCALATION)
 
     # --- inspection tools (PROJECT.md §10-11) --------------------------------------------

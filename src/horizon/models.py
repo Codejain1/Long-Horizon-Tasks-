@@ -150,7 +150,7 @@ class MemoryItem(BaseModel):
     """One recalled memory, as returned to the host (MEMROUTER.md §6 step 6)."""
 
     episode_id: str  # the memory's id: an episode, lesson or strategy
-    kind: Literal["episode", "lesson", "strategy", "fear"] = "episode"
+    kind: Literal["episode", "lesson", "strategy", "fear", "spike"] = "episode"
     situation: str
     chosen: str
     outcome: str

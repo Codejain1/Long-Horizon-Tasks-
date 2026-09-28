@@ -66,6 +66,10 @@ class Graph:
             f"""CREATE TABLE IF NOT EXISTS memory_removals (
                 id TEXT PRIMARY KEY, team_id TEXT NOT NULL, memory_id TEXT NOT NULL, kind TEXT NOT NULL,
                 snapshot {text} NOT NULL, reason TEXT NOT NULL, removed_by TEXT, created_at {stamp} NOT NULL)""",
+            f"""CREATE TABLE IF NOT EXISTS weight_log (
+                team_id TEXT NOT NULL, target TEXT NOT NULL, field TEXT NOT NULL, before_value {real},
+                after_value {real} NOT NULL, reason TEXT, created_at {stamp} NOT NULL)""",
+            "CREATE INDEX IF NOT EXISTS weight_log_target ON weight_log (target, created_at)",
             "CREATE INDEX IF NOT EXISTS lessons_team ON lessons (team_id, embedding_model)",
             "CREATE INDEX IF NOT EXISTS links_to ON links (to_id)",
         ):
@@ -135,12 +139,27 @@ class Graph:
         row = self.db.fetchone("SELECT weight FROM links WHERE from_id = %s AND to_id = %s AND kind = %s", (a, b, kind))
         return float(row[0]) if row else None
 
-    def set_link(self, team_id: str, a: str, b: str, kind: str, weight: float) -> None:
+    def _log(self, team_id: str, target: str, field: str, before: float | None, after: float, reason: str) -> None:
+        """MEMROUTER §11: every weight change is logged, so a memory's history can be traced."""
+        if before is not None and abs(before - after) < 1e-9:
+            return
+        self.db.execute("INSERT INTO weight_log (team_id, target, field, before_value, after_value, reason, created_at)"
+                        " VALUES (%s, %s, %s, %s, %s, %s, %s)", (team_id, target, field, before, after, reason[:200],
+                                                                   ts(self.db, now())))
+
+    def weight_history(self, target: str) -> list[dict]:
+        rows = self.db.fetchall("SELECT field, before_value, after_value, reason, created_at FROM weight_log"
+                                " WHERE target = %s ORDER BY created_at", (target,))
+        return [{"field": f, "before": b, "after": a, "reason": r, "at": str(t)} for f, b, a, r, t in rows]
+
+    def set_link(self, team_id: str, a: str, b: str, kind: str, weight: float, reason: str = "") -> None:
         if a == b:
             return
         a, b = _canon(a, b, kind)
         weight = max(0.0, min(1.0, weight))
-        if self.link_weight(a, b, kind) is None:
+        before = self.link_weight(a, b, kind)
+        self._log(team_id, f"{a}|{b}|{kind}", "weight", before, weight, reason)
+        if before is None:
             self.db.execute("INSERT INTO links (team_id, from_id, to_id, kind, weight, updated_at)"
                             " VALUES (%s, %s, %s, %s, %s, %s)", (team_id, a, b, kind, weight, ts(self.db, now())))
         else:
@@ -167,10 +186,13 @@ class Graph:
         found = {r[0]: State(float(r[1]), float(r[2]), int(r[3]), int(r[4])) for r in rows}
         return {i: found.get(i, State(self.default_strength, 1.0)) for i in ids}
 
-    def set_state(self, node_id: str, team_id: str, state: State) -> None:
+    def set_state(self, node_id: str, team_id: str, state: State, reason: str = "") -> None:
         params = (max(0.0, min(1.0, state.strength)), state.stability, state.recalls, state.helpful,
                   ts(self.db, now()))
-        if self.db.fetchone("SELECT 1 FROM memory_state WHERE id = %s", (node_id,)):
+        row = self.db.fetchone("SELECT strength, stability FROM memory_state WHERE id = %s", (node_id,))
+        self._log(team_id, node_id, "strength", float(row[0]) if row else None, params[0], reason)
+        self._log(team_id, node_id, "stability", float(row[1]) if row else None, state.stability, reason)
+        if row:
             self.db.execute("UPDATE memory_state SET strength = %s, stability = %s, recalls = %s, helpful = %s,"
                             " updated_at = %s WHERE id = %s", params + (node_id,))
         else:

@@ -57,6 +57,7 @@ class Settings:
     activation_hops: int = 2
     activation_decay: float = 0.5  # per hop
     shortlist_size: int = 25  # §14: 20-30 before the attention filter
+    other_project_factor: float = 0.85  # memories from another project in the team; 0 = hard project walls
     attention_threshold: float = 0.5  # Jev's relevance Noul needed to enter context
     link_prune_threshold: float = 0.05
     consolidation_every: int = 200  # episodes; 0 = only on `horizon consolidate` (nightly cron)
@@ -114,6 +115,7 @@ class Settings:
             activation_hops=get("ACTIVATION_HOPS", base.activation_hops, int),
             activation_decay=get("ACTIVATION_DECAY", base.activation_decay, float),
             shortlist_size=get("SHORTLIST_SIZE", base.shortlist_size, int),
+            other_project_factor=get("OTHER_PROJECT_FACTOR", base.other_project_factor, float),
             attention_threshold=get("ATTENTION_THRESHOLD", base.attention_threshold, float),
             link_prune_threshold=get("LINK_PRUNE_THRESHOLD", base.link_prune_threshold, float),
             consolidation_every=get("CONSOLIDATION_EVERY", base.consolidation_every, int),

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
@@ -18,8 +19,10 @@ from horizon.memrouter.router import MemRouter
 from horizon.memrouter.spikes import same_option
 from horizon.models import (
     Actual,
+    Checkpoint,
     Condition,
     DecisionEntry,
+    GitRef,
     Predicted,
     ProgressEntry,
     Severity,
@@ -39,6 +42,7 @@ from horizon.taskstate.store import TaskStore
 log = logging.getLogger(__name__)
 
 RECENT_PROGRESS = 5
+MIN_TRUST_SAMPLES = 20  # scored outcomes before a scorer's measured bias is corrected
 RECENT_DECISIONS = 10
 
 
@@ -177,6 +181,7 @@ class Platform:
         conditions: list[Condition] | None = None,
         token_budget: int | None = None,
         human_guidance: str | None = None,
+        checkpoint_commit: str | None = None,
     ) -> dict:
         situation = redact(situation, MAX_SITUATION)
         conditions = redact_conditions(conditions)
@@ -192,6 +197,10 @@ class Platform:
             self._take_baseline(task)
             # The PreToolUse hook snapshots the project just before this call (PROJECT.md §8).
             ckpt = self.tasks.take_checkpoint(task.cwd, task.created_at, task.id) if task.cwd else None
+            if ckpt is None and checkpoint_commit:  # hosts without hooks report their own git commit
+                if not re.fullmatch(r"[0-9a-f]{7,40}", checkpoint_commit):
+                    raise ToolInputError("checkpoint_commit must be a git commit id (7-40 hex characters).")
+                ckpt = Checkpoint(cwd=task.cwd or "", git=GitRef(repo=".", commit=checkpoint_commit))
             slice_, status = self._call_memory(lambda m: m.recall(
                 team_id=self.settings.team_id,
                 situation=situation,
@@ -266,7 +275,8 @@ class Platform:
                                    "severity": m.severity} for m in memories],
             }
             scorer, broken = self._scorer()
-            first = first_pass(state, options, scorer, self.settings, crucial_hint=crucial, fear_warnings=fear)
+            bias = self._scorer_bias(scorer)
+            first = first_pass(state, options, scorer, self.settings, crucial_hint=crucial, fear_warnings=fear, bias=bias)
             if broken:
                 first["scorer_status"] = "unavailable"
             record = new_record(team_id=self.settings.team_id, project_id=task.project_id, task_id=task.id,
@@ -284,7 +294,7 @@ class Platform:
                 if plan["mode"] == "memory":  # every close option was tested before: settle from memory
                     evidence = {label: p["result"] for label, p in plan["from_memory"].items()}
                     result = second_pass(state, options, evidence, scorer, self.settings, first,
-                                         fear_warnings=fear, stage="from past spike results")
+                                         fear_warnings=fear, stage="from past spike results", bias=bias)
                     record["passes"].append(_pass_log(2, result))
                     result["settled_by"] = "memory"
                     result["spike_tokens_avoided"] = int(sum(
@@ -347,7 +357,7 @@ class Platform:
             scorer, broken = self._scorer()
             fear = sum(m["severity"] == "severe" for m in record["state"]["past_outcomes"])
             result = second_pass(record["state"], options, evidence, scorer, self.settings, first,
-                                 fear_warnings=fear)
+                                 fear_warnings=fear, bias=self._scorer_bias(scorer))
             if broken:
                 result["scorer_status"] = "unavailable"
             result["settled_by"] = "consequences"
@@ -385,6 +395,16 @@ class Platform:
         })
         self.decisions.save(record)
 
+    def _scorer_bias(self, scorer: Scorer | None) -> float:
+        """The scorer's measured bias (mean predicted - mean actual success), once it has enough outcomes."""
+        if scorer is None:
+            return 0.0
+        stats, _ = self._call_memory(lambda m: m.predictor_trust(self.settings.team_id, scorer.name))
+        samples = sum(s["samples"] for s in stats or [])
+        if samples < MIN_TRUST_SAMPLES:
+            return 0.0
+        return max(-0.5, min(0.5, sum(s["calibration"] * s["samples"] for s in stats) / samples))
+
     def _scorer(self) -> tuple[Scorer | None, bool]:
         try:
             return self._scorer_factory(), False
@@ -401,7 +421,9 @@ class Platform:
         task.last_evaluation = {"decision_id": record["id"], "situation": record["state"]["situation"],
                                 "decision": result["decision"], "chosen": result["chosen"],
                                 "options": [o["label"] for o in record["options"]],
-                                "predicted_success": result["predicted_success"], "source": result["scorer"]}
+                                # The raw scorer prediction is recorded, so predictor trust measures the scorer.
+                                "predicted_success": result.get("predicted_success_raw", result["predicted_success"]),
+                                "source": result["scorer"]}
         self.tasks.save(task)
         return {"task_id": task.id, "decision_id": record["id"], **result}
 
@@ -515,6 +537,13 @@ class Platform:
         self.tasks.save(task)
         return self._compact(task)
 
+    def _baseline_echo(self, task: TaskState, passed: int | None, failed: int | None) -> bool:
+        """A first record_outcome reporting test counts when hooks saw no test run since the baseline: the host
+        is recording its baseline run (seen with Codex), not the outcome of a change."""
+        if task.baseline != "captured" or task.decisions or (passed is None and failed is None):
+            return False
+        return not (self.tasks.pending_captures(task.cwd, since=task.created_at) if task.cwd else [])
+
     def _take_baseline(self, task: TaskState) -> int:
         """Test runs made since start_task and before the first recall_context (so before any decision or
         edit) are the baseline (PROJECT.md §9). Taken by whichever of recall_context and record_outcome
@@ -558,6 +587,7 @@ class Platform:
         failure_reason: str | None = None,
         plan: list[str] | None = None,
         agent_id: str | None = None,
+        subagent: str | None = None,
     ) -> dict:
         # Store decision summaries, never raw code (PROJECT.md §12).
         situation = redact(situation, MAX_SITUATION)
@@ -572,7 +602,7 @@ class Platform:
 
         def run() -> dict:
             task = self._task(task_id)
-            if self._take_baseline(task):
+            if self._take_baseline(task) or self._baseline_echo(task, tests_passed, tests_failed):
                 # The host recorded its pre-change test run: that run is the baseline, not an outcome.
                 self.tasks.save(task)
                 return {
@@ -620,7 +650,9 @@ class Platform:
                 task_id=task.id,
                 recall_id=recall_id,
                 severity=severity,
-                agent_id=agent_id,
+                # Provenance (MEMROUTER §11): the host client, plus the subagent it names, so a bad memory can
+                # be traced to the agent that wrote it.
+                agent_id=":".join(x for x in (agent_id, redact(subagent, 60) if subagent else None) if x) or None,
             ))
             episode_id = recorded.episode.id if recorded else None
 
@@ -641,7 +673,8 @@ class Platform:
             if plan is not None:
                 task.plan = plan
             failed = verdict.failed and not task_complete
-            action = rollback.apply_outcome(task, failed=failed, chosen=chosen, reason=failure_reason or summary,
+            action = rollback.apply_outcome(task, failed=failed, severe=severity == "severe" and not task_complete,
+                                            chosen=chosen, reason=failure_reason or summary,
                                             checkpoint=ckpt, max_attempts=self.settings.max_attempts)
             if task_complete:
                 task.status = "completed"
