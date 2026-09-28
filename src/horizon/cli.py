@@ -22,11 +22,22 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
+    sub.add_parser("consolidate", help="Run the memrouter sleep job now (e.g. nightly from cron).")
+
+    p = sub.add_parser("clear-fear", help="Clear a fear lesson. Human only: it records who cleared it.")
+    p.add_argument("lesson_id")
+    p.add_argument("--by", required=True, help="Your name, recorded on the lesson.")
+
+    p = sub.add_parser("export-decisions", help="Write the world-model decision log as JSON Lines.")
+    p.add_argument("--out", default="-", help="Output file (default: stdout).")
+    p.add_argument("--with-outcomes-only", action="store_true", help="Only decisions with a recorded outcome.")
+
     p = sub.add_parser("install-claude-code", help="Add the MCP server, hooks and CLAUDE.md snippet to a project.")
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
 
     args = parser.parse_args(argv)
+    from horizon.config import Settings
 
     if args.cmd == "serve":
         from horizon.server import serve
@@ -39,12 +50,45 @@ def main(argv: list[str] | None = None) -> int:
         if out:
             print(out)
     elif args.cmd == "stats":
-        from horizon.config import Settings
         from horizon.db import connected
+        from horizon.memrouter.graph import Graph
         from horizon.taskstate.store import TaskStore
 
-        with connected(Settings.from_env().db_url) as db:
-            print(json.dumps(TaskStore(db).stats(), indent=2))
+        settings = Settings.from_env()
+        with connected(settings.db_url) as db:
+            stats = TaskStore(db).stats()
+            graph = Graph(db, settings.embedding_dim)
+            stats["memory"] = {"lessons": len(graph.lessons(settings.team_id)),
+                               "fear_lessons": len(graph.lessons(settings.team_id, fear_only=True)),
+                               "links": graph.link_count(settings.team_id),
+                               "archived_episodes": graph.archived_count(settings.team_id),
+                               "predictor_trust": graph.predictor_stats(settings.team_id)}
+            print(json.dumps(stats, indent=2))
+    elif args.cmd in ("consolidate", "clear-fear"):
+        from horizon.server import build_memrouter
+
+        settings = Settings.from_env()
+        router = build_memrouter(settings)
+        if args.cmd == "consolidate":
+            report = router.consolidate(settings.team_id)
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            les = router.clear_fear(settings.team_id, args.lesson_id, args.by)
+            print(f"Cleared {les.id} ({les.statement}) by {les.cleared_by}")
+    elif args.cmd == "export-decisions":
+        from horizon.db import connected
+        from horizon.decision.log import DecisionLog
+
+        settings = Settings.from_env()
+        with connected(settings.db_url) as db:
+            out = sys.stdout if args.out == "-" else open(args.out, "w")
+            n = 0
+            for record in DecisionLog(db).export(settings.team_id, args.with_outcomes_only):
+                out.write(json.dumps(record) + "\n")
+                n += 1
+            if out is not sys.stdout:
+                out.close()
+                print(f"Wrote {n} decisions to {args.out}")
     elif args.cmd == "install-claude-code":
         from horizon.install import install
 

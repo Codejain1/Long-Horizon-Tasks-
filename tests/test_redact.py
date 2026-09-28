@@ -96,3 +96,9 @@ def test_platform_never_stores_code(platform, memrouter, task_store):
     assert len(task.constraints[0]) <= 300
     assert len(ep.situation) <= MAX_SITUATION and len(ep.chosen.label) <= MAX_OPTION
     assert ep.conditions[1].value == 10000  # non-string values untouched
+
+
+@pytest.mark.parametrize("label", ["dbm (stdlib)", "sqlite3 (stdlib)", "JSON file + fcntl/portalocker lock",
+                                   "diskcache (third-party)", "requests + urllib3 Retry", "Redis (v7)"])
+def test_short_option_labels_are_not_code(label):
+    assert redact(label) == label  # "dbm (stdlib)" used to come back as "[code removed]"

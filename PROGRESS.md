@@ -131,6 +131,36 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - the high-stakes question was reworded (a false positive on caches; true positives unchanged);
     - the scorer's prediction now wins over the host's own guess for the evaluated option, so episodes record `source: jev`. Verified in a rerun: predicted 0.87, surprise +0.13.
 
+- **Session 8 — Phase 5: consequence checking** (branch `claude/phase-5-consequences`, stacked on the Phase 4 branch).
+  - **Acceptance criteria (`PROJECT.md` §4, §6; MEMROUTER §12–13), all met:**
+    1. A close call runs the chain cheapest first:
+       - past spike results reused from memory (a decision can be fully settled from memory);
+       - try-and-rollback when every close option is cheap to undo, the stakes aren't high and a git checkpoint exists;
+       - otherwise a consequence plan: static checks, then one spike per untested option, with what to build, what to measure and a time budget.
+    2. **`submit_consequences`** takes structured results (pass/fail, test counts, numeric metrics, one redacted note) and runs a second scoring pass with them as evidence. That pass includes the §6 consequence questions: breaks existing tests? noticeably costlier?
+    3. Failed checks eliminate an option; spike metrics replace the estimates; a second tie never loops (cheaper, more reversible, or ask a human if high stakes).
+    4. Spike results are stored in memrouter (`lookup_simulation`, MEMROUTER §12) for reuse.
+    5. Every decision goes to the **world-model decision log**: versioned JSON with the state, every raw scorer answer from both passes, consequences, the final decision, and later outcomes. `horizon export-decisions` writes JSONL.
+  - **Tests:** 290 pass on SQLite and on Postgres 14 + pgvector (32 new for Phase 5).
+  - **Live verification:**
+    - Jev flipped the pass-2 winner correctly when spike evidence flipped.
+    - A real Sonnet session given a forced close call followed the whole protocol: it built multi-process stress-test spikes and submitted structured metrics (dbm lost 28/360 writes and was eliminated).
+    - Three fixes came out of these runs: the spike location, a redaction false positive, and the pass-2 confidence gate (see `demo/reliability/RESULTS.md`).
+
+- **Session 9 — Phase 6: memrouter learning** (branch `claude/phase-6-memrouter-learning`, stacked on Phase 5).
+  - **Acceptance criteria (MEMROUTER.md §5–§9, build steps 2–7), all met with tests:**
+    1. **Surprise-based link learning:** `Δweight = lr × surprise × signalWeight`, × 0.5 when low-confidence. New semantic links start at 0.1.
+    2. **Spreading activation:** 2 hops, × 0.5 per hop, scaled by link weight.
+    3. **Jev attention filter** within the token budget.
+    4. **Spaced-repetition decay and pruning.**
+    5. **The sleep job:** replay, extract, merge, archive to `episodes_archive`, prune, refresh, Parquet export.
+    6. **Conditions and reconsolidation.**
+    7. **Fear memories:** created instantly, always surfaced, weakened visibly, cleared by a human only.
+    8. **Predictor trust** per source and task type.
+  - **Headline test:** a simulated agent repeats one decision where stale successes sit closest to the query. **Top-3 precision rises 0.00 → 0.33 → 0.67 → 1.00 by round 4 with learning, and stays at 0.00 for 11 rounds without it** (Phase 2 similarity-only memory). Both are asserted in `tests/test_learning.py`.
+  - **Live Jev as the attention filter:** out of 5 candidates it kept only the 2 relevant memories (what worked, and the warning), dropping three that shared "public REST api". It took 0.6 s.
+  - **Tests:** 328 pass on SQLite and on Postgres 14 + pgvector (19 new learning tests, 38 with both backends). One Postgres-only bug was fixed: pgvector returns `Vector` objects.
+
 ## In progress
 
 - Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
@@ -305,6 +335,52 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **A scorer failure or missing key degrades to `unscored`**, the same failure isolation as memrouter. The scorer is created lazily, and creation is retried on the next call.
 - **Demo has 6 tasks**, one more than the owner's "3–5": task 6 is the only one with a crucial choice. Run it alone with a one-task `tasks.json`, as done here.
 
+**Phase 5 decisions (defaults under the decision rule)**
+- **Spike format** (§15 "spike format, measurements, structured result schema"):
+  - **A plan spike** is `{option, build, measure[], budget_minutes}`.
+  - **A submitted result** is `{option, static_checks[{name, passed}], spike{ran, passed, tests_passed, tests_failed, metrics{name: number}, duration_s}, notes}`.
+  - Numbers and pass/fail only, plus one note that is redacted and capped. Metric names are capped at 40 characters.
+- **Static checks are generic and host-chosen:** the dependency resolves, licence and platform fit, lint/type config. The host doesn't know the options' code yet, and the server never sees the repo (§12).
+- **Spikes run under `.horizon/spikes/`** in the project, which the installer adds to `.gitignore`. The host needs no extra permission, and git and checkpoints never see the files. Seen live: `/tmp` cost 10 permission denials.
+- **Try-and-rollback is used only when all three hold:** every close option's reversibility is ≥ 0.7, the task has a git checkpoint (so Phase 3 can actually restore), and the stakes aren't high. The host then implements the top option, and a regression rolls back to the next option in `try_order`.
+- **High stakes no longer asks a human at pass 1.** §4's flow checks consequences first and asks only if the options are still tied.
+- **Hard evidence overrides scores.** An option that failed a static check or its spike is eliminated, unless every option failed; then all stay in, so the decision is never stuck.
+- **Pass 2 re-asks the per-option questions with `consequences` in the state**, plus two consequence Nouls. They become the `no_regressions` (weight 0.20) and `relative_cost` (0.10) dimensions. Pass 1 lacks them, so its weights are renormalised.
+- **After evidence, a lead of at least twice the clear margin stands even when a Score confidence is below 0.5.** In pass 1, low confidence means "go check"; in pass 2 there is nothing left to check (seen live: a 0.30 lead with confidence 0.47).
+- **Spike reuse needs situation+option similarity ≥ 0.85 and a matching option label.** Metric: `settled_by: "memory"` counts toward §14 "share of close calls settled from memory".
+- **`submit_consequences` runs once per decision.** A second call is rejected (§5: don't loop). The decision must belong to the task.
+- **Decision log in the task store's database** (table `decisions`): it's task-scoped and must keep working when memrouter is down. Spike results live in memrouter (`spike_results`), because MEMROUTER §12 assigns `lookupSimulation` there.
+- **An outcome is attached to the decision when the implemented option is any of the decision's options**, not only the chosen one, with `followed_decision` recorded. Training data then includes overrides. Unrelated later outcomes aren't attached.
+- **JSONL, not Parquet, for now.** MEMROUTER §14 ties the Parquet export to the Phase 6 consolidation run.
+- **Redaction (Phase 2 bug found live):** the symbol-ratio rule needs at least 3 symbols, so labels like `dbm (stdlib)` survive.
+
+**Phase 6 decisions (defaults under the decision rule; these settle open question 15 and the mixed-operator part of 16)**
+- **Strength and stability are kept for every memory** (episodes too, not only lessons and strategies) in `memory_state`, so the same learning ranks all three kinds. Strength starts at 0.5 and stability at 1.
+- **Candidate score** = similarity × conditionMatch × scope × (0.2 + 0.8 × strength). The strength factor is bounded, so learning can reorder memories but never erase a highly similar one. (An unbounded base-level term swamped relevance in the owner's earlier memrouter experiments.)
+- **Credit assignment:** only recalled memories about the **option the host implemented** "fed" the decision and learn from its surprise. Other recalled memories had a usage opportunity and didn't help: strength − 0.02 / stability.
+- **"Helpful" (open question 15)** = surprise ≥ 0 **and** success ≥ 0.5. A helpful recall multiplies stability by 1.5 (capped at 20, so nothing is permanent).
+- **Strength change** = lr × signal × surprise, the same rule as links. A loss is divided by √stability, so proven memories decay slower.
+- **Hebbian co-success links** join the fed memories and the new episode. They start at the semantic weight (0.1) and move by the same Δ. Links with weight 0 or below never spread activation. Pruning happens in the sleep job.
+- **Spreading activation** traverses semantic, co-success and derived-from links in both directions, never `contradicts`. Memories reached only through links get the condition and scope factors too. Archived episodes drop out.
+- **Attention filter:** one Jev Noul per shortlisted memory ("would it help decide `situation` well?"), kept at ≥ 0.5 in descending order. Without Jev, or on failure, the activation order stands.
+- **Sleep job:**
+  - replays the last 1,000 episodes and clusters them by same option plus similarity ≥ 0.8;
+  - 3+ episodes at ≥ 80 % success become a strategy, and at ≤ 30 % a failure lesson; mixed clusters are left to reconsolidation;
+  - conditions = those shared by every episode in the cluster;
+  - merges into an existing lesson at similarity ≥ 0.85, keeps the newest 3 evidence episodes in retrieval and archives the rest;
+  - runs inline every 200 episodes (failure-isolated), or from `horizon consolidate` or cron.
+- **Reconsolidation:** a contradicting outcome on a recalled lesson or strategy about the same option looks for a condition that every supporting episode shares and the new one doesn't:
+  - for numbers, the bound becomes `<=` the maximum or `>=` the minimum;
+  - for categories, it becomes `=` the shared value.
+  - With no such condition, contradictions are counted, and at 2 the lesson's strength halves and it gets a `contradicts` link.
+- **Fear lessons:**
+  - created at strength 1.0 and maximum stability;
+  - surfaced when similarity ≥ 0.5 and conditions don't rule them out, even beyond the token budget or the attention filter's choice;
+  - a success of ≥ 0.8 with the same option under matching conditions multiplies strength by 0.7 and records it;
+  - cleared only through `horizon clear-fear --by <name>`, a CLI a human runs. The MCP `clear_fear` tool is Phase 7.
+- **Predictor trust:** after every episode with a prediction, per source and `task_type` (a condition; default "general"): calibration (mean predicted − mean actual), accuracy (1 − mean absolute error) and Brier score. When memory's history stood in for a missing prediction, memory is the source scored.
+- **Parquet** needs the new `[export]` extra (pyarrow). One flat row per episode, archived ones included, plus the full JSON.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -413,9 +489,22 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 39. **Weights and thresholds are untuned.** §5's experiment (Jev against the small LLM on real decisions, then against real outcomes) is what should set them. [Defaults above. Every raw dimension is returned, so re-weighting doesn't need re-scoring.]
 40. **Phase 4 has no benchmark run.** mini-SWE-agent doesn't speak MCP (same as open question 10). [The demo measures invocation instead.]
 
+### Raised in Phase 5 (the default used is in brackets)
+
+41. **Jev rarely produces close calls.** Three real library choices all came out as clear winners (margins 0.17–0.24), so consequence checking may seldom run at the 0.10 margin. [Kept 0.10. The decision log will show how often close calls happen; the §6 experiment ("on a sample of ties, run all options for real") needs ties, so a larger margin may be worth it for the experiment.]
+42. **Possible high-stakes false positive:** "Celery with Redis vs RQ vs APScheduler" scored as high stakes. [Only matters on a second tie (then a human is asked). Watch it in the decision log.]
+43. **Spikes cost the host's tokens and time** (about 6 extra tool calls per option in the live runs). [The plan caps each spike at `HORIZON_SPIKE_BUDGET_MINUTES` (10), static checks can skip a spike, and memory reuse avoids repeats.]
+
+### Raised in Phase 6 (the default used is in brackets)
+
+44. **The headline improvement comes from one constructed scenario.** The owner's earlier memrouter experiments (open question 1: `~/Desktop/memrouter`) found that on real data, scoped walls plus a shared schema tier beat activation-based routing, and that the working-set cap did most of the work. They also found bugs that only a live use log exposed. [Built to spec, with a bounded strength factor. Next evidence: repeated real benchmark runs (§15) and a comparison with a standard memory layer such as mem0.]
+45. **Predictor trust is tracked but doesn't yet change scoring.** [Reported in `horizon stats` and the consolidation report. Shrinking a poorly calibrated source's predictions needs samples first.]
+46. **Past spike results aren't yet part of the recall slice** (§6 step 6 lists them). [They're used where they matter, in the decision layer's memory lookup (Phase 5).]
+
 ## Next step
 
 1. **Owner:** to use Jev in your own projects, set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev` in the environment Claude Code starts from. Optionally set `HORIZON_SCORER=llm` with Claude API credentials to run the Jev-vs-small-LLM comparison (open question 39).
 2. Review the Phase 4 branch and open its PR when ready (the owner asked for PRs in batches).
-3. Then **Phase 5: consequence checking**: static checks, memory lookup, local spikes, and a Jev re-score on close calls.
+3. Phases 5 and 6 are in one PR stacked on the Phase 4 branch. **Merge Phase 4 into `main` first, then retarget and merge the Phase 5–6 PR.** Next is **Phase 7**: the inspection tools (`explain_decision`, `show_memories`, `delete_memory`, `clear_fear` over MCP), approvals, and the key/credits web page.
+4. Schedule `horizon consolidate` nightly where Horizon runs (cron) if 200-episode batches are too infrequent.
 4. When credits and keys exist, run the Phase 1 real benchmark (smoke run first).

@@ -59,3 +59,17 @@ Not measured yet: real Jev or LLM scores (no API keys). With a scorer, the same 
 - Each decision is one Jev request of 4 + 4 × options questions, taking 0.45–0.71 s. Redis ranked near zero under a "stdlib only" constraint, and shelve/dbm (no safe concurrent writers) ranked low.
 - **Fix: prediction source.** Hosts pass their own `predicted_success` as well, and that used to win. Now, when the implemented option is the one the scorer evaluated, the scorer's prediction is recorded (§9 "record what Jev predicted"), so Phase 6 predictor trust measures Jev.
 - **Fix: high-stakes wording.** "Delete or overwrite data" fired on a cache (Noul 0.80). The new wording ("real-world harm that is hard to undo: … destroying existing user or production data", with caches, temp files, build output and git-undoable changes excluded) scored 0.20 on the cache. True positives stayed high: a production table migration 0.93, emailing 40k customers 0.93, $3k/month of cloud spend 0.87.
+
+## Phase 5: consequence checking with a real host (Sonnet 5, live Jev)
+
+Task 6 again, with a close call forced through existing settings (`HORIZON_CLEAR_MARGIN=1.0`, `HORIZON_TRY_REVERSIBLE_THRESHOLD=1.1`). Jev on its own rarely produced ties: three hand-picked library choices were all clear winners, with margins of 0.17–0.24.
+
+| Run | `check_consequences` | spikes built | `submit_consequences` | final | permission denials | working tree after |
+|---|---|---|---|---|---|---|
+| 1 | yes, 4 spikes | real multi-process stress tests (20 concurrent writers) in `/tmp` | 1 call: dbm "silently lost 28/360 writes" (`passed: false`) | sqlite3; dbm/shelve and diskcache eliminated | **10** (paths outside the project) | only `textkit/cache.py` |
+| 2 | yes | under `.horizon/spikes/`, deleted afterwards | 2 calls (the first was rejected, see below) | `clear_winner` sqlite3; the other two eliminated | 1 | only `textkit/cache.py` |
+
+**Fixes from these runs:**
+- **Spikes now go under `.horizon/spikes/`**, which the installer adds to `.gitignore`. Inside the project the host needs no extra permission, and git and the checkpoint snapshots never see the files.
+- **Redaction false positive (a Phase 2 bug).** The option label `dbm (stdlib)` came back as `[code removed]`: it's 12 characters, 2 of them parentheses, which is over the 15% symbol ratio. The host's first `submit_consequences` with the real label was then rejected. Now the ratio rule needs at least 3 symbols, and option matching also compares redacted labels.
+- **Pass-2 confidence (live Jev, date-parsing pair).** Jev flipped the winner correctly when the spike evidence flipped. But a 0.30 lead after evidence was held back as "still close" because one Score confidence was 0.47. After evidence, a lead of twice the clear margin now stands.

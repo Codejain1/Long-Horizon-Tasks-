@@ -16,12 +16,22 @@ An MCP server that gives coding agents task state and outcome-learning memory. S
 
 **Phase 4 — decision layer** (`src/horizon/decision/`): the `evaluate_options` tool scores the host's options for a crucial choice. It uses Jev (or the small-LLM comparison scorer) plus the host's cost estimates, with weights and thresholds in code. See `docs/CLAUDE_CODE.md`.
 
+**Phase 6 — memrouter learning** (`src/horizon/memrouter/`):
+- **learning:** links learnt from surprise (Hebbian), spaced-repetition decay and pruning;
+- **recall:** 2-hop spreading activation, then the Jev attention filter within a token budget;
+- **sleep job** (`horizon consolidate`): distils lessons and strategies, archives episodes to cold storage, exports Parquet;
+- **conditions** refined when a lesson is contradicted (reconsolidation);
+- **fear memories**, cleared only by a human (`horizon clear-fear`);
+- **predictor trust** per source.
+
+**Phase 5 — consequence checking**: close calls are checked cheapest first (past spike results from memory, try-and-rollback, static checks and local spikes run by the host). `submit_consequences` re-scores with the results as evidence. Every decision goes to a world-model decision log (`horizon export-decisions`).
+
 **Phase 3 — checkpoints and rollback** (`src/horizon/taskstate/checkpoints.py`, `rollback.py`): a hook records a git and Claude Code checkpoint reference before each decision. A failed outcome returns a rollback (restore, the failure reasons fed back, a retry limit), and the task is escalated to the user after the limit. See `docs/CLAUDE_CODE.md`.
 
 ## Quick start
 
 ```bash
-uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision]"
+uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision,export]"
 .venv/bin/pytest                                   # SQLite tests
 HORIZON_TEST_PG_URL=postgresql://user:pass@localhost/db .venv/bin/pytest   # also Postgres + pgvector
 

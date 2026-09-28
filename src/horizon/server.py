@@ -31,7 +31,8 @@ Horizon keeps task state and learns from outcomes across sessions. Use it on eve
    test suite once before any edit (the baseline).
 2. Before each significant decision or edit (choosing an approach, library, fix), call recall_context
    and use the returned task state and past outcomes. For a crucial choice (framework, database,
-   architecture, key library), also call evaluate_options with 2-4 options before committing.
+   architecture, key library), also call evaluate_options with 2-4 options before committing; on a close
+   call, run its consequence plan and call submit_consequences.
 3. After implementing and running tests, call record_outcome with the real test counts.
 4. If record_outcome returns a rollback, restore the checkpoint it names and call recall_context before
    retrying. If it returns an escalation, stop and ask the user.
@@ -60,10 +61,21 @@ architecture, key library, data model or anything else that is hard to reverse, 
 has real cost. Routine steps don't need it. Pass the decision point as `situation` and 2-4 realistic options,
 with your cost/token/latency estimates where you have them. Returns a `decision`:
 - "routine" or "clear_winner": implement `chosen`.
-- "close_call": the options are nearly tied; `chosen` is the cheaper or more reversible one.
+- "check_consequences": a close call. Run the `consequence_plan` (static checks, then one small spike per
+  option, outside the working tree) and call submit_consequences with the results.
+- "try_and_rollback": a close call where every option is cheap to undo: implement `chosen`; if tests
+  regress, the rollback restores the checkpoint and you try the next option in `try_order`.
+- "close_call": still nearly tied after the checks; `chosen` is the cheaper or more reversible one.
 - "ask_human": high stakes (money, messages, data, or past severe failures): ask the user before acting.
 - "unscored": no scorer is available; decide yourself on engineering merit.
 Then implement, run the tests and call record_outcome with `chosen` as the option you implemented."""
+
+SUBMIT_CONSEQUENCES = """\
+Send the results of a consequence plan from evaluate_options (decision "check_consequences"). Call this after
+running the plan's static checks and spikes, once per close call, with the `decision_id`. Report structured
+results per option: which static checks passed, whether the spike ran and passed, test counts and numeric
+metrics. No prose beyond one short note. Returns the final decision, re-scored with your results as evidence:
+implement `chosen` (or ask the user if the decision is "ask_human"), then record_outcome."""
 
 RECORD_OUTCOME = """\
 Record what happened after you implemented a decision and ran the tests. Call this AFTER EVERY test run
@@ -77,13 +89,14 @@ to restore the last good checkpoint (action "rollback": restore, then recall_con
 that the retry limit is reached (action "escalate": restore, stop and ask the user)."""
 
 
+def build_memrouter(settings: Settings, attention=None) -> MemRouter:
+    store = EpisodeStore(connect(settings.db_url), settings.embedding_dim)
+    return MemRouter(store, make_embedder(settings.embedder, settings.embedding_dim), settings, attention=attention)
+
+
 def build_platform(settings: Settings, cwd: str | None = None) -> Platform:
     """Task state and memrouter get separate connections so one failing can't block the other."""
     tasks = TaskStore(connect(settings.db_url))
-
-    def memrouter() -> MemRouter:
-        store = EpisodeStore(connect(settings.db_url), settings.embedding_dim)
-        return MemRouter(store, make_embedder(settings.embedder, settings.embedding_dim), settings)
 
     scorers: dict = {}
 
@@ -92,7 +105,32 @@ def build_platform(settings: Settings, cwd: str | None = None) -> Platform:
             scorers["s"] = make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)
         return scorers["s"]
 
+    def memrouter() -> MemRouter:
+        return build_memrouter(settings, attention=scorer)  # the scorer is also the attention filter (§6 step 5)
+
     return Platform(settings, tasks, memrouter, cwd=cwd, scorer_factory=scorer)
+
+
+class StaticCheckIn(BaseModel):
+    name: str = Field(description="Which check, e.g. \"pip install --dry-run\".")
+    passed: bool
+
+
+class SpikeIn(BaseModel):
+    ran: bool = Field(description="False if you didn't build it (e.g. its static checks failed).")
+    passed: bool | None = Field(None, description="Did the proof of concept do what the decision needs?")
+    tests_passed: int | None = Field(None, ge=0)
+    tests_failed: int | None = Field(None, ge=0)
+    metrics: dict[str, float] = Field(default_factory=dict, description="Numbers that separate the options, "
+                                      "e.g. latency_ms, tokens, cost_usd, lines_of_code, peak_memory_mb.")
+    duration_s: float | None = Field(None, ge=0, description="How long the spike took.")
+
+
+class ConsequenceIn(BaseModel):
+    option: str = Field(description="The option's label, as in the consequence plan.")
+    static_checks: list[StaticCheckIn] = Field(default_factory=list)
+    spike: SpikeIn | None = None
+    notes: str | None = Field(None, description="At most one short sentence; numbers belong in metrics.")
 
 
 class OptionIn(BaseModel):
@@ -162,6 +200,14 @@ def create_server(platform: Platform) -> MCPServer:
     ) -> dict[str, Any]:
         return _call(platform.evaluate_options, task_id, situation,
                      [Option(**o.model_dump()) for o in options], conditions, crucial)
+
+    @server.tool(description=SUBMIT_CONSEQUENCES)
+    def submit_consequences(
+        task_id: Annotated[str, Field(description="From start_task.")],
+        decision_id: Annotated[str, Field(description="From evaluate_options.")],
+        results: Annotated[list[ConsequenceIn], Field(description="One entry per option you checked.")],
+    ) -> dict[str, Any]:
+        return _call(platform.submit_consequences, task_id, decision_id, [r.model_dump() for r in results])
 
     @server.tool(description=RECORD_OUTCOME)
     def record_outcome(
