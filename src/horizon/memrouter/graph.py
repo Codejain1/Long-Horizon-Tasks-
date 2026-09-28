@@ -63,6 +63,9 @@ class Graph:
                 data {text} NOT NULL, success {real} NOT NULL, surprise {real} NOT NULL,
                 severity TEXT NOT NULL, embedding_model TEXT NOT NULL, embedding {vec} NOT NULL,
                 created_at {stamp} NOT NULL, archived_at {stamp})""",
+            f"""CREATE TABLE IF NOT EXISTS memory_removals (
+                id TEXT PRIMARY KEY, team_id TEXT NOT NULL, memory_id TEXT NOT NULL, kind TEXT NOT NULL,
+                snapshot {text} NOT NULL, reason TEXT NOT NULL, removed_by TEXT, created_at {stamp} NOT NULL)""",
             "CREATE INDEX IF NOT EXISTS lessons_team ON lessons (team_id, embedding_model)",
             "CREATE INDEX IF NOT EXISTS links_to ON links (to_id)",
         ):
@@ -187,6 +190,31 @@ class Graph:
 
     def archived_count(self, team_id: str) -> int:
         return int(self.db.fetchone("SELECT COUNT(*) FROM episodes_archive WHERE team_id = %s", (team_id,))[0])
+
+    # --- removal (inspection tools, PROJECT.md §10; traced, MEMROUTER §11) ------------------------
+
+    def unlink(self, node_id: str) -> int:
+        n = int(self.db.fetchone("SELECT COUNT(*) FROM links WHERE from_id = %s OR to_id = %s", (node_id, node_id))[0])
+        self.db.execute("DELETE FROM links WHERE from_id = %s OR to_id = %s", (node_id, node_id))
+        return n
+
+    def delete_lesson(self, lesson_id: str) -> None:
+        self.db.execute("DELETE FROM lessons WHERE id = %s", (lesson_id,))
+        self.db.execute("DELETE FROM memory_state WHERE id = %s", (lesson_id,))
+
+    def log_removal(self, team_id: str, memory_id: str, kind: str, snapshot: dict, reason: str,
+                    removed_by: str | None) -> None:
+        from horizon.models import new_id
+
+        self.db.execute("INSERT INTO memory_removals (id, team_id, memory_id, kind, snapshot, reason, removed_by,"
+                        " created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        (new_id("rm"), team_id, memory_id, kind, self.db.json(snapshot), reason, removed_by,
+                         ts(self.db, now())))
+
+    def removals(self, team_id: str) -> list[dict]:
+        rows = self.db.fetchall("SELECT memory_id, kind, reason, removed_by, created_at FROM memory_removals"
+                                " WHERE team_id = %s ORDER BY created_at", (team_id,))
+        return [{"memory_id": r[0], "kind": r[1], "reason": r[2], "removed_by": r[3], "at": str(r[4])} for r in rows]
 
     # --- predictor trust (§5 step 4) -----------------------------------------------------
 

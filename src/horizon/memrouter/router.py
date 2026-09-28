@@ -349,6 +349,62 @@ class MemRouter:
         self.graph.set_state(les.id, team_id, State(strength=0.1, stability=1.0))
         return les
 
+    # --- inspection (PROJECT.md §10: show, delete; MEMROUTER §11 provenance) ---------------------
+
+    def inspect(self, team_id: str, query: str | None = None, kinds: list[str] | None = None,
+                limit: int = 20) -> list[dict]:
+        """Memories as the user sees them. With a query, the most similar first; this is not a recall, so
+        looking doesn't change what the memory learns."""
+        model = self.embedder.model_name
+        if query:
+            vector = self._embed(query)
+            pairs = [(Node(e.id, "episode", e, s)) for e, s in self.store.search(team_id, vector, model, limit)]
+            pairs += [Node(les.id, "fear" if les.is_fear and not les.cleared_by else les.kind, les, s)
+                      for les, s in self.graph.search_lessons(team_id, vector, model, limit)]
+            pairs.sort(key=lambda n: -n.similarity)
+        else:
+            pairs = [Node(les.id, "fear" if les.is_fear and not les.cleared_by else les.kind, les)
+                     for les in self.graph.lessons(team_id)]
+            pairs += [Node(e.id, "episode", e) for e in self.store.recent(team_id, limit)]
+        if kinds:
+            pairs = [n for n in pairs if n.kind in kinds]
+        pairs = pairs[:limit]
+        states = self.graph.states([n.id for n in pairs])
+        out = []
+        for n in pairs:
+            st = states[n.id]
+            item = self._item(n, st, 0.0).model_dump(mode="json")
+            item.pop("activation")
+            item["memory_id"] = item.pop("episode_id")
+            item.update(stability=round(st.stability, 2), recalls=st.recalls, helpful_recalls=st.helpful,
+                        provenance=(n.obj.provenance.model_dump(mode="json") if isinstance(n.obj, Episode)
+                                    else {"evidence": n.obj.evidence[:10], "refinements": n.obj.refinements,
+                                          "cleared_by": n.obj.cleared_by}))
+            out.append(item)
+        return out
+
+    def remove(self, team_id: str, memory_id: str, reason: str, removed_by: str | None) -> dict:
+        """Take a bad memory out of retrieval before it spreads. Episodes are archived, never deleted (they stay
+        world-model data); lessons and strategies are deleted. Either way the links go and the removal is
+        logged with a snapshot. Fear lessons are cleared, not deleted (§9)."""
+        if memory_id.startswith("ep_"):
+            ep = self.store.get(memory_id, team_id)
+            if ep is None:
+                raise ValueError(f"No memory {memory_id!r}.")
+            links = self.graph.unlink(memory_id)
+            self.graph.archive_episode(memory_id)
+            self.graph.log_removal(team_id, memory_id, "episode", ep.model_dump(mode="json"), reason, removed_by)
+            return {"memory_id": memory_id, "kind": "episode", "action": "archived", "links_removed": links}
+        les = self.graph.get_lesson(memory_id, team_id)
+        if les is None:
+            raise ValueError(f"No memory {memory_id!r}.")
+        if les.is_fear and not les.cleared_by:
+            raise ValueError("That is a fear lesson: a human clears it with clear_fear instead.")
+        links = self.graph.unlink(memory_id)
+        self.graph.delete_lesson(memory_id)
+        self.graph.log_removal(team_id, memory_id, les.kind, les.model_dump(mode="json"), reason, removed_by)
+        return {"memory_id": memory_id, "kind": les.kind, "action": "deleted", "links_removed": links}
+
     # --- reconsolidation (§8) ------------------------------------------------------------
 
     def _reconsolidate(self, team_id: str, les: Lesson, episode: Episode) -> None:

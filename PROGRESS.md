@@ -161,6 +161,19 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Live Jev as the attention filter:** out of 5 candidates it kept only the 2 relevant memories (what worked, and the warning), dropping three that shared "public REST api". It took 0.6 s.
   - **Tests:** 328 pass on SQLite and on Postgres 14 + pgvector (19 new learning tests, 38 with both backends). One Postgres-only bug was fixed: pgvector returns `Vector` objects.
 
+- **Session 10 — Phase 7: inspection, approvals, accounts** (branch `claude/phase-7-inspection-approvals`, from `main`; PRs #6 and #7 were merged in the right order, so `main` has Phases 1–6).
+  - **Acceptance criteria (PROJECT.md §3, §10, §11; MEMROUTER §9, §11, §12), all met:**
+    1. **Inspection MCP tools:** `explain_decision`, `show_memories`, `delete_memory` (archives episodes, deletes lessons, audit-logged, refuses fear lessons) and `clear_fear` (a named human only).
+    2. **Human approvals via MCP user-input requests** for high-stakes ties, rollback escalations, memory deletion and clearing fears. Both protocol generations are supported: ≤ 2025-11-25 inline elicitation, and the 2026-07-28 `InputRequiredResult` with HMAC-signed state. Clients that can't ask fall back to the previous behaviour, and every outcome is logged.
+    3. **Accounts:**
+       - teams and hashed API keys;
+       - a credit ledger with a free starter grant;
+       - per-call metering on the hosted transport, with per-team isolation;
+       - `horizon create-team` and `horizon add-credits`.
+    4. **Minimal web page** (FastAPI): key sign-in, a session cookie, credits, keys (create/revoke), usage, the credit history and savings per session, plus a JSON API.
+  - **Tests:** 17 new Phase 7 tests (both MCP protocol paths, forged-state rejection, metered hosted MCP over real HTTP, the web page and API, the CLI).
+  - **Real Claude Code check** (Sonnet 5, headless): it used `show_memories` correctly and refused on its own to clear a recent fear lesson without the user's confirmation. When told "I confirm, my name is Kartik", its `clear_fear` call got a user-input request that headless mode cancelled, so nothing was cleared: an agent can't approve on the user's behalf.
+
 ## In progress
 
 - Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
@@ -381,6 +394,18 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Predictor trust:** after every episode with a prediction, per source and `task_type` (a condition; default "general"): calibration (mean predicted − mean actual), accuracy (1 − mean absolute error) and Brier score. When memory's history stood in for a missing prediction, memory is the source scored.
 - **Parquet** needs the new `[export]` extra (pyarrow). One flat row per episode, archived ones included, plus the full JSON.
 
+**Phase 7 decisions (defaults under the decision rule)**
+- **`delete_memory` never deletes an episode.** "Episodes are never deleted" (round 1, decision 5) wins, so an episode is archived (out of retrieval, kept as training data) and its links are removed. Lessons and strategies are deleted, with a snapshot kept in `memory_removals`. Hard deletion for privacy would be hard to reverse and would contradict decision 5, so it's an open question (47).
+- **Human-only actions are enforced by where the answer comes from.** `clear_fear` accepts only a confirmation that arrives through the client's user-input request. Tool arguments can't carry it (the agent writes those), and a client that can't ask gets an error pointing to the `horizon clear-fear` CLI.
+- **The 2026-07-28 round trip keeps round 1's result in `request_state`, HMAC-signed.** The tool body would otherwise run twice and redo work (a second `submit_consequences` is rejected). The state is bound to the tool, the team and the arguments, and the secret is per process unless `HORIZON_STATE_SECRET` is set.
+- **Approvals Horizon asks for:** high-stakes ties after consequence checks (§4 and §9: money, messages, data), rollback escalations (§8), memory deletion, and clearing fears. The user's choice becomes the decision (`human_choice`, with the approver in the decision log), and the episode still records Jev's prediction for that option.
+- **Accounts share the task store's database.** Only SHA-256 hashes of keys and session tokens are stored. Keys look like `hzn_` + 32 random bytes, and a key is shown once. The web session is an HttpOnly, SameSite=Strict cookie (Secure over https), valid for 7 days.
+- **Credit prices are placeholders** (§15 leaves pricing open): 1 per call for `start_task`, `recall_context` and `record_outcome`; 5 for `evaluate_options` and `submit_consequences` (Jev plus orchestration); inspection and approvals free; 1,000 free starter credits. There are no payments (they would need money and a provider), so operators top up with `horizon add-credits`.
+- **There's no sign-up page.** An operator creates teams with `horizon create-team` until hosting and pricing are decided at launch (§17).
+- **Metering applies to the hosted HTTP transport only.** Local stdio is free and unauthenticated (the user runs everything), and the static dev key stays unmetered for local HTTP.
+- **Savings per session are counted events only**, with no invented token savings. "Tokens saved" is reported only where past spikes recorded their token cost. With 2026-07-28 (stateless HTTP, no `mcp-session-id`), a Horizon task stands in for the session.
+- **The web page is server-rendered HTML** with no JavaScript and a dark-mode style. It needs the `[web]` extra (FastAPI, python-multipart). The MCP app is mounted under it, and its lifespan runs the MCP session manager.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -501,10 +526,16 @@ Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 
 45. **Predictor trust is tracked but doesn't yet change scoring.** [Reported in `horizon stats` and the consolidation report. Shrinking a poorly calibrated source's predictions needs samples first.]
 46. **Past spike results aren't yet part of the recall slice** (§6 step 6 lists them). [They're used where they matter, in the decision layer's memory lookup (Phase 5).]
 
+### Raised in Phase 7 (the default used is in brackets)
+
+47. **(Needs the owner: data deletion.) Privacy hard-delete.** A user may want a memory erased, not archived (e.g. under GDPR), which conflicts with "episodes are never deleted". [Archive plus audit snapshot. Hard delete would need an owner decision and a way to purge Parquet exports too.]
+48. **Pricing, the free tier and payments** (§15 "credit pricing, free tier limits"). [Placeholder prices and 1,000 free credits; operator top-ups; no payment provider.]
+49. **Interactive approval UX is untested with a human in Claude Code.** Headless runs prove the safe path (cancel → nothing happens), but not how the choice or guidance form looks. [Try `evaluate_options` on a high-stakes tie in an interactive session.]
+
 ## Next step
 
 1. **Owner:** to use Jev in your own projects, set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev` in the environment Claude Code starts from. Optionally set `HORIZON_SCORER=llm` with Claude API credentials to run the Jev-vs-small-LLM comparison (open question 39).
 2. Review the Phase 4 branch and open its PR when ready (the owner asked for PRs in batches).
-3. Phases 5 and 6 are in one PR stacked on the Phase 4 branch. **Merge Phase 4 into `main` first, then retarget and merge the Phase 5–6 PR.** Next is **Phase 7**: the inspection tools (`explain_decision`, `show_memories`, `delete_memory`, `clear_fear` over MCP), approvals, and the key/credits web page.
+3. Phase 7 is on `claude/phase-7-inspection-approvals` (from `main`). Next is **Phase 8: launch**: publish the repo, benchmarks and a write-up. That needs the real benchmark runs (API credits) and the owner's call on hosting (§17), pricing (48) and public release (hard to reverse).
 4. Schedule `horizon consolidate` nightly where Horizon runs (cron) if 200-episode batches are too infrequent.
 4. When credits and keys exist, run the Phase 1 real benchmark (smoke run first).

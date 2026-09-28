@@ -22,6 +22,15 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
+    p = sub.add_parser("create-team", help="Create a team for the hosted server and print its first API key.")
+    p.add_argument("name")
+    p.add_argument("--credits", type=int, default=None, help="Starting credits (default: the free starter grant).")
+
+    p = sub.add_parser("add-credits", help="Grant credits to a team (operator; no payments yet).")
+    p.add_argument("team_id")
+    p.add_argument("credits", type=int)
+    p.add_argument("--reason", default="operator top-up")
+
     sub.add_parser("consolidate", help="Run the memrouter sleep job now (e.g. nightly from cron).")
 
     p = sub.add_parser("clear-fear", help="Clear a fear lesson. Human only: it records who cleared it.")
@@ -64,6 +73,23 @@ def main(argv: list[str] | None = None) -> int:
                                "archived_episodes": graph.archived_count(settings.team_id),
                                "predictor_trust": graph.predictor_stats(settings.team_id)}
             print(json.dumps(stats, indent=2))
+    elif args.cmd in ("create-team", "add-credits"):
+        from horizon.accounts import FREE_STARTER_CREDITS, Accounts
+        from horizon.db import connected
+
+        with connected(Settings.from_env().db_url) as db:
+            accounts = Accounts(db)
+            if args.cmd == "create-team":
+                team_id, key = accounts.create_team(args.name, FREE_STARTER_CREDITS if args.credits is None
+                                                    else args.credits)
+                print(f"Team {team_id} ({args.name}), {accounts.balance(team_id)} credits.")
+                print(f"API key (shown once, store it now): {key}")
+            else:
+                if accounts.team(args.team_id) is None:
+                    print(f"No team {args.team_id}", file=sys.stderr)
+                    return 1
+                accounts.grant(args.team_id, args.credits, args.reason)
+                print(f"{args.team_id}: {accounts.balance(args.team_id)} credits")
     elif args.cmd in ("consolidate", "clear-fear"):
         from horizon.server import build_memrouter
 

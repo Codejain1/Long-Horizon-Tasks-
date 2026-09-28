@@ -94,6 +94,32 @@ Every decision is logged as one versioned record (`schema: "horizon.decision"`, 
 | `HORIZON_JEV_MODEL` / `HORIZON_LLM_SCORER_MODEL` | `jev-latest` / `claude-haiku-4-5` | |
 | `HORIZON_DECISION_WEIGHTS` | success 0.30, compatibility 0.20, architecture_fit 0.20, cost_usd 0.15, tokens 0.10, latency_ms 0.05 | JSON. Renormalised over the dimensions available. |
 
+## Inspection and human approvals (Phase 7)
+
+| Tool | What it does |
+|---|---|
+| `explain_decision(task_id, decision_id?)` | Why a decision went the way it did: past outcomes used, crucial signals, scores per option and pass, consequence checks, eliminated options, and what happened afterwards. |
+| `show_memories(query?, kinds?, limit?)` | Lessons, strategies, fear warnings and recent episodes, with strength, stability, evidence and provenance. With `query`, the most similar come first. Inspecting doesn't count as a recall, so it doesn't change learning. |
+| `delete_memory(memory_id, reason)` | Takes a wrong or harmful memory out of retrieval, after the user confirms. Episodes are archived (never deleted); lessons and strategies are deleted. Links are removed and a snapshot is logged. Fear lessons are refused (use `clear_fear`). |
+| `clear_fear(lesson_id)` | Human only. The user confirms and gives their name, which is recorded. Without a client that can ask the user, it refuses and points to `horizon clear-fear`. |
+
+**Approvals use MCP user-input requests.** With protocol ≤ 2025-11-25 the server asks mid-call (`elicitation/create`). With 2026-07-28 the tool returns an `InputRequiredResult`, and the client asks the user and retries. The round-1 work isn't repeated: it travels in an HMAC-signed `request_state` (set `HORIZON_STATE_SECRET` when running several server processes). Horizon asks the user for:
+- **a high-stakes close call still tied after the consequence checks** (`ask_human`): the user picks the option, and it becomes the decision (`human_choice`, logged with the approver);
+- **a rollback escalation:** the user's guidance resumes the task;
+- **deleting a memory:** confirm;
+- **clearing a fear:** confirm and give a name.
+
+Every answer, including decline, cancel and "client can't ask", is logged. The count is in `horizon stats` → `approvals` (§14: the approval rate should fall). Seen with real Claude Code (2.1.283): it declares support for user-input requests. In headless `claude -p` there is no human, so the request comes back cancelled and nothing changes, even if the prompt claims the user already agreed.
+
+## Hosted server: accounts, credits and the account page (Phase 7)
+
+`horizon serve --transport http` serves MCP at `/mcp` and the account page at `/`.
+- **Keys:** operators create a team with `horizon create-team NAME`, which prints the first key and grants 1,000 free starter credits, and top it up with `horizon add-credits TEAM N`. There are no payments yet.
+- **MCP auth:** a team key `hzn_…` (Bearer or `X-API-Key`). Each team's tasks and memories are isolated. `HORIZON_DEV_API_KEY` still works as an unmetered local key.
+- **Credits:** each call is checked against and charged to the team's balance. Current prices: 1 for `start_task`, `recall_context` and `record_outcome`; 5 for `evaluate_options` and `submit_consequences`; inspection and approvals are free. At zero the tool returns an error, and the host carries on without Horizon.
+- **Account page:** sign in with a key. It shows credits, keys (create, with the key shown once, and revoke), usage for the last 30 days, the credit history, and **savings per session**. Savings are counted events only: decisions scored, close calls settled from memory, options ruled out before implementing, regressions caught by a rollback, fear warnings, and human approvals, plus tokens saved where past spikes reported their token cost.
+- **JSON API:** `GET /api/account`, `POST /api/keys`, `DELETE /api/keys/{id}`, with a Bearer team key.
+
 ## Memory that learns (`MEMROUTER.md`, Phase 6)
 
 - **Recall** (`recall_context`):
