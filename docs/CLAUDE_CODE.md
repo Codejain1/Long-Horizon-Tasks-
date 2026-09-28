@@ -67,7 +67,26 @@ The scorer sees the goal, the constraints and the recalled past outcomes as evid
 | `ask_human` | A close call that is high stakes (`HORIZON_HIGH_STAKES_THRESHOLD` 0.5, or a matching severe past failure). |
 | `unscored` | No scorer is configured, or it failed. Nothing is chosen; `cheapest_by_estimates` lists the options by the host's estimates, as information only. |
 
-The chosen option's predicted success is recorded on the episode when `record_outcome` names that option, with source `jev` or `llm` (`PROJECT.md` §9). Phase 5 will add consequence checking to close calls.
+The chosen option's predicted success is recorded on the episode when `record_outcome` names that option, with source `jev` or `llm` (`PROJECT.md` §9).
+
+### Consequence checking on close calls (`PROJECT.md` §6)
+
+A close call doesn't pick straight away. The chain runs cheapest first:
+1. **Memory:** past spike results for the same option in a similar decision are reused (`HORIZON_SPIKE_REUSE_SIMILARITY` 0.85). If every close option was tested before, the decision is settled from memory (`settled_by: "memory"`).
+2. **Try and roll back:** if every close option is cheap to undo (`HORIZON_TRY_REVERSIBLE_THRESHOLD` 0.7), the task has a git checkpoint, and the stakes aren't high, the decision is `try_and_rollback`. The host implements `chosen`, and the Phase 3 rollback rules restore the checkpoint if the tests regress. The next option to try is in `try_order`.
+3. **Otherwise `check_consequences`:** `consequence_plan` lists cheap **static checks** (the dependency resolves, licence and platform fit, lint/type config), plus one **spike** per untested option. Each spike says what to build and what to measure, with a time budget. Spikes are built under `.horizon/spikes/` in the project (git-ignored by the installer) and deleted afterwards.
+4. **`submit_consequences(task_id, decision_id, results)`:** structured results per option (`static_checks[{name, passed}]`, `spike{ran, passed, tests_passed, tests_failed, metrics{…}, duration_s}`, one short note). The scorer re-scores the close options with the results as evidence and answers the consequence questions: *would it break existing tests?* and *will it cost noticeably more?* Spike metrics named `latency_ms`, `tokens` or `cost_usd` replace the host's estimates. An option that failed a static check or its spike is eliminated. A second tie doesn't loop: it takes the cheaper or more reversible option, or asks a human if the stakes are high. Spike results are stored in memory for the next similar tie.
+
+### World-model decision log
+
+Every decision is logged as one versioned record (`schema: "horizon.decision"`, `version: 1`) containing:
+- the state the scorer saw (goal, constraints, situation, options, recalled past outcomes);
+- **every raw scorer answer** from both passes;
+- the consequence plan and the submitted results;
+- the final decision;
+- the outcomes the host later recorded for any of the options (success, tests, tokens, cost, the baseline judgement, surprise, and whether the host followed the decision).
+
+`horizon export-decisions --out decisions.jsonl [--with-outcomes-only]` writes them as JSON Lines, one training example per line: state → option → consequences → outcome.
 
 | Variable | Default | Notes |
 |---|---|---|

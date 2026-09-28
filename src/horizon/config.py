@@ -18,7 +18,9 @@ def default_db_url() -> str:
 # Composite weights (PROJECT.md §5). Judged by the scorer: success, compatibility, architecture_fit.
 # Measured in code from the host's estimates: cost_usd, tokens, latency_ms. Renormalised over what's available.
 DEFAULT_DECISION_WEIGHTS = {"success": 0.30, "compatibility": 0.20, "architecture_fit": 0.20,
-                            "cost_usd": 0.15, "tokens": 0.10, "latency_ms": 0.05}
+                            "cost_usd": 0.15, "tokens": 0.10, "latency_ms": 0.05,
+                            # Second pass only (consequences as evidence, PROJECT.md §6 step 4):
+                            "no_regressions": 0.20, "relative_cost": 0.10}
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,10 @@ class Settings:
     clear_margin: float = 0.10  # composite lead over the runner-up that counts as a clear winner
     min_confidence: float = 0.5  # Jev Score confidence below this is never a clear winner
     high_stakes_threshold: float = 0.5  # spending money, messaging people, deleting data: ask a human
+    # Consequence checking (PROJECT.md §6).
+    spike_reuse_similarity: float = 0.85  # a past spike this similar (same option label) is reused
+    try_reversible_threshold: float = 0.7  # every close option at least this reversible: try and roll back
+    spike_budget_minutes: int = 10  # per spike, told to the host
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -99,4 +105,7 @@ class Settings:
             clear_margin=get("CLEAR_MARGIN", base.clear_margin, float),
             min_confidence=get("MIN_CONFIDENCE", base.min_confidence, float),
             high_stakes_threshold=get("HIGH_STAKES_THRESHOLD", base.high_stakes_threshold, float),
+            spike_reuse_similarity=get("SPIKE_REUSE_SIMILARITY", base.spike_reuse_similarity, float),
+            try_reversible_threshold=get("TRY_REVERSIBLE_THRESHOLD", base.try_reversible_threshold, float),
+            spike_budget_minutes=get("SPIKE_BUDGET_MINUTES", base.spike_budget_minutes, int),
         )

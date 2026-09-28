@@ -16,6 +16,8 @@ An MCP server that gives coding agents task state and outcome-learning memory. S
 
 **Phase 4 — decision layer** (`src/horizon/decision/`): the `evaluate_options` tool scores the host's options for a crucial choice. It uses Jev (or the small-LLM comparison scorer) plus the host's cost estimates, with weights and thresholds in code. See `docs/CLAUDE_CODE.md`.
 
+**Phase 5 — consequence checking**: close calls are checked cheapest first (past spike results from memory, try-and-rollback, static checks and local spikes run by the host). `submit_consequences` re-scores with the results as evidence. Every decision goes to a world-model decision log (`horizon export-decisions`).
+
 **Phase 3 — checkpoints and rollback** (`src/horizon/taskstate/checkpoints.py`, `rollback.py`): a hook records a git and Claude Code checkpoint reference before each decision. A failed outcome returns a rollback (restore, the failure reasons fed back, a retry limit), and the task is escalated to the user after the limit. See `docs/CLAUDE_CODE.md`.
 
 ## Quick start

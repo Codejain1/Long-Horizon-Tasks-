@@ -12,7 +12,7 @@ from horizon.service import Platform
 from horizon.taskstate.store import TaskStore
 
 PG_URL = os.environ.get("HORIZON_TEST_PG_URL")
-TABLES = ("tasks", "test_captures", "tool_calls", "checkpoints", "episodes", "recall_log")
+TABLES = ("tasks", "test_captures", "tool_calls", "checkpoints", "decisions", "episodes", "recall_log", "spike_results")
 
 
 def _reset_postgres(url: str) -> None:

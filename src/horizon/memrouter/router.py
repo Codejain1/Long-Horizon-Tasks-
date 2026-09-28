@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from horizon.config import Settings
 from horizon.memrouter.embedding import Embedder
+from horizon.memrouter.spikes import SpikeStore, same_option, spike_text
 from horizon.memrouter.store import EpisodeStore
 from horizon.memrouter.surprise import SurpriseResult, compute_surprise
 from horizon.models import (
@@ -113,6 +114,7 @@ class MemRouter:
         self.store = store
         self.embedder = embedder
         self.settings = settings
+        self.spikes = SpikeStore(store.db, store.dim)
 
     def _embed(self, text: str):
         return self.embedder.embed([text])[0]
@@ -172,6 +174,26 @@ class MemRouter:
         )
         self.store.add(episode, self._embed(text))
         return RecordResult(episode=episode, surprise=result, predicted_success_used=p_success)
+
+    # --- simulation reuse (MEMROUTER.md §12 lookupSimulation, §13) -----------
+
+    def record_spike(self, *, team_id: str, situation: str, option: str, result: dict,
+                     project_id: str | None = None) -> str:
+        return self.spikes.add(team_id, project_id, situation, option, result, self.embedder.model_name,
+                               self._embed(spike_text(situation, option)))
+
+    def lookup_simulation(self, *, team_id: str, situation: str, options: list[str]) -> dict[str, dict]:
+        """Past spike results for these options in a similar decision: {option: past}. Options without a
+        close enough match are left out."""
+        found = {}
+        for option in options:
+            hits = self.spikes.search(team_id, self._embed(spike_text(situation, option)),
+                                      self.embedder.model_name)
+            for past, sim in hits:
+                if sim >= self.settings.spike_reuse_similarity and same_option(past["option"], option):
+                    found[option] = {**past, "similarity": round(sim, 3)}
+                    break
+        return found
 
     # --- read path (MEMROUTER.md §6, steps 1-2 and 6; §10 scope preference) ---
 

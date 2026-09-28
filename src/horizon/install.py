@@ -82,12 +82,21 @@ def install_claude_md(project: Path) -> None:
     path.write_text(text.rstrip() + "\n")
 
 
+def install_gitignore(project: Path) -> None:
+    """Spikes run under .horizon/spikes (PROJECT.md §6): keep them out of git and out of checkpoints."""
+    path = project / ".gitignore"
+    text = path.read_text() if path.exists() else ""
+    if ".horizon/" not in text.splitlines():
+        path.write_text(text + ("" if not text or text.endswith("\n") else "\n") + ".horizon/\n")
+
+
 def install(project: Path, command: list[str] | None = None, claude_md: bool = True) -> list[str]:
     command = command or default_command()
     project = project.resolve()
     install_mcp_json(project, command)
     install_settings(project, command)
-    changed = [".mcp.json", ".claude/settings.json"]
+    install_gitignore(project)
+    changed = [".mcp.json", ".claude/settings.json", ".gitignore"]
     if claude_md:
         install_claude_md(project)
         changed.append("CLAUDE.md")

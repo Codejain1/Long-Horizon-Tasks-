@@ -22,6 +22,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
+    p = sub.add_parser("export-decisions", help="Write the world-model decision log as JSON Lines.")
+    p.add_argument("--out", default="-", help="Output file (default: stdout).")
+    p.add_argument("--with-outcomes-only", action="store_true", help="Only decisions with a recorded outcome.")
+
     p = sub.add_parser("install-claude-code", help="Add the MCP server, hooks and CLAUDE.md snippet to a project.")
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
@@ -45,6 +49,21 @@ def main(argv: list[str] | None = None) -> int:
 
         with connected(Settings.from_env().db_url) as db:
             print(json.dumps(TaskStore(db).stats(), indent=2))
+    elif args.cmd == "export-decisions":
+        from horizon.config import Settings
+        from horizon.db import connected
+        from horizon.decision.log import DecisionLog
+
+        settings = Settings.from_env()
+        with connected(settings.db_url) as db:
+            out = sys.stdout if args.out == "-" else open(args.out, "w")
+            n = 0
+            for record in DecisionLog(db).export(settings.team_id, args.with_outcomes_only):
+                out.write(json.dumps(record) + "\n")
+                n += 1
+            if out is not sys.stdout:
+                out.close()
+                print(f"Wrote {n} decisions to {args.out}")
     elif args.cmd == "install-claude-code":
         from horizon.install import install
 
