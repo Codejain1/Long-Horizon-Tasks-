@@ -355,3 +355,27 @@ def test_request_state_cannot_be_forged():
 
     forged = base64.urlsafe_b64encode(b'{"tool":"clear_fear","args":{"lesson_id":"les_2"}}').decode() + "." + mac
     assert verify(token)["args"]["lesson_id"] == "les_1" and verify(forged) is None and verify("junk") is None
+
+
+def test_privacy_page_matches_the_published_policy(hosted):
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "docs" / "PRIVACY.md").read_text() == (root / "src" / "horizon" / "data" / "PRIVACY.md").read_text()
+    app, *_ = hosted
+    web = TestClient(app)
+    page = web.get("/privacy").text
+    assert "never files, diffs or source" in page and "<table>" in page
+    assert web.get("/healthz").json() == {"ok": True}
+
+
+def test_decision_stats(settings, task_store, memrouter, project_dir):
+    platform = with_scorer(settings, task_store, memrouter, project_dir, FakeScorer(**CLOSE))
+    task_id = platform.start_task("x")["task_id"]
+    from horizon.decision.layer import Option
+
+    r = platform.evaluate_options(task_id, "choose a db", [Option("a"), Option("b")])
+    platform.submit_consequences(task_id, r["decision_id"], [])
+    platform.record_outcome(task_id, "s", "a", success=1.0)
+    stats = platform.decisions.stats("local")
+    assert stats["close_calls"] == 1 and stats["settled_from_memory_share"] == 0.0 and stats["with_outcome"] == 1

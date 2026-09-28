@@ -49,6 +49,7 @@ Horizon keeps task state and learns from outcomes across sessions. Use it on eve
 3. After implementing and running tests, call record_outcome with the real test counts.
 4. If record_outcome returns a rollback, restore the checkpoint it names and call recall_context before
    retrying. If it returns an escalation, stop and ask the user.
+5. When the user asks what Horizon knows or why something was chosen: show_memories, explain_decision.
 Never skip record_outcome after a test run: it is how the memory learns what works."""
 
 START_TASK = """\
@@ -208,8 +209,8 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
                                                                     "e.g. tests/test_api.py.")] = None,
         ctx: Context | None = None,
     ) -> dict[str, Any] | InputRequiredResult:
-        return await gw.run(ctx, "start_task",
-                            lambda p: p.start_task(goal, constraints, plan, open_issues, project_id, target_tests))
+        return await gw.run(ctx, "start_task", lambda p: p.start_task(goal, constraints, plan, open_issues, project_id,
+                                                                      target_tests, cwd=gw.project(ctx)))
 
     @server.tool(description=RECALL_CONTEXT)
     async def recall_context(
@@ -443,6 +444,16 @@ class Gateway:
 
     def __init__(self, platform_for, accounts: Accounts | None = None, dev_key: str | None = None):
         self.platform_for, self.accounts, self.dev_key = platform_for, accounts, dev_key
+
+    def project(self, ctx: Context | None) -> str | None:
+        """Hosted mode: the client's hashed project key (X-Horizon-Project), matched against its hooks."""
+        if self.accounts is None:
+            return None
+        try:
+            value = ctx.headers.get("x-horizon-project") if ctx is not None and ctx.headers else None
+        except Exception:
+            return None
+        return value[:64] if value and value.startswith("prj_") else None
 
     def team(self, ctx: Context | None) -> str | None:
         try:

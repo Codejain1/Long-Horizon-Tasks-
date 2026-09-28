@@ -138,7 +138,11 @@ class Platform:
         open_issues: list[str] | None = None,
         project_id: str | None = None,
         target_tests: list[str] | None = None,
+        cwd: str | None = None,
     ) -> dict:
+        """`cwd` identifies the project for hook matching: the hosted server gets the client's hashed project
+        key from a header; locally it's this server's working directory."""
+
         def run() -> dict:
             if not goal.strip():
                 raise ToolInputError("goal must not be empty; pass the user's request verbatim.")
@@ -149,7 +153,7 @@ class Platform:
                 constraints=redact_list(constraints, MAX_NOTE) or [],
                 plan=redact_list(plan, MAX_NOTE) or [],
                 open_issues=redact_list(open_issues, MAX_NOTE) or [],
-                cwd=self.cwd,
+                cwd=cwd or self.cwd,
                 target_tests=list(dict.fromkeys((redact_list(target_tests, MAX_OPTION) or [])
                                                 + targets_from_goal(goal))),
             ))

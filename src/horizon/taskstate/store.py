@@ -11,6 +11,7 @@ from datetime import datetime
 
 from horizon.db import Database, load_json
 from horizon.models import Checkpoint, TaskState, TestCapture, now
+from horizon.redact import redact
 
 
 def ts(db: Database, value: datetime | None):
@@ -179,8 +180,9 @@ class TaskStore:
 
         self.db.execute("INSERT INTO approvals (id, team_id, task_id, kind, action, question, answer, approver,"
                         " created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                        (new_id("apr"), team_id, task_id, kind, action, question[:500], answer and answer[:500],
-                         approver, ts(self.db, now())))
+                        # Questions and answers carry host and user text (reasons, guidance): no raw code (§12).
+                        (new_id("apr"), team_id, task_id, kind, action, redact(question, 500), redact(answer, 300),
+                         approver and redact(approver, 100), ts(self.db, now())))
 
     def approvals(self, team_id: str) -> list[dict]:
         rows = self.db.fetchall("SELECT task_id, kind, action, answer, approver, created_at FROM approvals"

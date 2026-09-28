@@ -3,3 +3,7 @@
 **/__pycache__
 .pytest_cache
 *.db
+.env
+.horizon
+bench/runs
+demo/**/__pycache__
