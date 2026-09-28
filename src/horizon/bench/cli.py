@@ -41,8 +41,15 @@ def cmd_run(cfg, args) -> None:
     from horizon.bench.report import to_markdown, write_report
     from horizon.bench.runner import run
 
+    if args.agent:
+        cfg.execution.agent = args.agent
+    if args.with_horizon:
+        if cfg.execution.agent != "claude-code":
+            raise SystemExit("--with-horizon needs --agent claude-code (mini-swe-agent can't call MCP tools).")
+        cfg.execution.horizon = True
     repeats = args.repeats if args.repeats is not None else (cfg.execution.repeats if args.stage == "full" else 1)
     mode = "DRY RUN (mock model, no paid calls)" if cfg.dry_run else "REAL RUN (paid API calls)"
+    mode += f", agent={cfg.execution.agent}" + (" + Horizon" if cfg.execution.horizon else "")
     n = cfg.selection.smoke_n if args.stage == "smoke" else cfg.selection.n_tasks
     if args.limit:
         n = min(n, args.limit)
@@ -90,6 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--limit", type=int, default=None, help="Only the first N tasks of the stage.")
     r.add_argument("--out", default=None, help=f"Output root (default: output_dir, under {REPO_ROOT.name}).")
     r.add_argument("--no-eval", action="store_true")
+    r.add_argument("--agent", choices=["mini-swe-agent", "claude-code"], default=None,
+                   help="Default: execution.agent in the config.")
+    r.add_argument("--with-horizon", action="store_true", help="claude-code only: install Horizon in each task repo.")
 
     e = sub.add_parser("evaluate", help="Evaluate run directories.")
     e.add_argument("run_dirs", nargs="+")

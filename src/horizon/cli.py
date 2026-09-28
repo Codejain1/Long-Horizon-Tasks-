@@ -38,6 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("lesson_id")
     p.add_argument("--by", required=True, help="Your name, recorded on the lesson.")
 
+    p = sub.add_parser("compare-scorers", help="Replay logged decisions through Jev and the small LLM (PROJECT.md §5).")
+    p.add_argument("--limit", type=int, default=50, help="Most recent decisions to replay.")
+
     p = sub.add_parser("purge-memory", help="Operator only: erase one episode for good (e.g. a legal request).")
     p.add_argument("episode_id")
     p.add_argument("--reason", required=True)
@@ -106,6 +109,17 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
                 accounts.grant(args.team_id, args.credits, args.reason)
                 print(f"{args.team_id}: {accounts.balance(args.team_id)} credits")
+    elif args.cmd == "compare-scorers":
+        from horizon.db import connected
+        from horizon.decision.compare import compare
+        from horizon.decision.log import DecisionLog
+        from horizon.decision.scorers import make_scorer
+
+        settings = Settings.from_env()
+        scorers = {"jev": make_scorer("jev", settings.jev_model, settings.llm_scorer_model),
+                   "llm": make_scorer("llm", settings.jev_model, settings.llm_scorer_model)}
+        with connected(settings.db_url) as db:
+            print(json.dumps(compare(DecisionLog(db), settings.team_id, scorers, settings, args.limit), indent=2))
     elif args.cmd == "purge-memory":
         if not args.yes:
             print("This erases the episode for good and can't be undone. Re-run with --yes.", file=sys.stderr)

@@ -263,3 +263,34 @@ def test_cli_dry_run(tmp_path, monkeypatch, no_network):
     assert len(data["tasks"]) == 50 and data["dataset"].startswith("synthetic")
     assert main(["run", "--stage", "smoke", "--limit", "2", "--out", str(tmp_path / "runs")]) == 0
     assert list((tmp_path / "runs").glob("report-*/report.md"))
+
+
+# --- Claude Code headless: the baseline and the platform run (§18) --------------------------------
+
+def claude_cfg(cfg, horizon):
+    return cfg.model_copy(update={"execution": cfg.execution.model_copy(update={"agent": "claude-code",
+                                                                               "horizon": horizon})})
+
+
+@pytest.mark.parametrize("horizon", [False, True])
+def test_claude_code_dry_run(cfg, tmp_path, no_network, horizon):
+    [run_dir] = runner.run(claude_cfg(cfg, horizon), "smoke", repeats=1, out_root=tmp_path, limit=3)
+    results = runner.read_results(run_dir)
+    assert len(results) == 3 and ("cc-horizon" if horizon else "-cc-") in run_dir.name
+    for r in results:
+        assert r["agent"] == "claude-code" and r["horizon"] is horizon and r["error"] is None
+        assert r["exit_status"] == "Submitted" and r["submitted"] and r["steps"] > 0 and r["cost_usd"] > 0
+        assert r["tokens"]["total"] > 0
+    preds = json.loads((run_dir / "preds.json").read_text())
+    for p in preds.values():  # only the agent's change: Horizon's setup files never reach the evaluated patch
+        assert "return a + b" in p["model_patch"]
+        assert ".mcp.json" not in p["model_patch"] and "CLAUDE.md" not in p["model_patch"]
+        assert ".claude/settings.json" not in p["model_patch"]
+    assert (run_dir / "trajectories" / f"{results[0]['instance_id']}.claude.jsonl").exists()
+
+
+def test_platform_run_needs_claude_code(cfg, tmp_path):
+    from horizon.bench.cli import main
+
+    with pytest.raises(SystemExit, match="claude-code"):
+        main(["run", "--with-horizon", "--no-eval", "--limit", "1", "--out", str(tmp_path)])

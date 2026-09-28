@@ -49,6 +49,10 @@ class SelectionCfg(BaseModel):
 class ExecutionCfg(BaseModel):
     environment: str = "auto"  # auto | docker | local
     repeats: int = 3
+    # mini-swe-agent: the Phase 1 baseline (no MCP). claude-code: Claude Code headless (§18), which can run
+    # with Horizon installed, so the platform itself can be benchmarked against the same agent without it.
+    agent: str = "mini-swe-agent"
+    horizon: bool = False
 
 
 class EvaluationCfg(BaseModel):
@@ -76,7 +80,13 @@ class BenchConfig(BaseModel):
 
     def check_real_run_ready(self) -> None:
         """Real runs need credentials; fail early and clearly instead of mid-run."""
-        missing = [k for k in ("ANTHROPIC_API_KEY", "SWEBENCH_API_KEY") if not os.environ.get(k)]
+        if self.execution.agent == "claude-code":
+            from horizon.bench.claude_code import check_ready
+
+            check_ready()  # runs on a Claude Code login (subscription or key)
+            missing = [k for k in ("SWEBENCH_API_KEY",) if not os.environ.get(k)]
+        else:
+            missing = [k for k in ("ANTHROPIC_API_KEY", "SWEBENCH_API_KEY") if not os.environ.get(k)]
         if missing:
             raise SystemExit(f"real_runs is true but {', '.join(missing)} is not set.")
 
