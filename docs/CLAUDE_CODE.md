@@ -50,6 +50,72 @@ Everything is set through environment variables (see `src/horizon/config.py`):
 | `HORIZON_ROLLBACK_BELOW` | `1.0` | Only for the absolute fallback (see below): an outcome with a lower test pass rate counts as a failed attempt. |
 | `HORIZON_MAX_ATTEMPTS` | `3` | Consecutive failed attempts before the task is escalated to the user. |
 
+## Decision layer (`PROJECT.md` §5)
+
+`evaluate_options(task_id, situation, options)` is called before a crucial choice, with 2–4 options and optional `est_cost_usd` / `est_tokens` / `est_latency_ms` on each. A single scorer request answers every question in parallel:
+- whether the decision is **crucial** (hard to reverse, shapes many later steps, or has real cost);
+- whether it is **high stakes** (money, messages or data);
+- for each option: its **chance of success**, **compatibility**, **architecture fit** and **reversibility**.
+
+The scorer sees the goal, the constraints and the recalled past outcomes as evidence. Code combines the dimensions with the weights and applies these rules:
+
+| `decision` | When |
+|---|---|
+| `routine` | No crucial signal reaches `HORIZON_CRUCIAL_THRESHOLD` (0.5). |
+| `clear_winner` | The top composite leads by at least `HORIZON_CLEAR_MARGIN` (0.10), and its scorer confidence is at least `HORIZON_MIN_CONFIDENCE` (0.5). |
+| `close_call` | Otherwise. Among the nearly tied options, it takes the cheaper one (by estimate), else the more reversible one. |
+| `ask_human` | A close call that is high stakes (`HORIZON_HIGH_STAKES_THRESHOLD` 0.5, or a matching severe past failure). |
+| `unscored` | No scorer is configured, or it failed. Nothing is chosen; `cheapest_by_estimates` lists the options by the host's estimates, as information only. |
+
+The chosen option's predicted success is recorded on the episode when `record_outcome` names that option, with source `jev` or `llm` (`PROJECT.md` §9).
+
+### Consequence checking on close calls (`PROJECT.md` §6)
+
+A close call doesn't pick straight away. The chain runs cheapest first:
+1. **Memory:** past spike results for the same option in a similar decision are reused (`HORIZON_SPIKE_REUSE_SIMILARITY` 0.85). If every close option was tested before, the decision is settled from memory (`settled_by: "memory"`).
+2. **Try and roll back:** if every close option is cheap to undo (`HORIZON_TRY_REVERSIBLE_THRESHOLD` 0.7), the task has a git checkpoint, and the stakes aren't high, the decision is `try_and_rollback`. The host implements `chosen`, and the Phase 3 rollback rules restore the checkpoint if the tests regress. The next option to try is in `try_order`.
+3. **Otherwise `check_consequences`:** `consequence_plan` lists cheap **static checks** (the dependency resolves, licence and platform fit, lint/type config), plus one **spike** per untested option. Each spike says what to build and what to measure, with a time budget. Spikes are built under `.horizon/spikes/` in the project (git-ignored by the installer) and deleted afterwards.
+4. **`submit_consequences(task_id, decision_id, results)`:** structured results per option (`static_checks[{name, passed}]`, `spike{ran, passed, tests_passed, tests_failed, metrics{…}, duration_s}`, one short note). The scorer re-scores the close options with the results as evidence and answers the consequence questions: *would it break existing tests?* and *will it cost noticeably more?* Spike metrics named `latency_ms`, `tokens` or `cost_usd` replace the host's estimates. An option that failed a static check or its spike is eliminated. A second tie doesn't loop: it takes the cheaper or more reversible option, or asks a human if the stakes are high. Spike results are stored in memory for the next similar tie.
+
+### World-model decision log
+
+Every decision is logged as one versioned record (`schema: "horizon.decision"`, `version: 1`) containing:
+- the state the scorer saw (goal, constraints, situation, options, recalled past outcomes);
+- **every raw scorer answer** from both passes;
+- the consequence plan and the submitted results;
+- the final decision;
+- the outcomes the host later recorded for any of the options (success, tests, tokens, cost, the baseline judgement, surprise, and whether the host followed the decision).
+
+`horizon export-decisions --out decisions.jsonl [--with-outcomes-only]` writes them as JSON Lines, one training example per line: state → option → consequences → outcome.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HORIZON_SCORER` | `none` | `jev` (needs `TYPESAFE_API_KEY`) or `llm`, the small-LLM comparison scorer (needs Claude API credentials). Install the `[decision]` extra. |
+| `HORIZON_JEV_MODEL` / `HORIZON_LLM_SCORER_MODEL` | `jev-latest` / `claude-haiku-4-5` | |
+| `HORIZON_DECISION_WEIGHTS` | success 0.30, compatibility 0.20, architecture_fit 0.20, cost_usd 0.15, tokens 0.10, latency_ms 0.05 | JSON. Renormalised over the dimensions available. |
+
+## Memory that learns (`MEMROUTER.md`, Phase 6)
+
+- **Recall** (`recall_context`):
+  - Candidates are episodes, lessons and strategies, ranked by similarity × condition match × scope × strength.
+  - Activation spreads two hops through learned links, and the top 25 are shortlisted.
+  - Jev (when `HORIZON_SCORER=jev`) keeps the memories it judges relevant, within the token budget.
+  - **Fear lessons always surface** when their conditions don't rule them out.
+  - Each item carries its `kind`, `strength`, `evidence` and `activation`.
+- **Learning** (`record_outcome`): the memories about the option the host implemented learn from the outcome's surprise (lr × surprise × signal weight):
+  - their links to each other and to the new episode change;
+  - their strength moves the same way;
+  - a helpful recall also grows their stability, so later decay is slower;
+  - recalled memories about other options lose a little strength.
+- **Sleep job:** runs every `HORIZON_CONSOLIDATION_EVERY` episodes (200), or with `horizon consolidate` (for example, nightly from cron). It:
+  - turns 3+ agreeing episodes into a strategy (≥ 80 % success) or a lesson (≤ 30 %), and merges duplicates;
+  - archives older evidence to `episodes_archive` (never deleted);
+  - prunes links below 0.05;
+  - writes a Parquet export of all episodes to `HORIZON_EXPORT_DIR` (needs the `[export]` extra).
+- **Reconsolidation:** a contradicted lesson first gets narrower conditions (e.g. `rps <= 3000`). It is weakened and linked `contradicts` only when same-condition contradictions repeat.
+- **Fear memories:** a `severity: "severe"` outcome creates one at once. Contrary evidence weakens it visibly. Only a human clears it: `horizon clear-fear <lesson_id> --by <name>`.
+- **Predictor trust:** calibration, accuracy and Brier score per prediction source and task type (a `task_type` condition), in `horizon stats`.
+
 ## Rollback rules (`PROJECT.md` §8)
 
 **Baseline first (`PROJECT.md` §9).** After `start_task`, the host runs the full test suite once, before any edit. The PostToolUse hook captures the failing test ids. The first `recall_context` (or a `record_outcome` made before it) takes those runs as the task's **baseline**. Every later outcome is judged against it, and the result is reported in `test_judgement`:

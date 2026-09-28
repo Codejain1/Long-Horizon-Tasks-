@@ -28,10 +28,12 @@ from horizon.taskstate.store import TaskStore
 from horizon.testparse import is_test_command, parse_test_output
 
 WORKFLOW = (
-    "This project uses the Horizon MCP server (tools: start_task, recall_context, record_outcome). "
-    "For any coding task: call start_task first with the user's request verbatim; call recall_context "
-    "before each significant decision or edit; call record_outcome after every test run with the real "
-    "test counts."
+    "This project uses the Horizon MCP server (tools: start_task, recall_context, evaluate_options, "
+    "record_outcome). For any coding task: call start_task first with the user's request verbatim, then run "
+    "the full test suite once before any edit; call recall_context before each significant decision or edit; "
+    "call evaluate_options before a crucial choice (framework, database, architecture, key library) and, on a "
+    "close call, run its consequence plan and call submit_consequences; call "
+    "record_outcome after every test run with the real test counts."
 )
 
 

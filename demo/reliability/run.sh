@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Horizon reliability demo: run 5 small coding tasks as separate headless Claude Code sessions,
+# Horizon reliability demo: run 6 small coding tasks as separate headless Claude Code sessions,
 # with Horizon declared in the project's .mcp.json and its hooks installed, then report how
 # reliably the tools were called.
 #
@@ -62,8 +62,8 @@ while IFS=$'\t' read -r id check prompt; do
     ${CLAUDE_MODEL:+--model "$CLAUDE_MODEL"} \
     --mcp-config .mcp.json \
     --permission-mode acceptEdits \
-    --allowedTools "mcp__horizon__start_task" "mcp__horizon__recall_context" "mcp__horizon__record_outcome" \
-                   "Bash(python -m pytest:*)" "Bash(python3 -m pytest:*)" "Bash(pytest:*)" "Bash(python:*)" "Bash(python3:*)" "Bash(git -C:*)" "Bash(git restore:*)" "Read" "Grep" "Glob" "Edit" "Write" \
+    --allowedTools "mcp__horizon__start_task" "mcp__horizon__recall_context" "mcp__horizon__evaluate_options" "mcp__horizon__submit_consequences" "mcp__horizon__record_outcome" \
+                   "Bash(python -m pytest:*)" "Bash(python3 -m pytest:*)" "Bash(pytest:*)" "Bash(python:*)" "Bash(python3:*)" "Bash(git -C:*)" "Bash(git restore:*)" "Bash(mkdir:*)" "Bash(rm -rf .horizon/spikes:*)" "Read" "Grep" "Glob" "Edit" "Write" \
     < /dev/null > "$OUT/logs/$id.jsonl" 2> "$OUT/logs/$id.stderr" || echo "   session exited non-zero (see logs/$id.stderr)"
   if python -m pytest -q "$check" > "$OUT/logs/$id.check.txt" 2>&1; then echo "   tests pass"; else echo "   tests FAIL"; fi
 done < "$OUT/tasks.tsv"

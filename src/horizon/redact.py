@@ -51,7 +51,8 @@ def _code_like(line: str) -> bool:
     if stripped.endswith(("{", "};", ");")) or stripped in {"}", ")", "]"}:
         return True
     symbols = sum(ch in _SYMBOLS for ch in stripped)
-    return len(stripped) >= 12 and symbols / len(stripped) > 0.15
+    # At least 3 symbols: a short label like "dbm (stdlib)" is 17% parentheses but not code (seen live).
+    return len(stripped) >= 12 and symbols >= 3 and symbols / len(stripped) > 0.15
 
 
 def redact(text: str | None, max_len: int = MAX_NOTE) -> str | None:

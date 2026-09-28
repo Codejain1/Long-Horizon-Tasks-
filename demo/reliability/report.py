@@ -119,6 +119,8 @@ def analyse(calls: list[dict]) -> dict:
         "start_task": names.count(HORIZON + "start_task"),
         "recall_context": names.count(HORIZON + "recall_context"),
         "record_outcome": names.count(HORIZON + "record_outcome"),
+        "evaluate_options": names.count(HORIZON + "evaluate_options"),
+        "evaluated_before_edit": before_edit(first(lambda c: c["name"] == HORIZON + "evaluate_options")),
         "started_before_edit": before_edit(start),
         "baseline_run": baseline_run,
         "recalled_before_edit": before_edit(recall),

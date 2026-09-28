@@ -9,7 +9,8 @@ def read(p):
 
 def test_install_writes_mcp_hooks_and_snippet(tmp_path):
     changed = install(tmp_path, command=["/venv/bin/python", "-m", "horizon"])
-    assert changed == [".mcp.json", ".claude/settings.json", "CLAUDE.md"]
+    assert changed == [".mcp.json", ".claude/settings.json", ".gitignore", "CLAUDE.md"]
+    assert (tmp_path / ".gitignore").read_text() == ".horizon/\n"
 
     mcp = read(tmp_path / ".mcp.json")["mcpServers"]["horizon"]
     assert mcp == {"command": "/venv/bin/python", "args": ["-m", "horizon", "serve"]}
@@ -35,6 +36,7 @@ def test_install_is_idempotent_and_preserves_existing_config(tmp_path):
     }))
     (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}))
     (tmp_path / "CLAUDE.md").write_text("# My project\n\nExisting rules.\n")
+    (tmp_path / ".gitignore").write_text("node_modules/")  # no trailing newline
 
     install(tmp_path, command=["/old/python", "-m", "horizon"])
     install(tmp_path, command=["/new/python", "-m", "horizon"])
@@ -52,6 +54,7 @@ def test_install_is_idempotent_and_preserves_existing_config(tmp_path):
     md = (tmp_path / "CLAUDE.md").read_text()
     assert md.startswith("# My project") and "Existing rules." in md
     assert md.count(MARK_START) == 1
+    assert (tmp_path / ".gitignore").read_text() == "node_modules/\n.horizon/\n"  # appended once
 
 
 def test_install_can_skip_claude_md(tmp_path):

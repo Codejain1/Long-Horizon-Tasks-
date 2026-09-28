@@ -10,10 +10,12 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import asdict
 from typing import Any
 
 from horizon.config import Settings
 from horizon.memrouter.router import MemRouter
+from horizon.memrouter.spikes import same_option
 from horizon.models import (
     Actual,
     Condition,
@@ -24,8 +26,12 @@ from horizon.models import (
     SignalType,
     TaskState,
     TestResults,
+    now,
 )
 from horizon.redact import MAX_CONDITION_VALUE, MAX_NOTE, MAX_OPTION, MAX_SITUATION, redact, redact_list
+from horizon.decision.layer import Option, first_pass, plan_consequences, second_pass
+from horizon.decision.log import DecisionLog, new_record
+from horizon.decision.scorers import Scorer
 from horizon.taskstate import rollback
 from horizon.taskstate.judge import judge, targets_from_goal
 from horizon.taskstate.store import TaskStore
@@ -45,6 +51,12 @@ def redact_conditions(conditions: list[Condition] | None) -> list[Condition] | N
 
 class ToolInputError(ValueError):
     """A problem with the host's input; the message tells the host what to do."""
+
+
+def _pass_log(n: int, result: dict) -> dict:
+    """One scoring pass as stored in the world-model log: raw answers plus the decision it led to."""
+    return {"pass": n, "answers": result.get("answers"),
+            "result": {k: v for k, v in result.items() if k != "answers"}}
 
 
 def compact_task_state(task: TaskState, max_attempts: int) -> dict[str, Any]:
@@ -77,11 +89,14 @@ class Platform:
         tasks: TaskStore,
         memrouter_factory: Callable[[], MemRouter],
         cwd: str | None = None,
+        scorer_factory: Callable[[], Scorer | None] = lambda: None,
     ):
         self.settings = settings
         self.tasks = tasks
         self._memrouter_factory = memrouter_factory
         self._memrouter: MemRouter | None = None
+        self._scorer_factory = scorer_factory
+        self.decisions = DecisionLog(tasks.db)
         self.cwd = os.path.realpath(cwd or os.getcwd())
 
     # --- memrouter access, failure-isolated -----------------------------------
@@ -210,6 +225,178 @@ class Platform:
 
         return self._logged("recall_context", task_id, run)
 
+    def evaluate_options(
+        self,
+        task_id: str,
+        situation: str,
+        options: list[Option],
+        conditions: list[Condition] | None = None,
+        crucial: bool | None = None,
+    ) -> dict:
+        """Decision layer (PROJECT.md §5-6): score the host's options before it commits to a crucial choice.
+        A close call returns a consequence plan; the host runs it and calls submit_consequences."""
+        situation = redact(situation, MAX_SITUATION)
+        conditions = redact_conditions(conditions)
+        options = [Option(label=redact(o.label, MAX_OPTION), description=redact(o.description, MAX_NOTE) or "",
+                          est_cost_usd=o.est_cost_usd, est_tokens=o.est_tokens, est_latency_ms=o.est_latency_ms)
+                   for o in options]
+
+        def run() -> dict:
+            if not 1 <= len(options) <= 6:
+                raise ToolInputError("Pass 2-4 options (at most 6), each with a short label.")
+            task = self._task(task_id)
+            # Memory feeds the scorer evidence: track records and fear warnings (§5, MEMROUTER §13).
+            slice_, memory_status = self._call_memory(lambda m: m.recall(
+                team_id=self.settings.team_id, situation=situation, conditions=conditions,
+                token_budget=self.settings.recall_token_budget, task_id=task_id, project_id=task.project_id))
+            memories = slice_.memories if slice_ is not None else []
+            fear = sum(m.severity == "severe" for m in memories)
+            state = {
+                "goal": task.goal,
+                "constraints": task.constraints,
+                "situation": situation,
+                "conditions": [c.model_dump(mode="json") for c in conditions or []],
+                "options": [{"label": o.label, "description": o.description} for o in options],
+                "past_outcomes": [{"situation": m.situation, "chosen": m.chosen, "outcome": m.outcome,
+                                   "severity": m.severity} for m in memories],
+            }
+            scorer, broken = self._scorer()
+            first = first_pass(state, options, scorer, self.settings, crucial_hint=crucial, fear_warnings=fear)
+            if broken:
+                first["scorer_status"] = "unavailable"
+            record = new_record(team_id=self.settings.team_id, project_id=task.project_id, task_id=task.id,
+                                state=state, options=[asdict(o) for o in options],
+                                scorer={"name": first["scorer"], "status": first["scorer_status"]})
+            record["passes"].append(_pass_log(1, first))
+
+            result = first
+            if first["decision"] == "close":
+                past, _ = self._call_memory(lambda m: m.lookup_simulation(
+                    team_id=self.settings.team_id, situation=situation, options=first["close"]))
+                plan = plan_consequences(first, situation, past or {}, self.settings,
+                                         can_roll_back=any(c.git for c in task.checkpoints))
+                record["consequences"] = {"plan": plan, "submitted": None}
+                if plan["mode"] == "memory":  # every close option was tested before: settle from memory
+                    evidence = {label: p["result"] for label, p in plan["from_memory"].items()}
+                    result = second_pass(state, options, evidence, scorer, self.settings, first,
+                                         fear_warnings=fear, stage="from past spike results")
+                    record["passes"].append(_pass_log(2, result))
+                    result["settled_by"] = "memory"
+                elif plan["mode"] == "try_and_rollback":
+                    top = plan["order"][0]
+                    result = {**first, "decision": "try_and_rollback", "chosen": top,
+                              "predicted_success": next(r["dimensions"]["success"] for r in first["options"]
+                                                        if r["label"] == top),
+                              "try_order": plan["order"],
+                              "reason": "Close call, and every close option is cheap to undo: trying is cheaper "
+                                        "than simulating (PROJECT.md §6 step 5).",
+                              "next": (f"Implement {top} and run the tests. If they regress, the rollback rules "
+                                       f"restore the checkpoint: then try {plan['order'][1]}.")}
+                else:
+                    result = {**first, "decision": "check_consequences", "consequence_plan": plan,
+                              "reason": "Close call: check the consequences before choosing (PROJECT.md §6).",
+                              "next": ("Run the static_checks, then one spike per option in consequence_plan.spikes "
+                                       "(never in the working tree). Skip an option's spike if its static checks "
+                                       "fail. Then call submit_consequences with the decision_id and the results.")}
+            record["stage"] = "awaiting_consequences" if result["decision"] == "check_consequences" else "decided"
+            return {**self._finish_decision(task, record, result), "memory_status": memory_status}
+
+        return self._logged("evaluate_options", task_id, run)
+
+    def submit_consequences(self, task_id: str, decision_id: str, results: list[dict]) -> dict:
+        """Second scoring pass with the host's structured consequence results as evidence (PROJECT.md §6)."""
+
+        # Structured results only (§6): notes are redacted and short, metrics are numbers with short names.
+        results = [{**r, "notes": redact(r.get("notes"), MAX_NOTE),
+                    "spike": None if r.get("spike") is None else {
+                        **r["spike"], "metrics": {k[:40]: v for k, v in (r["spike"].get("metrics") or {}).items()}},
+                    "static_checks": [{"name": redact(c["name"], MAX_OPTION), "passed": c["passed"]}
+                                      for c in r.get("static_checks") or []]}
+                   for r in results]
+
+        def run() -> dict:
+            task = self._task(task_id)
+            record = self.decisions.get(decision_id, self.settings.team_id)
+            if record is None or record["task_id"] != task.id:
+                raise ToolInputError(f"Unknown decision_id {decision_id!r} for this task. Use the decision_id "
+                                     "from evaluate_options.")
+            if record["stage"] != "awaiting_consequences":
+                raise ToolInputError("This decision is already made; submit_consequences runs once per close call. "
+                                     "Implement the chosen option, or call evaluate_options for a new decision.")
+            first = record["passes"][0]["result"]
+            evidence = {}
+            for r in results:
+                # Labels were redacted when stored; compare the host's label the same way.
+                label = next((c for c in first["close"] if same_option(c, r["option"])
+                              or same_option(c, redact(r["option"], MAX_OPTION))), None)
+                if label is None:
+                    raise ToolInputError(f"{r['option']!r} is not one of the close options: {first['close']}.")
+                evidence[label] = r
+            # Reuse what memory already had for options the host didn't test again.
+            for label, past in record["consequences"]["plan"]["from_memory"].items():
+                evidence.setdefault(label, past["result"])
+            options = [Option(**o) for o in record["options"]]
+            scorer, broken = self._scorer()
+            fear = sum(m["severity"] == "severe" for m in record["state"]["past_outcomes"])
+            result = second_pass(record["state"], options, evidence, scorer, self.settings, first,
+                                 fear_warnings=fear)
+            if broken:
+                result["scorer_status"] = "unavailable"
+            result["settled_by"] = "consequences"
+            record["passes"].append(_pass_log(2, result))
+            record["consequences"]["submitted"] = results
+            record["stage"] = "decided"
+            for r in results:  # spike results become memory for the next similar tie (MEMROUTER §13)
+                if (r.get("spike") or {}).get("ran"):
+                    self._call_memory(lambda m, r=r: m.record_spike(
+                        team_id=self.settings.team_id, situation=record["state"]["situation"],
+                        option=r["option"], result=r, project_id=task.project_id))
+            return self._finish_decision(task, record, result)
+
+        return self._logged("submit_consequences", task_id, run)
+
+    def _log_outcome(self, task: TaskState, chosen: str, episode_id: str | None, actual: Actual, verdict,
+                     recorded) -> None:
+        """Attach the outcome to the decision it implemented: the world-model training target (§6)."""
+        ev = task.last_evaluation
+        if not ev or not ev.get("decision_id"):
+            return
+        implemented = next((o for o in ev.get("options", []) if same_option(o, chosen)), None)
+        if implemented is None:
+            return  # a later, unrelated outcome
+        record = self.decisions.get(ev["decision_id"], self.settings.team_id)
+        if record is None:
+            return
+        record["outcomes"].append({
+            "option": implemented, "followed_decision": same_option(ev.get("chosen"), chosen),
+            "episode_id": episode_id, "recorded_at": now().isoformat(),
+            "success": actual.success, "tokens": actual.tokens, "cost_usd": actual.cost_usd,
+            "latency_ms": actual.latency_ms, "signal_type": actual.signal_type,
+            "tests": actual.test_results.model_dump(mode="json") if actual.test_results else None,
+            "judgement": verdict.report(), "surprise": recorded.surprise.surprise if recorded else None,
+        })
+        self.decisions.save(record)
+
+    def _scorer(self) -> tuple[Scorer | None, bool]:
+        try:
+            return self._scorer_factory(), False
+        except Exception as exc:  # e.g. no API key: rank on estimates, never block the host
+            log.warning("scorer unavailable: %s", exc)
+            return None, True
+
+    def _finish_decision(self, task: TaskState, record: dict, result: dict) -> dict:
+        result = {k: v for k, v in result.items() if k != "answers"}  # raw answers go to the log, not the host
+        if record["stage"] == "decided":
+            record["final"] = {k: result.get(k) for k in ("decision", "chosen", "predicted_success", "reason",
+                                                          "settled_by", "margin")}
+        self.decisions.save(record)
+        task.last_evaluation = {"decision_id": record["id"], "situation": record["state"]["situation"],
+                                "decision": result["decision"], "chosen": result["chosen"],
+                                "options": [o["label"] for o in record["options"]],
+                                "predicted_success": result["predicted_success"], "source": result["scorer"]}
+        self.tasks.save(task)
+        return {"task_id": task.id, "decision_id": record["id"], **result}
+
     def _take_baseline(self, task: TaskState) -> int:
         """Test runs made since start_task and before the first recall_context (so before any decision or
         edit) are the baseline (PROJECT.md §9). Taken by whichever of recall_context and record_outcome
@@ -293,8 +480,15 @@ class Platform:
             actual_success = verdict.success
             actual = Actual(success=actual_success, tokens=tokens, cost_usd=cost_usd, latency_ms=latency_ms,
                             test_results=tests, signal_type=signal)
-            predicted = Predicted(success=predicted_success, tokens=predicted_tokens,
-                                  cost_usd=predicted_cost_usd, latency_ms=predicted_latency_ms)
+            source, p_success = "host", predicted_success
+            ev = task.last_evaluation
+            if ev and ev.get("predicted_success") is not None and ev.get("source") \
+                    and same_option(ev.get("chosen"), chosen):
+                # §9: record what the scorer predicted for the option it chose, over the host's own guess, so
+                # predictor trust (Phase 6) measures Jev. Seen live: hosts pass their own predicted_success too.
+                source, p_success = ev["source"], ev["predicted_success"]
+            predicted = Predicted(success=p_success, tokens=predicted_tokens, cost_usd=predicted_cost_usd,
+                                  latency_ms=predicted_latency_ms, source=source)
 
             recorded, status = self._call_memory(lambda m: m.record(
                 team_id=self.settings.team_id,
@@ -336,6 +530,7 @@ class Platform:
             self.tasks.save(task)
             if captures:
                 self.tasks.consume_captures([c.id for c in captures], episode_id or f"task:{task.id}")
+            self._log_outcome(task, chosen, episode_id, actual, verdict, recorded)
 
             out: dict[str, Any] = {
                 "task_id": task.id,

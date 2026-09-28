@@ -12,7 +12,7 @@ from mcp import Client, StdioServerParameters
 
 from horizon.server import APIKeyMiddleware, create_server
 
-TOOLS = {"start_task", "recall_context", "record_outcome"}
+TOOLS = {"start_task", "recall_context", "evaluate_options", "submit_consequences", "record_outcome"}
 
 
 def payload(result) -> dict:
@@ -185,3 +185,39 @@ async def test_record_outcome_sets_provenance_from_client_info(platform, memrout
     agent = memrouter.store.get(out["episode_id"], "local").provenance.agent_id
     assert agent and "/" in agent  # "<client name>/<version>"
     assert platform.tasks.get(task_id, "local").plan == ["step 2"]
+
+
+@pytest.mark.anyio
+async def test_evaluate_options_over_mcp(platform):
+    async with Client(create_server(platform)) as client:
+        task_id = payload(await client.call_tool("start_task", {"goal": "Add persistence"}))["task_id"]
+        out = payload(await client.call_tool("evaluate_options", {
+            "task_id": task_id, "situation": "choose a database",
+            "options": [{"label": "PostgreSQL", "est_cost_usd": 20}, {"label": "SQLite", "est_cost_usd": 0.5}],
+        }))
+    # No scorer configured by default: ranked on the host's estimates, the host decides.
+    assert out["decision"] == "unscored" and out["chosen"] is None and out["scorer_status"] == "not_configured"
+    assert out["cheapest_by_estimates"] == ["SQLite", "PostgreSQL"]
+
+
+@pytest.mark.anyio
+async def test_consequence_round_trip_over_mcp(settings, task_store, memrouter, project_dir):
+    from test_decision import CLOSE, FakeScorer, with_scorer
+
+    platform = with_scorer(settings, task_store, memrouter, project_dir,
+                           FakeScorer(**CLOSE, second={"success": (0.9, 0.3)}))
+    async with Client(create_server(platform)) as client:
+        task_id = payload(await client.call_tool("start_task", {"goal": "Add persistence"}))["task_id"]
+        r = payload(await client.call_tool("evaluate_options", {
+            "task_id": task_id, "situation": "choose a database",
+            "options": [{"label": "PostgreSQL"}, {"label": "MongoDB"}]}))
+        assert r["decision"] == "check_consequences"
+        final = payload(await client.call_tool("submit_consequences", {
+            "task_id": task_id, "decision_id": r["decision_id"],
+            "results": [{"option": "PostgreSQL", "static_checks": [{"name": "dry run", "passed": True}],
+                         "spike": {"ran": True, "passed": True, "tests_passed": 3, "metrics": {"latency_ms": 4}}},
+                        {"option": "MongoDB", "spike": {"ran": False}}]}))
+        assert final["decision"] == "clear_winner" and final["chosen"] == "PostgreSQL"
+        bad = await client.call_tool("submit_consequences", {"task_id": task_id, "decision_id": r["decision_id"],
+                                                             "results": []})
+        assert bad.is_error and "already made" in bad.content[0].text
