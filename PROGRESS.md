@@ -223,6 +223,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Built:** `evals/longhorizon/`, 2 scenarios × 4 fresh Claude Code sessions each, with hidden acceptance tests and constraint checks run outside the repo. Reference solutions prove the tests are fair; a naive store proves the concurrency test discriminates. 5 tests in `tests/test_longhorizon.py`.
   - **Run 1** (Sonnet, live Jev; `evals/longhorizon/RESULTS.md`): **both arms were perfect** on the hidden tests and constraints. **Horizon cost +33 % (ledger) and +140 % (notes).** The baseline kept its own `NOTES.md`.
   - **Team scenario** (3 projects, fresh repos, the team's rules stated once): without Horizon, project 2 lost the rules (dashed ids, `+00:00` stamps). With Horizon it kept the timestamp rule, only because a past episode's situation matched, and lost the id rule. So **`start_task(team_rules=…)`**: the rules the user sets for every project are shown at session start in any project of the team. Run 1 was cut short in project 3 by the usage limit. **Run 2, with team rules:** projects 2–3 got 8/8 with Horizon against 5/8 without, at +39 % cost (`evals/longhorizon/RESULTS.md`).
+  - **Lean profile** (`install-claude-code --profile lean`): continuity only, meaning `start_task` with constraints and team rules, one `record_outcome`, `evaluate_options` only for hard-to-reverse choices, no baseline run and no per-run nudges. **Ablation, 3 repeats:** projects 2–3 got 24/24 with lean, 24/24 with full, and 15/24 without Horizon. Cost was +55 % for lean and +78 % for full.
   - **Gap found and fixed:** every Horizon session finished its own task, so session 1's constraints never reached later sessions. SessionStart now lists the project's recently completed tasks and their constraints.
 
 ## In progress
@@ -234,6 +235,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 **Long-horizon eval (session 13)**
 - The hidden tests and checks run outside the repo, so neither arm can see or overfit them.
 - One run per arm to start; repeat before believing a difference.
+- Lean stays opt-in: making it the default changes the product PROJECT.md describes, so that's the owner's call (open question 56).
 - Team rules: the latest task that sets `team_rules` holds the current set, so the user can drop a rule. It's read from the last 50 tasks' data, with no new table and no schema change.
 - SessionStart shows the last 3 completed tasks in the project (goal plus up to 10 constraints). Cheaper than resuming tasks automatically, and it keeps "one task per request" intact.
 
@@ -568,6 +570,8 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 53 | Should `auto` switch the world model on by itself, or should the owner flip it after reading `horizon eval-world-model`? | Default: `auto` (it switches on only after the gate passes, and the scorer still decides). Set `HORIZON_WORLD_MODEL=shadow` to keep it manual. |
 | 54 | Codex's transcript format differs, so attempt usage isn't captured there | Default: Claude Code only. Codex outcomes keep host-reported tokens (usually none). |
 | 55 | When to build the Dreamer-style model | Default: once there are a few thousand real episodes with outcomes (after the benchmark runs), trained on the exports, and plugged in through `HORIZON_WORLD_MODEL_CLASS` behind the same gate. |
+
+| 56 | Make `--profile lean` the default install? | Default: no, full stays the default until the owner decides. Evidence: equal quality at lower cost (evals/longhorizon/RESULTS.md). |
 
 **Needs the owner** (credentials, money or an irreversible decision): 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
