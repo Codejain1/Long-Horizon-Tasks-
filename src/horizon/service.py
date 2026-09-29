@@ -10,12 +10,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
 from horizon.config import Settings
-from horizon.memrouter.router import MemRouter
+from horizon.memrouter.router import MemRouter, task_type
 from horizon.memrouter.spikes import same_option
 from horizon.models import (
     Actual,
@@ -35,6 +36,8 @@ from horizon.redact import MAX_CONDITION_VALUE, MAX_NOTE, MAX_OPTION, MAX_SITUAT
 from horizon.decision.layer import Option, first_pass, plan_consequences, second_pass
 from horizon.decision.log import DecisionLog, new_record
 from horizon.decision.scorers import Scorer
+from horizon.decision.worldmodel import evaluate as evaluate_world_model
+from horizon.decision.worldmodel import fill_estimates, make_world_model
 from horizon.taskstate import rollback
 from horizon.taskstate.judge import judge, targets_from_goal
 from horizon.taskstate.store import TaskStore
@@ -100,6 +103,8 @@ class Platform:
         self._memrouter_factory = memrouter_factory
         self._memrouter: MemRouter | None = None
         self._scorer_factory = scorer_factory
+        self._world_model = None
+        self._gate: dict[str, tuple[float, dict]] = {}  # team -> (when, gate result)
         self.decisions = DecisionLog(tasks.db)
         self.cwd = os.path.realpath(cwd or os.getcwd())
 
@@ -116,6 +121,41 @@ class Platform:
         except Exception as exc:  # memrouter must never take task state down with it
             log.warning("memrouter unavailable: %s", exc)
             return None, "unavailable"
+
+    # --- world model (PROJECT.md §6), failure-isolated like memrouter ------------------------------
+
+    def _world(self):
+        if self._world_model is None:
+            self._world_model = make_world_model(self.settings, self._memory())
+        return self._world_model
+
+    def world_model_gate(self, refresh: bool = False) -> dict:
+        """Whether the world model beats the stand-ins on replayed outcomes; reused for a while (the replay is
+        the expensive part)."""
+        team = self.settings.team_id
+        cached = self._gate.get(team)
+        if cached and not refresh and time.monotonic() - cached[0] < self.settings.world_model_gate_ttl_s:
+            return cached[1]
+        result = evaluate_world_model(self._world(), team, self.settings)
+        self._gate[team] = (time.monotonic(), result)
+        return result
+
+    def _forecast(self, situation: str, conditions: list[Condition] | None, options: list[Option]) -> dict | None:
+        """The world model's forecast per option, logged with the decision. `active` = it may be used."""
+        mode = self.settings.world_model
+        if mode == "off":
+            return None
+        try:
+            started = time.monotonic()
+            forecasts = self._world().predict(self.settings.team_id, situation, conditions,
+                                              [o.label for o in options])
+            ms = round((time.monotonic() - started) * 1000, 1)
+            active = mode == "on" or (mode == "auto" and self.world_model_gate()["passed"])
+        except Exception as exc:  # a world model failure never blocks a decision
+            log.warning("world model unavailable: %s", exc)
+            return {"mode": mode, "status": "unavailable", "active": False}
+        return {"model": self._world_model.name, "mode": mode, "status": "ok", "active": active, "ms": ms,
+                "forecasts": {label: f.as_dict() for label, f in forecasts.items()}}
 
     def _task(self, task_id: str) -> TaskState:
         task = self.tasks.get(task_id, self.settings.team_id)
@@ -276,12 +316,20 @@ class Platform:
             }
             scorer, broken = self._scorer()
             bias = self._scorer_bias(scorer)
-            first = first_pass(state, options, scorer, self.settings, crucial_hint=crucial, fear_warnings=fear, bias=bias)
+            # The world model forecasts every option (logged for training and the gate); once active, its
+            # forecasts stand in for missing estimates and can settle a close call instead of spikes (§6).
+            world = self._forecast(situation, conditions, options)
+            active = bool(world and world["active"])
+            opts = options
+            if active:
+                opts, world["filled_estimates"] = fill_estimates(options, world["forecasts"])
+            first = first_pass(state, opts, scorer, self.settings, crucial_hint=crucial, fear_warnings=fear, bias=bias)
             if broken:
                 first["scorer_status"] = "unavailable"
             record = new_record(team_id=self.settings.team_id, project_id=task.project_id, task_id=task.id,
-                                state=state, options=[asdict(o) for o in options],
+                                state=state, options=[asdict(o) for o in opts],
                                 scorer={"name": first["scorer"], "status": first["scorer_status"]})
+            record["world_model"] = world
             record["passes"].append(_pass_log(1, first))
 
             result = first
@@ -289,14 +337,19 @@ class Platform:
                 past, _ = self._call_memory(lambda m: m.lookup_simulation(
                     team_id=self.settings.team_id, situation=situation, options=first["close"]))
                 plan = plan_consequences(first, situation, past or {}, self.settings,
-                                         can_roll_back=any(c.git for c in task.checkpoints))
+                                         can_roll_back=any(c.git for c in task.checkpoints),
+                                         forecasts=world["forecasts"] if active else None)
                 record["consequences"] = {"plan": plan, "submitted": None}
-                if plan["mode"] == "memory":  # every close option was tested before: settle from memory
+                if plan["mode"] in ("memory", "world_model"):
+                    # Every close option was tested before, or the rest are confidently forecast: no spikes.
                     evidence = {label: p["result"] for label, p in plan["from_memory"].items()}
-                    result = second_pass(state, options, evidence, scorer, self.settings, first,
-                                         fear_warnings=fear, stage="from past spike results", bias=bias)
+                    evidence.update({label: {"tested": False, "world_model": f}
+                                     for label, f in (plan.get("forecasts") or {}).items()})
+                    stage = "from past spike results" if plan["mode"] == "memory" else "from the world model's forecasts"
+                    result = second_pass(state, opts, evidence, scorer, self.settings, first,
+                                         fear_warnings=fear, stage=stage, bias=bias)
                     record["passes"].append(_pass_log(2, result))
-                    result["settled_by"] = "memory"
+                    result["settled_by"] = plan["mode"]
                     result["spike_tokens_avoided"] = int(sum(
                         ((p["result"].get("spike") or {}).get("metrics") or {}).get("tokens", 0)
                         for p in plan["from_memory"].values()))
@@ -394,6 +447,13 @@ class Platform:
             "judgement": verdict.report(), "surprise": recorded.surprise.surprise if recorded else None,
         })
         self.decisions.save(record)
+        # Predictor trust for the world model (MEMROUTER §5 step 4), from what it forecast before the outcome.
+        # A forecast with no real evidence behind it is just the base rate, so it isn't scored.
+        forecast = ((record.get("world_model") or {}).get("forecasts") or {}).get(implemented) or {}
+        if forecast.get("samples", 0) >= 1 and forecast.get("success") is not None:
+            kind = task_type([Condition(**c) for c in record["state"].get("conditions") or []])
+            self._call_memory(lambda m: m.graph.update_predictor(self.settings.team_id, "world_model", kind,
+                                                                 forecast["success"], actual.success))
 
     def _scorer_bias(self, scorer: Scorer | None) -> float:
         """The scorer's measured bias (mean predicted - mean actual success), once it has enough outcomes."""
@@ -626,7 +686,14 @@ class Platform:
             verdict = judge(task, tests, captures[0].failing if captures else None, actual_success,
                             self.settings.rollback_below)
             actual_success = verdict.success
-            actual = Actual(success=actual_success, tokens=tokens, cost_usd=cost_usd, latency_ms=latency_ms,
+            # What the attempt really cost, from the host's transcript (the PreToolUse hook): the host can't
+            # know its own token usage, so without this the efficiency targets would stay empty.
+            usage = self.tasks.take_usage(task.cwd, task.created_at, f"task:{task.id}") if task.cwd else None
+            usage = usage or {}
+            usage_used = bool(usage) and (tokens is None or latency_ms is None)
+            actual = Actual(success=actual_success, tokens=usage.get("tokens") if tokens is None else tokens,
+                            cost_usd=cost_usd,
+                            latency_ms=usage.get("latency_ms") if latency_ms is None else latency_ms,
                             test_results=tests, signal_type=signal)
             source, p_success = "host", predicted_success
             ev = task.last_evaluation
@@ -689,6 +756,7 @@ class Platform:
                 "memory_status": status,
                 "actual_success": round(actual_success, 3),
                 "test_results_source": tests.source if tests else None,
+                "usage_source": "hook" if usage_used else None,
                 "task_status": task.status,
                 "checkpoint_id": ckpt.id if ckpt else None,
                 "test_judgement": verdict.report(),

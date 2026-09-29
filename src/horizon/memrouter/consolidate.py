@@ -126,6 +126,9 @@ def export_parquet(router, team_id: str) -> str | None:
                          "situation": e["situation"], "chosen": e["chosen"]["label"],
                          "predicted_success": e["predicted"].get("success"), "predicted_source": e["predicted"]["source"],
                          "actual_success": e["actual"]["success"], "surprise": e["surprise"],
+                         # The world model's efficiency targets (PROJECT.md §6), flat for training.
+                         **{f"{side}_{k}": e[side].get(k) for side in ("predicted", "actual")
+                            for k in ("tokens", "cost_usd", "latency_ms")},
                          "low_confidence": e["low_confidence"], "severity": e["severity"],
                          "created_at": e["provenance"]["created_at"], "episode_json": json.dumps(e)})
     out = Path(router.settings.export_dir)

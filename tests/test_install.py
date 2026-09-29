@@ -19,7 +19,7 @@ def test_install_writes_mcp_hooks_and_snippet(tmp_path):
     hooks = settings["hooks"]
     assert hooks["SessionStart"][0]["hooks"][0]["command"] == "/venv/bin/python -m horizon hook session-start"
     assert hooks["PostToolUse"][0]["matcher"] == "Bash"
-    assert hooks["PreToolUse"][0]["matcher"] == "mcp__horizon__recall_context"
+    assert hooks["PreToolUse"][0]["matcher"] == "mcp__horizon__recall_context|mcp__horizon__record_outcome"
     assert hooks["PreToolUse"][0]["hooks"][0]["command"].endswith("hook pre-tool-use")
     assert hooks["Stop"][0]["hooks"][0]["command"].endswith("hook stop")
     assert settings["enabledMcpjsonServers"] == ["horizon"]

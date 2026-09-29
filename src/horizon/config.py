@@ -85,6 +85,14 @@ class Settings:
     spike_reuse_similarity: float = 0.85  # a past spike this similar (same option label) is reused
     try_reversible_threshold: float = 0.7  # every close option at least this reversible: try and roll back
     spike_budget_minutes: int = 10  # per spike, told to the host
+    # World model (PROJECT.md §6). "auto": forecasts are logged with every decision and used only once the
+    # replay gate shows they beat the stand-ins; "shadow": logged, never used; "on": always used; "off".
+    world_model: str = "auto"
+    world_model_class: str = ""  # "package.module:Class" to plug in another model, built as Class(router, settings)
+    world_model_min_similarity: float = 0.5  # past episodes less similar than this don't count as evidence
+    world_model_min_pairs: int = 30  # paired outcomes per stand-in before the gate can pass
+    world_model_settle_confidence: float = 0.6  # forecast confidence to settle a close call without spikes
+    world_model_gate_ttl_s: int = 600  # how long a gate result is reused before the replay runs again
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -134,4 +142,11 @@ class Settings:
             spike_reuse_similarity=get("SPIKE_REUSE_SIMILARITY", base.spike_reuse_similarity, float),
             try_reversible_threshold=get("TRY_REVERSIBLE_THRESHOLD", base.try_reversible_threshold, float),
             spike_budget_minutes=get("SPIKE_BUDGET_MINUTES", base.spike_budget_minutes, int),
+            world_model=get("WORLD_MODEL", base.world_model),
+            world_model_class=get("WORLD_MODEL_CLASS", base.world_model_class),
+            world_model_min_similarity=get("WORLD_MODEL_MIN_SIMILARITY", base.world_model_min_similarity, float),
+            world_model_min_pairs=get("WORLD_MODEL_MIN_PAIRS", base.world_model_min_pairs, int),
+            world_model_settle_confidence=get("WORLD_MODEL_SETTLE_CONFIDENCE", base.world_model_settle_confidence,
+                                              float),
+            world_model_gate_ttl_s=get("WORLD_MODEL_GATE_TTL_S", base.world_model_gate_ttl_s, int),
         )

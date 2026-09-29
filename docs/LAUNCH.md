@@ -20,13 +20,14 @@
 |---|---|---|
 | **Make the repo public** | Hard to reverse (CLAUDE.md decision rule) | Your go-ahead. Check the git history is clean of secrets first: no keys were ever committed, and every session checked. |
 | **Real benchmark runs** (Phase 1 baseline: smoke run, then 50 × 3) | Costs money | `ANTHROPIC_API_KEY` and `SWEBENCH_API_KEY`, then `real_runs: true` in `bench/config.yaml`. Worst case about $160. |
-| **A platform benchmark** (the agent *with* Horizon) | mini-SWE-agent doesn't speak MCP (open question 10), and the §18 second baseline, Claude Code headless, isn't built yet | Decide whether Claude Code headless becomes the headline benchmark (§18 "later"). It would run on a subscription, but needs Docker for SWE-bench environments. |
+| **The platform benchmark** (the agent *with* Horizon) | Built: `horizon-bench run --agent claude-code` (the baseline) and `--with-horizon` (the platform), with the same agent and model | A Claude Code login plus `SWEBENCH_API_KEY` for evaluation, and a machine with the task repos' build tools (local checkouts). Run both at full stage × 3 repeats. |
 | **The write-up** | Needs the benchmark numbers | The benchmark runs above. |
 | **Hosting provider** | §17: decided at launch | A provider and a domain. The compose file is provider-neutral. |
 | **Pricing, free tier, payments** | §15, open question 48 | Prices (the placeholders are in `accounts.py`), and a payment provider if any. |
 | **Build and run the Docker image once** | Docker wasn't available in the build session | `docker compose up --build` on any machine with Docker. The same steps already passed in a clean Python environment. |
-| **Tracing (Langfuse)** | §10 names an existing tracing tool; that needs an account | A Langfuse project and keys, if wanted. Until then, `tool_calls`, the decision log and `horizon stats` cover internal debugging. |
-| **Privacy hard-delete** | Open question 47: it conflicts with "episodes are never deleted" | A decision on legal-request erasure. |
+| **Tracing (Langfuse)** | §10 names an existing tracing tool; that needs an account | A Langfuse project and keys, if wanted. Until then, the tool-call log, decision log, weight log and `horizon stats` cover internal debugging. |
+| **The Jev vs small-LLM comparison** | `horizon compare-scorers` is built; running it calls both APIs | `TYPESAFE_API_KEY` and Claude API credentials, after some real decisions have outcomes. |
+| **The erasure policy** | `horizon purge-memory` (operator-only, audited) is built; when to use it is a policy call | The policy for legal requests, and whether exports older than the purge must be rebuilt. |
 
 ## Launch-day steps (once the above are done)
 

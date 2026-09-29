@@ -11,7 +11,7 @@ Horizon is an MCP server. Claude Code decides when to call it, so reliable calli
 | Hook | Event | What it does |
 |---|---|---|
 | `horizon hook session-start` | `SessionStart` | Injects the workflow rules and lists active tasks for this project, so a resumed session continues the same task. |
-| `horizon hook pre-tool-use` | `PreToolUse` (matcher `mcp__horizon__recall_context`) | Just before each `recall_context`, records a **checkpoint reference**: a git commit of the working tree (`git stash create`, or `HEAD` when clean; nothing in the repo changes) and the latest user prompt, which is the Claude Code checkpoint to pick in `/rewind`. The recall attaches it to the task, and the next decision records it. Silent, except right after a rollback: if the working tree doesn't match the rollback target, it **denies that one recall** with the restore command. It does this at most once per rollback, so it never loops. |
+| `horizon hook pre-tool-use` | `PreToolUse` (matcher `mcp__horizon__recall_context\|mcp__horizon__record_outcome`) | Just before each `recall_context`, records a **checkpoint reference**: a git commit of the working tree (`git stash create`, or `HEAD` when clean; nothing in the repo changes) and the latest user prompt, which is the Claude Code checkpoint to pick in `/rewind`. The recall attaches it to the task, and the next decision records it. Silent, except right after a rollback: if the working tree doesn't match the rollback target, it **denies that one recall** with the restore command. It does this at most once per rollback, so it never loops. Just before each `record_outcome`, it sums the **token usage and elapsed time** of the model turns since the last `recall_context` from the transcript (counts only), and `record_outcome` records them as the attempt's actual tokens and latency unless the host passed its own. |
 | `horizon hook post-tool-use` | `PostToolUse` (matcher `Bash`) | When the command is a test run (pytest, unittest, jest, vitest, go, cargo, rspec, …), it parses the pass/fail **counts** and stores them. `record_outcome` then uses these real counts instead of the model's summary (`PROJECT.md` §9). It also nudges the model to call `record_outcome`. Raw output is never stored. |
 | `horizon hook stop` | `Stop` | Quiet by default. It speaks only when an active task has an **unrecorded outcome**: a test run from this session that no `record_outcome` has used. Then it blocks the stop once and asks for `record_outcome`. It nudges at most once per test run and never loops. |
 
@@ -74,7 +74,7 @@ The chosen option's predicted success is recorded on the episode when `record_ou
 ### Consequence checking on close calls (`PROJECT.md` §6)
 
 A close call doesn't pick straight away. The chain runs cheapest first:
-1. **Memory:** past spike results for the same option in a similar decision are reused (`HORIZON_SPIKE_REUSE_SIMILARITY` 0.85). If every close option was tested before, the decision is settled from memory (`settled_by: "memory"`).
+1. **Memory:** past spike results for the same option in a similar decision are reused (`HORIZON_SPIKE_REUSE_SIMILARITY` 0.85). If every close option was tested before, the decision is settled from memory (`settled_by: "memory"`). If the rest are confidently forecast by an active world model (below), it is settled from those forecasts (`settled_by: "world_model"`).
 2. **Try and roll back:** if every close option is cheap to undo (`HORIZON_TRY_REVERSIBLE_THRESHOLD` 0.7), the task has a git checkpoint, and the stakes aren't high, the decision is `try_and_rollback`. The host implements `chosen`, and the Phase 3 rollback rules restore the checkpoint if the tests regress. The next option to try is in `try_order`.
 3. **Otherwise `check_consequences`:** `consequence_plan` lists cheap **static checks** (the dependency resolves, licence and platform fit, lint/type config), plus one **spike** per untested option. Each spike says what to build and what to measure, with a time budget. Spikes are built under `.horizon/spikes/` in the project (git-ignored by the installer) and deleted afterwards.
 4. **`submit_consequences(task_id, decision_id, results)`:** structured results per option (`static_checks[{name, passed}]`, `spike{ran, passed, tests_passed, tests_failed, metrics{…}, duration_s}`, one short note). The scorer re-scores the close options with the results as evidence and answers the consequence questions: *would it break existing tests?* and *will it cost noticeably more?* Spike metrics named `latency_ms`, `tokens` or `cost_usd` replace the host's estimates. An option that failed a static check or its spike is eliminated. A second tie doesn't loop: it takes the cheaper or more reversible option, or asks a human if the stakes are high. Spike results are stored in memory for the next similar tie.
@@ -89,6 +89,19 @@ Every decision is logged as one versioned record (`schema: "horizon.decision"`, 
 - the outcomes the host later recorded for any of the options (success, tests, tokens, cost, the baseline judgement, surprise, and whether the host followed the decision).
 
 `horizon export-decisions --out decisions.jsonl [--with-outcomes-only]` writes them as JSON Lines, one training example per line: state → option → consequences → outcome.
+
+### World model (`PROJECT.md` §6)
+
+Every `evaluate_options` also asks the **world model** for each option's success, tokens, cost and latency. It takes about 7 ms for 5 options over 5,000 episodes. The forecasts are logged in the decision record (`world_model`).
+- **The model** (`kernel-v1`): a similarity-weighted estimate over every past episode about the same option, including archived ones, shrunk towards the team's base rate when evidence is thin. It learns with every outcome and needs no training step. `HORIZON_WORLD_MODEL_CLASS=package.module:Class` plugs in another model (for example one trained on the exports), built as `Class(router, settings)`.
+- **The gate:** `horizon eval-world-model` predicts each past episode from strictly earlier ones and compares the model's Brier score with what Jev, the small LLM and the host predicted for the same episodes. It passes only when the model is clearly better (a one-sided paired test at 95 %) than every stand-in with `HORIZON_WORLD_MODEL_MIN_PAIRS` (30) paired outcomes.
+- **When it's used:** only while it's active. Then its forecasts fill token, cost and latency estimates the host didn't give. On a close call where every untested option is forecast with confidence ≥ `HORIZON_WORLD_MODEL_SETTLE_CONFIDENCE` (0.6), the forecasts replace spikes as the evidence for the second scoring pass (`settled_by: "world_model"`). This step comes after memory and before try-and-rollback. The scorer still decides.
+- **Its accuracy** is tracked as predictor source `world_model` in `horizon stats`.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HORIZON_WORLD_MODEL` | `auto` | `auto`: logged, and active once the gate passes (re-checked every `HORIZON_WORLD_MODEL_GATE_TTL_S`, 600 s). `shadow`: logged only. `on`: always active. `off`. |
+| `HORIZON_WORLD_MODEL_CLASS` | none | Plug in another world model. |
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -121,6 +134,14 @@ Every answer, including decline, cancel and "client can't ask", is logged. The c
 - **Credits:** each call is checked against and charged to the team's balance. Current prices: 1 for `start_task`, `recall_context` and `record_outcome`; 5 for `evaluate_options` and `submit_consequences`; inspection and approvals are free. At zero the tool returns an error, and the host carries on without Horizon.
 - **Account page:** sign in with a key. It shows credits, keys (create, with the key shown once, and revoke), usage for the last 30 days, the credit history, and **savings per session**. Savings are counted events only: decisions scored, close calls settled from memory, options ruled out before implementing, regressions caught by a rollback, fear warnings, and human approvals, plus tokens saved where past spikes reported their token cost.
 - **JSON API:** `GET /api/account`, `POST /api/keys`, `DELETE /api/keys/{id}`, with a Bearer team key.
+
+## Less common options
+
+- **`recall_context(checkpoint_commit=…)`:** for hosts without Horizon's hooks, the git commit to roll back to if this step fails.
+- **`record_outcome(subagent=…)`:** the subagent that did the work, recorded in the memory's provenance as `client:subagent`.
+- **`HORIZON_OTHER_PROJECT_FACTOR`** (0.85): how much memories from other projects in the team count. 0 makes projects hard walls.
+- **A severe outcome** (`severity: "severe"`) creates a fear lesson and escalates to the user at once.
+- **Operator commands:** `horizon consolidate`, `horizon clear-fear ID --by NAME`, `horizon purge-memory ID --reason … --by … --yes` (hard erasure of one episode, e.g. for a legal request; exports to rebuild are listed), `horizon export-decisions`, `horizon compare-scorers`, `horizon eval-world-model`, `horizon stats`.
 
 ## Memory that learns (`MEMROUTER.md`, Phase 6)
 

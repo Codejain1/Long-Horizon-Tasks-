@@ -6,6 +6,8 @@
 - PreToolUse (recall_context): snapshot the project (git + Claude Code checkpoint
   reference) just before each decision, so a failed attempt can be rolled back. After a
   rollback, deny that recall once if the working tree wasn't restored.
+- PreToolUse (record_outcome): the attempt's real token usage and duration, summed from
+  the transcript since the last recall_context (counts only).
 - Stop: only when a task has an unrecorded outcome (a test run no record_outcome used),
   block once and ask for it. Each test run is nudged about at most once.
 
@@ -28,6 +30,7 @@ from horizon.models import Checkpoint, TestCapture
 from horizon.redact import redact
 from horizon.taskstate.checkpoints import capture, restore_steps, same_tree
 from horizon.taskstate.store import TaskStore
+from horizon.taskstate.usage import attempt_usage
 from horizon.testparse import is_test_command, parse_test_output
 
 WORKFLOW = (
@@ -161,6 +164,9 @@ class Local:
     def stop(self, project, session):
         return core_stop(self.store, self.team, project, session)
 
+    def usage(self, project, session, usage):
+        self.store.add_usage(project, session, usage)
+
 
 class Remote:
     """Hosted mode: the hooks talk to the Horizon server with the team's API key. Only parsed facts are sent
@@ -193,6 +199,9 @@ class Remote:
     def stop(self, project, session):
         return self._post("stop", {"project": project, "session_id": session})
 
+    def usage(self, project, session, usage):
+        self._post("usage", {"project": project, "session_id": session, "usage": usage})
+
 
 def project_key(path: str) -> str:
     """Hosted mode's name for a project: a hash of its path, so the server matches tasks without seeing it."""
@@ -209,12 +218,19 @@ def post_tool_use(payload: dict, backend, project: str) -> dict | None:
 
 
 def pre_tool_use(payload: dict, backend, project: str) -> dict | None:
-    """Records a checkpoint reference that the recall_context call about to run attaches to its task.
+    """Before recall_context: records a checkpoint reference that the call attaches to its task.
+    Before record_outcome: records the attempt's real token usage and duration from the transcript.
 
     Silent, except right after a rollback: if the tree doesn't match the rollback target, the recall is
     denied once with the restore command (PROJECT.md §8: restore, then retry). Never twice in a row.
     """
-    if not str(payload.get("tool_name", "")).endswith("__recall_context"):
+    tool = str(payload.get("tool_name", ""))
+    if tool.endswith("__record_outcome"):
+        usage = attempt_usage(payload.get("transcript_path"))
+        if usage:
+            backend.usage(project, payload.get("session_id"), usage)
+        return None
+    if not tool.endswith("__recall_context"):
         return None
     cwd = project_dir(payload)
     ckpt = capture(cwd, payload.get("session_id"), payload.get("transcript_path"))

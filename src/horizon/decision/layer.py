@@ -228,14 +228,19 @@ def first_pass(state: dict, options: list[Option], scorer: Scorer | None, settin
 
 
 def plan_consequences(first: dict, situation: str, from_memory: dict[str, dict], settings, *,
-                      can_roll_back: bool) -> dict:
+                      can_roll_back: bool, forecasts: dict[str, dict] | None = None) -> dict:
     """What to check for the close options, cheapest first (§6). Returns the plan; `mode` is one of
-    "memory" (everything already tested before), "try_and_rollback" or "spikes"."""
+    "memory" (everything already tested before), "world_model" (the rest confidently forecast),
+    "try_and_rollback" or "spikes". `forecasts` are the world model's, passed only when it is active."""
     close = first["close"]
     rows = {r["label"]: r for r in first["options"]}
     to_test = [label for label in close if label not in from_memory]
     if not to_test:
         return {"mode": "memory", "from_memory": from_memory}
+    if forecasts and all((forecasts.get(label) or {}).get("confidence", 0) >= settings.world_model_settle_confidence
+                         for label in to_test):
+        return {"mode": "world_model", "from_memory": from_memory,
+                "forecasts": {label: forecasts[label] for label in to_test}}
     cheap_to_undo = all((rows[label]["reversible"] or 0) >= settings.try_reversible_threshold for label in close)
     if can_roll_back and cheap_to_undo and not first["high_stakes"]:
         return {"mode": "try_and_rollback", "from_memory": from_memory, "order": close}
@@ -263,10 +268,11 @@ def second_pass(state: dict, options: list[Option], evidence: dict[str, dict], s
                 bias: float = 0.0) -> dict:
     """Re-score the close options with `evidence` ({label: consequence result}) and decide. No further loop."""
     close = [o for o in options if o.label in first["close"]]
-    # Real measurements from spikes replace the host's estimates.
+    # Real measurements from spikes replace the host's estimates; failing those, the world model's forecasts.
     for i, o in enumerate(close):
-        metrics = ((evidence.get(o.label) or {}).get("spike") or {}).get("metrics") or {}
-        close[i] = replace(o, **{f"est_{d}": float(metrics[d]) for d in MEASURED if d in metrics})
+        ev = evidence.get(o.label) or {}
+        metrics = (ev.get("spike") or {}).get("metrics") or ev.get("world_model") or {}
+        close[i] = replace(o, **{f"est_{d}": float(metrics[d]) for d in MEASURED if metrics.get(d) is not None})
     state = {**state, "options": [{"label": o.label, "description": o.description} for o in close],
              "consequences": [{"option": o.label, **(evidence.get(o.label) or {"tested": False})} for o in close]}
 

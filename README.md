@@ -92,6 +92,7 @@ uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision,export,web
 .venv/bin/pytest                                                   # SQLite
 HORIZON_TEST_PG_URL=postgresql://user:pass@localhost/db .venv/bin/pytest   # plus Postgres + pgvector
 .venv/bin/horizon-bench run --stage smoke                          # benchmark harness, dry run
+.venv/bin/horizon-bench run --stage smoke --agent claude-code --with-horizon   # Horizon itself, dry run
 demo/reliability/run.sh /tmp/rel1                                   # does a real Claude Code call the tools?
 ```
 

@@ -232,6 +232,13 @@ Tokens saved are counted only where past spikes reported their token cost.</p>
             return None
         if op == "stop":
             return local.stop(project, str(body.get("session_id") or "")[:100] or None)
+        if op == "usage":  # counts and a duration only
+            raw = body["usage"]
+            usage = {k: max(0, int(raw.get(k) or 0)) for k in ("tokens", "input", "output", "cache_write",
+                                                                "cache_read", "turns")}
+            usage["latency_ms"] = None if raw.get("latency_ms") is None else max(0, int(raw["latency_ms"]))
+            local.usage(project, str(body.get("session_id") or "")[:100] or None, usage)
+            return None
         raise HTTPException(404, "unknown hook")
 
     # --- JSON API ------------------------------------------------------------------------

@@ -83,6 +83,15 @@ flowchart TD
 - Memory feeds Jev evidence (track records, fear warnings) before scoring.
 - Keep a small-LLM scorer as comparison to prove Jev's value.
 
+**As built** (`src/horizon/decision/`, the `evaluate_options` tool):
+- **One Jev request per decision.** Crucial = any of *hard to reverse*, *shapes many later steps* or *real cost* at ≥ 0.5. High stakes = *real-world harm that is hard to undo* (money, messages to people, destroying user or production data) at ≥ 0.5, or a matching fear lesson.
+- **Per option:** success (a Noul, which is also the recorded prediction), compatibility and architecture fit (5-level Scores), and reversibility. Cost, tokens and latency come from the host's estimates, relative to the cheapest option.
+- **Weights:** success 0.30, compatibility 0.20, architecture fit 0.20, cost 0.15, tokens 0.10, latency 0.05; in the second pass also no_regressions 0.20 and relative_cost 0.10. They're renormalised over the dimensions available.
+- **Clear winner** = a lead ≥ 0.10 with the leader's Score confidence ≥ 0.5. After evidence, a lead ≥ 0.20 stands even with low confidence.
+- **Scorer bias:** once a scorer has 20+ outcomes, its measured bias is subtracted from its success estimates (`MEMROUTER.md` §5 step 4).
+- **The comparison scorer:** `HORIZON_SCORER=llm` (Claude Haiku) sits behind the same interface. `horizon compare-scorers` replays logged decisions through both scorers and reports agreement and Brier scores against outcomes.
+- **The final decision** is one of `routine`, `clear_winner`, `check_consequences`, `try_and_rollback`, `close_call`, `ask_human` (the user picks through an MCP user-input request, which becomes `human_choice`) or `unscored`.
+
 ## 6. Consequence checking ("world model")
 
 Generative world model is too expensive and we don't want generated text — only consequences. Chain, cheapest first:
@@ -96,6 +105,23 @@ Generative world model is too expensive and we don't want generated text — onl
 **Learned world model (later):** DreamerV3-style latent world model trained on our logged state → option → outcome data. Predicts success, tokens, cost in latent space in milliseconds. Kept in the architecture from day one behind the same interface; swapped in only when it beats the stand-ins. **Log data in a trainable format from day one.**
 
 Open experiment: on a sample of ties, run all options for real, then compare Jev vs simulation accuracy and cost. Also a strong publishable result.
+
+**As built** (`submit_consequences`):
+- **The chain for a close call:**
+  1. past spike results from memory (settled from memory if every close option was tested before);
+  2. try-and-rollback when every close option has reversibility ≥ 0.7, a git checkpoint exists and the stakes aren't high;
+  3. otherwise a plan of static checks, then one spike per option.
+- **A plan spike** is `{option, build, measure[], budget_minutes}`, built under the git-ignored `.horizon/spikes/`.
+- **A submitted result** is `{option, static_checks[{name, passed}], spike{ran, passed, tests_passed, tests_failed, metrics{name: number}, duration_s}, notes}`.
+- **The second pass** re-asks the per-option questions with `consequences` in the state, plus *breaks existing tests?* and *costlier?*. A failed check eliminates an option; spike metrics replace estimates; a second tie doesn't loop.
+- **World-model log format:** one versioned record per decision (`horizon.decision` v1). It holds the state, every raw scorer answer from both passes, the consequences, the final decision and the outcomes; `horizon export-decisions` writes JSONL. Episodes are exported to Parquet by the sleep job.
+- **The world-model interface and a first learned model** (`src/horizon/decision/worldmodel.py`):
+  - `WorldModel.predict(situation, conditions, options)` returns each option's success, tokens, cost and latency, with a confidence. `HORIZON_WORLD_MODEL_CLASS` swaps in another implementation, such as a Dreamer-style model trained on the exports.
+  - The first model, `kernel-v1`, is a similarity-weighted estimate over every episode about the same option, archived ones included, shrunk towards the team's base rate. It learns online, from an in-memory index that updates incrementally (a removal or purge reloads it), and answers in milliseconds.
+  - **"Swapped in only when it beats the stand-ins":** a replay predicts each past episode from strictly earlier ones. The model must be clearly better (a one-sided paired test at 95 %) than every stand-in (Jev, the small LLM, the host) with 30+ paired outcomes (`horizon eval-world-model`).
+  - Until then (`HORIZON_WORLD_MODEL=auto`), forecasts are only logged with each decision. Once active, they fill missing estimates and settle a close call when every untested option is confidently forecast. That step comes after memory and before try-and-rollback, and Jev still re-scores with the forecasts as evidence. Its accuracy is tracked as predictor source `world_model`.
+  - **Efficiency targets:** the PreToolUse hook sums an attempt's real token usage and time from the host's transcript before `record_outcome`, so outcomes carry actual tokens and latency.
+
 
 ## 7. Memrouter
 
@@ -119,6 +145,11 @@ Full spec in `MEMROUTER.md`. Summary of decisions:
 - **Checkpoints** use the host's own mechanisms (git commits, Claude Code checkpoints); we record checkpoint references with each decision.
 - **Rollback:** restore, feed the failure reason back into the decision step, enforce retry limit, escalate to human after the limit.
 
+**As built:**
+- **Checkpoints:** before each `recall_context`, a hook records a git snapshot (`git stash create` or HEAD; nothing changes in the repo) and, in Claude Code, the `/rewind` prompt. Hosts without hooks can pass `checkpoint_commit`.
+- **Rollback:** a regression (§9) returns `rollback` with the restore command, always to the checkpoint from before the first failure in the streak. The failure reasons are fed back in `task_state.retry`, and the recall hook refuses one recall if the tree wasn't restored.
+- **Limits:** after 3 consecutive failed attempts (`HORIZON_MAX_ATTEMPTS`), **or at once for a severe outcome**, the task is escalated. The user is asked through an MCP user-input request, and their answer resumes the task.
+
 ## 9. Outcome and testing layer
 
 - **Heavy testing after every implementation** is the ground truth.
@@ -126,6 +157,10 @@ Full spec in `MEMROUTER.md`. Summary of decisions:
 - Signals, cheapest first: **automatic** (tests, builds, type/lint checks) → **implicit** (user accepts / edits / reverts) → **human approval** only when others are missing, confidence is low, or stakes are high (spending money, sending messages, deleting data).
 - Outcomes are **self-reported by the host** → risk of skipping or misreporting. Use **hooks** to capture real test output instead of trusting the model's summary.
 - Record: option chosen, what Jev and simulation predicted, what tests found.
+- **As built:**
+  - "Heavy testing" = the host's own test suite. It runs once before any change (the baseline) and after every change.
+  - The PostToolUse hook captures counts and failing test ids, never output, and they override the host's report.
+  - Implicit signals aren't captured automatically: the host can pass `signal_type: "implicit"` (for example when the user reverts a change).
 
 ## 10. User interface
 
@@ -154,6 +189,10 @@ Full spec in `MEMROUTER.md`. Summary of decisions:
 
 **Later:** Python SDK and LangGraph adapter for teams building their own agents.
 
+**As built:**
+- **Tools:** `start_task`, `recall_context`, `evaluate_options`, `submit_consequences`, `record_outcome`, `explain_decision`, `show_memories`, `delete_memory` and `clear_fear`.
+- **Hosts:** Claude Code and Codex, each with an installer (`horizon install-claude-code` / `install-codex`, optionally `--hosted URL`), the same hooks, and one snippet for CLAUDE.md and AGENTS.md.
+
 ## 12. Privacy and data
 
 - Store **decision summaries, conditions and outcomes — not raw code**.
@@ -173,6 +212,8 @@ Benchmark after every phase; cut anything that doesn't move success rate or cost
 6. **Memrouter learning** — `MEMROUTER.md` build steps 2–7: surprise-based links, spreading activation, Jev attention filter, decay, consolidation (sleep job), conditions and reconsolidation, fear memories, predictor trust and simulation reuse. Show improvement over repeated runs vs a standard memory layer.
 7. **Inspection tools, approvals, web page for keys/credits.**
 8. **Launch** — publish repo, benchmarks and write-up.
+
+**Status:** phases 1–7 are built and tested, and phase 8's preparation is done (`docs/LAUNCH.md`). Publishing, the real benchmark runs and the write-up wait on the owner (public release, credits).
 9. **Later** — learned world model, SDK/LangGraph adapter, team dashboard, colony layer.
 
 Wedge: **coding agents first** (verifiable outcomes, real token pain). Expand to other task types once the loop works.
@@ -187,21 +228,18 @@ Wedge: **coding agents first** (verifiable outcomes, real token pain). Expand to
 - Rate of reliable MCP invocation by the host.
 - Human approval rate (should fall over time).
 
+Where to find them: benchmark reports (`horizon-bench report`) for success, tokens, cost and repeated runs; `horizon stats` for invocation, the share settled from memory, predictor trust, approvals and context tokens; `horizon compare-scorers` for Jev against the comparison scorer; `horizon eval-world-model` for the world model against Jev, the small LLM and the host.
+
 ## 15. Still open
 
-**Specs to write:**
-- Decision service: exact Jev questions, weights, thresholds, crucial-decision detection.
-- Consequence checking: spike format, measurements, structured result schema.
-- Outcome layer: what "heavy testing" includes; scoring of results.
-- MCP tool schemas and hook set.
-- Data logging format for the future world model.
+**Specs written** (in §5, §6, §8, §9, `MEMROUTER.md` and the code): the decision service's questions, weights, thresholds and crucial-decision detection; the spike format and structured result schema; what "heavy testing" includes; the MCP tool schemas and hook set (`docs/CLAUDE_CODE.md`, `docs/CODEX.md`); and the world-model logging format.
 
-**To resolve:**
-- Test Jev access for real (API, pricing, limits).
-- Reconcile with the existing memrouter project (results not yet shared).
-- Name check: another GitHub project is already called MemRouter.
-- Positioning, credit pricing, free tier limits.
-- Build-in-public plan.
+**Resolved:**
+- **Jev access:** tested live.
+- **The existing memrouter project:** its finding that scoped retrieval beat activation on real data became the scope knob (`other_project_factor`; 0 = walls).
+- **The name:** the product is **Horizon**; "memrouter" is only the internal component.
+
+**Still open (owner):** positioning, credit pricing and free-tier limits (the placeholders are in `accounts.py`), the build-in-public plan, and tracing (it needs a Langfuse account).
 
 ## 16. Key risks
 
@@ -228,7 +266,7 @@ Wedge: **coding agents first** (verifiable outcomes, real token pain). Expand to
 **Baseline**
 - **Agent:** mini-SWE-agent (simple, standard open-source SWE-bench baseline).
 - **Model:** `claude-sonnet-5` via the Anthropic API.
-- **Later:** add Claude Code headless as a second baseline, since that is our real host.
+- **Second baseline, built:** Claude Code headless (`horizon-bench run --agent claude-code`), since that is our real host. Only this agent can measure the platform: `--with-horizon` installs Horizon in each task repo, with memory carried over the tasks and repeats of a run, and the same agent and model run without it for the baseline. mini-SWE-agent can't call MCP tools.
 - **Rule:** the baseline and every later platform run use the **same agent and model**, so differences come from the platform only.
 
 **Tasks**

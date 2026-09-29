@@ -41,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("compare-scorers", help="Replay logged decisions through Jev and the small LLM (PROJECT.md §5).")
     p.add_argument("--limit", type=int, default=50, help="Most recent decisions to replay.")
 
+    sub.add_parser("eval-world-model", help="Replay past outcomes through the world model and compare it with "
+                                            "the stand-ins (PROJECT.md §6).")
+
     p = sub.add_parser("purge-memory", help="Operator only: erase one episode for good (e.g. a legal request).")
     p.add_argument("episode_id")
     p.add_argument("--reason", required=True)
@@ -123,6 +126,13 @@ def main(argv: list[str] | None = None) -> int:
                    "llm": make_scorer("llm", settings.jev_model, settings.llm_scorer_model)}
         with connected(settings.db_url) as db:
             print(json.dumps(compare(DecisionLog(db), settings.team_id, scorers, settings, args.limit), indent=2))
+    elif args.cmd == "eval-world-model":
+        from horizon.decision.worldmodel import evaluate, make_world_model
+        from horizon.server import build_memrouter
+
+        settings = Settings.from_env()
+        report = evaluate(make_world_model(settings, build_memrouter(settings)), settings.team_id, settings)
+        print(json.dumps({"mode": settings.world_model, **report}, indent=2))
     elif args.cmd == "purge-memory":
         if not args.yes:
             print("This erases the episode for good and can't be undone. Re-run with --yes.", file=sys.stderr)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Horizon reliability demo: run 6 small coding tasks as separate headless Claude Code sessions,
+# Horizon reliability demo: run 7 small coding tasks as separate headless Claude Code sessions,
 # with Horizon declared in the project's .mcp.json and its hooks installed, then report how
 # reliably the tools were called.
 #
