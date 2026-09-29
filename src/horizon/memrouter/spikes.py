@@ -48,22 +48,22 @@ class SpikeStore:
         return sid
 
     def search(self, team_id: str, vector: np.ndarray, model: str, k: int = 10) -> list[tuple[dict, float]]:
-        """Nearest past spikes, best first: ({situation, option, result, created_at}, similarity)."""
-        cols = "situation, option, result, created_at"
+        """Nearest past spikes, best first: ({situation, option, result, created_at, id}, similarity)."""
+        cols = "situation, option, result, created_at, id"
         if self.db.kind == "postgres":
             q = self.db.vector(vector)
             rows = self.db.fetchall(
                 f"SELECT {cols}, 1 - (embedding <=> %s) FROM spike_results WHERE team_id = %s AND"
                 " embedding_model = %s ORDER BY embedding <=> %s LIMIT %s", (q, team_id, model, q, k))
-            sims = [float(r[4]) for r in rows]
+            sims = [float(r[5]) for r in rows]
         else:
             rows = self.db.fetchall(f"SELECT {cols}, embedding FROM spike_results WHERE team_id = %s AND"
                                     " embedding_model = %s", (team_id, model))
             if not rows:
                 return []
-            matrix = np.frombuffer(b"".join(r[4] for r in rows), dtype=np.float32).reshape(len(rows), self.dim)
+            matrix = np.frombuffer(b"".join(r[5] for r in rows), dtype=np.float32).reshape(len(rows), self.dim)
             all_sims = matrix @ np.asarray(vector, dtype=np.float32)
             order = np.argsort(-all_sims)[:k]
             rows, sims = [rows[i] for i in order], [float(all_sims[i]) for i in order]
-        return [({"situation": r[0], "option": r[1], "result": load_json(r[2]), "created_at": str(r[3])}, s)
+        return [({"situation": r[0], "option": r[1], "result": load_json(r[2]), "created_at": str(r[3]), "id": r[4]}, s)
                 for r, s in zip(rows, sims)]

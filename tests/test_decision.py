@@ -286,3 +286,33 @@ def test_after_evidence_a_large_lead_stands_despite_low_confidence(settings):
     assert r["decision"] == "clear_winner" and r["margin"] >= 2 * settings.clear_margin
     small = FakeScorer(**CLOSE, confidence=0.3, second={"success": (0.75, 0.6)})  # lead < 2x margin: still close
     assert decide(OPTS, small, settings, {})["decision"] == "close_call"
+
+
+def test_a_measured_scorer_bias_is_corrected_but_the_raw_prediction_is_recorded(settings, task_store, memrouter,
+                                                                                 project_dir):
+    for _ in range(20):  # Jev has been 0.3 too optimistic over 20 outcomes
+        memrouter.graph.update_predictor("local", "jev", "general", 0.8, 0.5)
+    platform = with_scorer(settings, task_store, memrouter, project_dir, FakeScorer())
+    task_id = platform.start_task("x")["task_id"]
+    r = platform.evaluate_options(task_id, "choose a database", OPTS)
+    assert r["calibration_bias"] == pytest.approx(0.3)
+    pg = next(o for o in r["options"] if o["label"] == "PostgreSQL")
+    assert pg["dimensions"]["success"] == pytest.approx(0.5) and pg["success_raw"] == 0.8
+    out = platform.record_outcome(task_id, "choose a database", "PostgreSQL", success=1.0)
+    assert memrouter.store.get(out["episode_id"], "local").predicted.success == 0.8  # raw, for trust
+
+
+def test_compare_scorers(settings, task_store, memrouter, project_dir):
+    from horizon.decision.compare import compare
+
+    platform = with_scorer(settings, task_store, memrouter, project_dir, FakeScorer())
+    task_id = platform.start_task("x")["task_id"]
+    platform.evaluate_options(task_id, "choose a database", OPTS)
+    platform.record_outcome(task_id, "choose a database", "PostgreSQL", success=1.0)
+
+    optimist, pessimist = FakeScorer(success=(0.9, 0.5)), FakeScorer(success=(0.2, 0.9), fit=(0.2, 0.9))
+    optimist.name, pessimist.name = "jev", "llm"
+    report = compare(platform.decisions, "local", {"jev": optimist, "llm": pessimist}, settings)
+    assert report["decisions"] == 1 and report["top_choice_agreement"] == 0.0
+    assert report["scorers"]["jev"]["brier"] == pytest.approx((0.9 - 1.0) ** 2)
+    assert report["scorers"]["llm"]["brier"] == pytest.approx((0.2 - 1.0) ** 2)  # the worse predictor, measurably

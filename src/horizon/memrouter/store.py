@@ -42,6 +42,11 @@ class EpisodeStore:
         self.dim = dim
         for stmt in _schema(db.kind, dim):
             db.execute(stmt)
+        # Additive migration: recall_log.tokens (context tokens per recall, MEMROUTER §15).
+        if db.kind == "postgres":
+            db.execute("ALTER TABLE recall_log ADD COLUMN IF NOT EXISTS tokens INTEGER")
+        elif "tokens" not in {r[1] for r in db.fetchall("PRAGMA table_info(recall_log)")}:
+            db.execute("ALTER TABLE recall_log ADD COLUMN tokens INTEGER")
 
     def add(self, episode: Episode, vector: np.ndarray) -> None:
         if vector.shape != (self.dim,):
@@ -120,12 +125,17 @@ class EpisodeStore:
         return [(Episode.model_validate(load_json(rows[i][0])), float(sims[i])) for i in order]
 
     def log_recall(self, recall_id: str, team_id: str, task_id: str | None, situation: str,
-                   episode_ids: list[str]) -> None:
+                   episode_ids: list[str], tokens: int | None = None) -> None:
         self.db.execute(
-            "INSERT INTO recall_log (id, team_id, task_id, situation, episode_ids, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s)",
-            (recall_id, team_id, task_id, situation, self.db.json(episode_ids), ts(self.db, now())),
+            "INSERT INTO recall_log (id, team_id, task_id, situation, episode_ids, created_at, tokens)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (recall_id, team_id, task_id, situation, self.db.json(episode_ids), ts(self.db, now()), tokens),
         )
+
+    def context_tokens(self, team_id: str) -> dict:
+        """MEMROUTER §15 "context tokens per step (should fall)": tokens routed per recall."""
+        n, avg = self.db.fetchone("SELECT COUNT(tokens), AVG(tokens) FROM recall_log WHERE team_id = %s", (team_id,))
+        return {"recalls": int(n or 0), "avg_context_tokens": round(float(avg), 1) if avg is not None else None}
 
     def get_recall(self, recall_id: str) -> list[str] | None:
         row = self.db.fetchone("SELECT episode_ids FROM recall_log WHERE id = %s", (recall_id,))

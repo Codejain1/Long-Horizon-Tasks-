@@ -70,6 +70,16 @@ def hook_events(transcript: Path) -> dict:
     return fired
 
 
+def aborted(transcript: Path) -> str | None:
+    """Sessions the host cut short (e.g. a Claude Code usage limit): not a Horizon result either way."""
+    for event in _events(transcript):
+        if event.get("type") == "result":
+            text = str(event.get("result") or "").lower()
+            if "session limit" in text or "usage limit" in text or "rate limit" in text:
+                return "usage limit"
+    return None
+
+
 def rollback_action(call: dict) -> str | None:
     """The `rollback.action` a record_outcome call returned, if any."""
     try:
@@ -160,6 +170,7 @@ def build_report(out: Path) -> dict:
         task_id = transcript.stem
         calls = tool_calls(transcript)
         row = analyse(calls)
+        row["aborted"] = aborted(transcript)
         row["hooks"] = hooks = hook_events(transcript)
         # Every hook should fire where its trigger happened: once per session, per recall, per Bash call, per stop.
         expected = {"SessionStart": 1, "PreToolUse": row["recall_context"],
@@ -169,15 +180,16 @@ def build_report(out: Path) -> dict:
             hooks.get(ev, {}).get("ok", 0) >= n and not hooks.get(ev, {}).get("failed") for ev, n in expected.items())
         row["tests_pass_after"] = check_passed(out / "logs" / f"{task_id}.check.txt")
         tasks[task_id] = row
-    n = len(tasks)
-    rates = {k: round(sum(bool(t[k]) for t in tasks.values()) / n, 2) for k in RATE_KEYS} if n else {}
+    counted = {k: t for k, t in tasks.items() if not t["aborted"]}  # aborted sessions are reported, not scored
+    n = len(counted)
+    rates = {k: round(sum(bool(t[k]) for t in counted.values()) / n, 2) for k in RATE_KEYS} if n else {}
     if n:
-        rates["hooks_fired_as_expected"] = round(sum(t["hooks_fired_as_expected"] for t in tasks.values()) / n, 2)
-        rolled = [t for t in tasks.values() if t["rollback_returned"]]
+        rates["hooks_fired_as_expected"] = round(sum(t["hooks_fired_as_expected"] for t in counted.values()) / n, 2)
+        rolled = [t for t in counted.values() if t["rollback_returned"]]
         if rolled:
             rates["restored_after_rollback"] = round(sum(bool(t["restored_after_rollback"]) for t in rolled) / len(rolled), 2)
             rates["recalled_after_rollback"] = round(sum(bool(t["recalled_after_rollback"]) for t in rolled) / len(rolled), 2)
-        rates["tasks_passing"] = round(sum(t["tests_pass_after"] is True for t in tasks.values()) / n, 2)
+        rates["tasks_passing"] = round(sum(t["tests_pass_after"] is True for t in counted.values()) / n, 2)
     return {"tasks": tasks, "rates": rates, "horizon_db": db_stats(out)}
 
 

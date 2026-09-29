@@ -81,7 +81,7 @@ def test_hooks_and_rollback_compliance(tmp_path):
 
 def test_tasks_json_matches_project():
     tasks = json.loads((DEMO / "tasks.json").read_text())
-    assert 3 <= len(tasks) <= 6
+    assert 3 <= len(tasks) <= 7
     for t in tasks:
         assert (DEMO / "project" / t["check"]).exists()
         assert "horizon" not in t["prompt"].lower()  # prompts must not mention the tools
@@ -129,11 +129,11 @@ def test_run_sh_end_to_end_with_fake_claude(tmp_path):
     assert "horizon:start" in (project / "CLAUDE.md").read_text()
 
     result = json.loads((out / "report.json").read_text())
-    assert set(result["tasks"]) == {"1-slugify", "2-duration", "3-word-count", "4-chunk", "5-title-case", "6-cache"}
+    assert set(result["tasks"]) == {"1-slugify", "2-duration", "3-word-count", "4-chunk", "5-title-case", "6-cache", "7-cli"}
     assert result["rates"]["started_before_edit"] == 1.0
     assert result["rates"]["tasks_passing"] == 0.0  # the fake doesn't fix anything
     # The real hooks ran against the run's own store and captured the real test counts.
-    assert result["horizon_db"]["test_runs_captured"] == 6
+    assert result["horizon_db"]["test_runs_captured"] == 7
 
 
 def test_setup_only(tmp_path):
@@ -143,3 +143,16 @@ def test_setup_only(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "m" / "project" / ".claude" / "settings.json").exists()
     assert "TASKS.md" in proc.stdout
+
+
+def test_sessions_cut_short_by_a_usage_limit_are_not_scored(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "1-ok.jsonl").write_text("\n".join(json.dumps(e) for e in [
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "a", "name": H + "start_task",
+                                                        "input": {}}]}},
+        {"type": "result", "result": "done"}]))
+    (logs / "2-limit.jsonl").write_text(json.dumps({"type": "result", "result": "You've hit your session limit"}))
+    result = report.build_report(tmp_path)
+    assert result["tasks"]["2-limit"]["aborted"] == "usage limit" and result["tasks"]["1-ok"]["aborted"] is None
+    assert result["rates"]["started_before_edit"] == 1.0  # the aborted session doesn't drag the rate down

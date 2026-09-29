@@ -10,5 +10,7 @@ Paste one prompt per fresh Claude Code session in the demo project. The prompts 
    This one is built so the first attempt causes a **regression**: changing the shared `_cap` helper to `str.title()` breaks the already-passing `sentence_case` tests. Rollbacks trigger only on regressions (tests failing at the task's baseline don't count), so this exercises the Phase 3 rollback path: does the host follow `rollback` (restore, then `recall_context`) before retrying?
 6. `Add a persistent WordCountCache in a new module textkit/cache.py (see tests/test_cache.py): it must survive process restarts and will later be shared by several worker processes. Pick a sensible storage approach for that and get the tests passing.`
    This one contains a crucial choice (the storage format, which must work for several processes later). It measures whether the host calls `evaluate_options` before committing to it.
+7. `Add a command-line interface in textkit/cli.py (see tests/test_cli.py): subcommands slugify, words and title; input from an argument, a --file, or stdin; a --json output mode; and an optional --cache DIR that stores word counts with textkit.cache.WordCountCache. Work in small steps and run the tests as you go.`
+   The long, multi-step task: several features, a library choice (argparse, click or typer), and tests to pass incrementally. It depends on tasks 1, 3, 5 and 6, so run it last.
 
 The source of truth is `tasks.json`, which `run.sh` reads.

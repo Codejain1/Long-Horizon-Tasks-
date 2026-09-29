@@ -73,3 +73,19 @@ Task 6 again, with a close call forced through existing settings (`HORIZON_CLEAR
 - **Spikes now go under `.horizon/spikes/`**, which the installer adds to `.gitignore`. Inside the project the host needs no extra permission, and git and the checkpoint snapshots never see the files.
 - **Redaction false positive (a Phase 2 bug).** The option label `dbm (stdlib)` came back as `[code removed]`: it's 12 characters, 2 of them parentheses, which is over the 15% symbol ratio. The host's first `submit_consequences` with the real label was then rejected. Now the ratio rule needs at least 3 symbols, and option matching also compares redacted labels.
 - **Pass-2 confidence (live Jev, date-parsing pair).** Jev flipped the winner correctly when the spike evidence flipped. But a 0.30 lead after evidence was held back as "still close" because one Score confidence was 0.47. After evidence, a lead of twice the clear margin now stands.
+
+## Final platform, review pass (session 12): 7 tasks including a long multi-step one, live Jev
+
+Everything built through Phase 8 plus the review fixes, `HORIZON_SCORER=jev`. Task 7 is new: a CLI with three subcommands, file/stdin input, JSON output and a cache, with a library choice and incremental tests.
+
+| Run | Model | Tasks run | start / baseline / recall before edit | record after last test | `task_complete` | hooks fired | rollback → restored | tests pass |
+|---|---|---|---|---|---|---|---|---|
+| A | Opus 5.5 | 4 of 7 (then Claude Code's usage limit) | 4/4 | 4/4 | 4/4 | 4/4 | — | 4/4 |
+| B | Sonnet 5 | 3 of 7 (usage limit) | 3/3 | 3/3 | 3/3 | 3/3 | — | 3/3 |
+| C | Sonnet 5 | **7 of 7** | 7/7 | 7/7 | 7/7 | 6/7 | 1/1 (task 5) | **7/7** |
+
+- **Usage limits:** runs A and B stopped when the Claude Code account hit its usage limit ("You've hit your session limit"). `report.py` now marks such sessions `aborted` instead of scoring them as misses.
+- **Run C:**
+  - it recorded 18 test runs, 17 of them used by `record_outcome` (0.94); all 8 checkpoints were taken and attached; task 6 used `evaluate_options` with Jev;
+  - **the long task 7 took 13 tool calls and passed**, with the full workflow;
+  - **the one hook miss** was a PostToolUse call cancelled at the 10 s hook timeout while this machine was also running the full test suite. The installer's timeout is now 30 s.

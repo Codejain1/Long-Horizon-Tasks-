@@ -128,3 +128,21 @@ def test_record_outcome_without_tests_before_a_recall_still_records(platform):
     task_id = platform.start_task("x")["task_id"]
     out = platform.record_outcome(task_id, "s", "c", success=1.0)
     assert out["episode_id"] and platform.tasks.get(task_id, "local").baseline == "missing"
+
+
+def test_recording_the_baseline_again_after_the_first_recall_is_acknowledged(platform, settings, project_dir):
+    """Seen with Codex: baseline run, recall, then record_outcome for that same baseline run."""
+    task_id, ctx = start_with_baseline(platform, settings, project_dir)
+    out = platform.record_outcome(task_id, "baseline test run", "none", tests_passed=7, tests_failed=3)
+    assert out["recorded"] is False and platform.tasks.get(task_id, "local").decisions == []
+    pytest_run(settings, project_dir, [SLUG], passed=9)  # after a real change it records as usual
+    assert platform.record_outcome(task_id, "s", "c", recall_id=ctx["recall_id"])["rollback"] is None
+
+
+def test_subagent_provenance(settings, task_store, memrouter, project_dir):
+    from horizon.service import Platform
+
+    platform = Platform(settings, task_store, lambda: memrouter, cwd=project_dir)
+    task_id = platform.start_task("x")["task_id"]
+    out = platform.record_outcome(task_id, "s", "c", success=1.0, agent_id="claude-code/2.1", subagent="test-writer")
+    assert memrouter.store.get(out["episode_id"], "local").provenance.agent_id == "claude-code/2.1:test-writer"

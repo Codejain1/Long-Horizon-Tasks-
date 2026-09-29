@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("hook", help="Run a Claude Code hook (reads the hook JSON on stdin).")
     p.add_argument("name", choices=["session-start", "pre-tool-use", "post-tool-use", "stop"])
+    p.add_argument("--remote", help="Hosted server URL: send parsed facts there (key in HORIZON_API_KEY).")
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
@@ -37,13 +38,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("lesson_id")
     p.add_argument("--by", required=True, help="Your name, recorded on the lesson.")
 
+    p = sub.add_parser("compare-scorers", help="Replay logged decisions through Jev and the small LLM (PROJECT.md §5).")
+    p.add_argument("--limit", type=int, default=50, help="Most recent decisions to replay.")
+
+    sub.add_parser("eval-world-model", help="Replay past outcomes through the world model and compare it with "
+                                            "the stand-ins (PROJECT.md §6).")
+
+    p = sub.add_parser("purge-memory", help="Operator only: erase one episode for good (e.g. a legal request).")
+    p.add_argument("episode_id")
+    p.add_argument("--reason", required=True)
+    p.add_argument("--by", required=True, help="Who authorised the erasure (recorded).")
+    p.add_argument("--yes", action="store_true", help="Confirm: this can't be undone.")
+
     p = sub.add_parser("export-decisions", help="Write the world-model decision log as JSON Lines.")
     p.add_argument("--out", default="-", help="Output file (default: stdout).")
     p.add_argument("--with-outcomes-only", action="store_true", help="Only decisions with a recorded outcome.")
 
+    p = sub.add_parser("install-codex", help="Add the MCP server, hooks and AGENTS.md snippet for Codex.")
+    p.add_argument("--dir", default=".", help="Project directory (default: current).")
+    p.add_argument("--no-agents-md", action="store_true", help="Don't touch AGENTS.md.")
+    p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
+
     p = sub.add_parser("install-claude-code", help="Add the MCP server, hooks and CLAUDE.md snippet to a project.")
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
+    p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
 
     args = parser.parse_args(argv)
     from horizon.config import Settings
@@ -55,12 +74,13 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "hook":
         from horizon.hooks import run_hook
 
-        out = run_hook(args.name, sys.stdin.read())
+        out = run_hook(args.name, sys.stdin.read(), remote=args.remote)
         if out:
             print(out)
     elif args.cmd == "stats":
         from horizon.db import connected
         from horizon.memrouter.graph import Graph
+        from horizon.memrouter.store import EpisodeStore
         from horizon.taskstate.store import TaskStore
 
         settings = Settings.from_env()
@@ -71,7 +91,12 @@ def main(argv: list[str] | None = None) -> int:
                                "fear_lessons": len(graph.lessons(settings.team_id, fear_only=True)),
                                "links": graph.link_count(settings.team_id),
                                "archived_episodes": graph.archived_count(settings.team_id),
-                               "predictor_trust": graph.predictor_stats(settings.team_id)}
+                               "predictor_trust": graph.predictor_stats(settings.team_id),
+                               "removed": len(graph.removals(settings.team_id)),
+                               **EpisodeStore(db, settings.embedding_dim).context_tokens(settings.team_id)}
+            from horizon.decision.log import DecisionLog
+
+            stats["decisions"] = DecisionLog(db).stats(settings.team_id)
             print(json.dumps(stats, indent=2))
     elif args.cmd in ("create-team", "add-credits"):
         from horizon.accounts import FREE_STARTER_CREDITS, Accounts
@@ -90,6 +115,33 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
                 accounts.grant(args.team_id, args.credits, args.reason)
                 print(f"{args.team_id}: {accounts.balance(args.team_id)} credits")
+    elif args.cmd == "compare-scorers":
+        from horizon.db import connected
+        from horizon.decision.compare import compare
+        from horizon.decision.log import DecisionLog
+        from horizon.decision.scorers import make_scorer
+
+        settings = Settings.from_env()
+        scorers = {"jev": make_scorer("jev", settings.jev_model, settings.llm_scorer_model),
+                   "llm": make_scorer("llm", settings.jev_model, settings.llm_scorer_model)}
+        with connected(settings.db_url) as db:
+            print(json.dumps(compare(DecisionLog(db), settings.team_id, scorers, settings, args.limit), indent=2))
+    elif args.cmd == "eval-world-model":
+        from horizon.decision.worldmodel import evaluate, make_world_model
+        from horizon.server import build_memrouter
+
+        settings = Settings.from_env()
+        report = evaluate(make_world_model(settings, build_memrouter(settings)), settings.team_id, settings)
+        print(json.dumps({"mode": settings.world_model, **report}, indent=2))
+    elif args.cmd == "purge-memory":
+        if not args.yes:
+            print("This erases the episode for good and can't be undone. Re-run with --yes.", file=sys.stderr)
+            return 1
+        from horizon.server import build_memrouter
+
+        settings = Settings.from_env()
+        print(json.dumps(build_memrouter(settings).purge(settings.team_id, args.episode_id, args.reason, args.by),
+                         indent=2))
     elif args.cmd in ("consolidate", "clear-fear"):
         from horizon.server import build_memrouter
 
@@ -115,10 +167,16 @@ def main(argv: list[str] | None = None) -> int:
             if out is not sys.stdout:
                 out.close()
                 print(f"Wrote {n} decisions to {args.out}")
+    elif args.cmd == "install-codex":
+        from horizon.install import install_codex
+
+        changed = install_codex(Path(args.dir), agents_md=not args.no_agents_md, hosted=args.hosted)
+        print("Updated: " + ", ".join(changed))
+        print("Then in Codex: trust the project and review its hooks with /hooks (Codex asks once).")
     elif args.cmd == "install-claude-code":
         from horizon.install import install
 
-        changed = install(Path(args.dir), claude_md=not args.no_claude_md)
+        changed = install(Path(args.dir), claude_md=not args.no_claude_md, hosted=args.hosted)
         print("Updated: " + ", ".join(changed))
     return 0
 

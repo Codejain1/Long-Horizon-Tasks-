@@ -8,7 +8,7 @@ import pytest
 
 from horizon.hooks import run_hook
 from horizon.models import Checkpoint, GitRef, TaskState
-from horizon.service import Platform
+from horizon.service import Platform, ToolInputError
 from horizon.taskstate import rollback
 from horizon.taskstate.checkpoints import capture, claude_code_ref, git_snapshot, restore_steps
 
@@ -286,3 +286,20 @@ def test_recall_after_a_restore_goes_through(platform, settings, repo):
     assert platform.tasks.get(task_id, "local").restore_check is None
     stats = platform.tasks.stats()
     assert stats["checkpoints_captured"] == stats["checkpoints_attached"] == 2
+
+
+def test_a_severe_outcome_escalates_at_once(platform):
+    task_id = platform.start_task("x")["task_id"]
+    out = platform.record_outcome(task_id, "s", "rm -rf the cache dir", success=1.0, severity="severe")
+    assert out["rollback"]["action"] == "escalate" and out["rollback"]["severe"] and out["task_status"] == "escalated"
+
+
+def test_hosts_without_hooks_can_report_their_own_checkpoint(platform, repo):
+    task_id = platform.start_task("x")["task_id"]
+    head = git(repo, "rev-parse", "HEAD").strip()
+    ctx = platform.recall_context(task_id, "s", checkpoint_commit=head)
+    assert ctx["checkpoint_id"]
+    out = platform.record_outcome(task_id, "s", "c", success=0.0, recall_id=ctx["recall_id"])
+    assert out["rollback"]["restore"]["git"] == f"git -C . restore --source={head} --staged --worktree -- :/"
+    with pytest.raises(ToolInputError):
+        platform.recall_context(task_id, "s", checkpoint_commit="; rm -rf /")

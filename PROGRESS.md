@@ -174,9 +174,54 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Tests:** 17 new Phase 7 tests (both MCP protocol paths, forged-state rejection, metered hosted MCP over real HTTP, the web page and API, the CLI).
   - **Real Claude Code check** (Sonnet 5, headless): it used `show_memories` correctly and refused on its own to clear a recent fear lesson without the user's confirmation. When told "I confirm, my name is Kartik", its `clear_fear` call got a user-input request that headless mode cancelled, so nothing was cleared: an agent can't approve on the user's behalf.
 
+- **Session 11 — Phase 8: launch preparation** (branch `claude/phase-8-launch`, from `main`, which has Phases 1–7; PR #8 merged).
+  - **README** rewritten around a measured setup of under 5 minutes (≈ 1 min cold from a fresh clone, plus the host's one-time approval).
+  - **Codex:**
+    - `horizon install-codex` writes `.codex/config.toml` (tools pre-approved, env passthrough), `.codex/hooks.json` (Claude-format hooks work unchanged) and the AGENTS.md snippet; `docs/CODEX.md` documents it;
+    - **verified in real `codex exec` sessions**: tools, hooks, baseline and checkpoints all worked;
+    - the runs found and fixed two issues: MCP calls needed pre-approval, and the server used a different database until `env_vars` was added.
+  - **One snippet for both hosts** (`agent.snippet.md`, into CLAUDE.md and AGENTS.md), now covering the inspection tools.
+  - **Data and privacy policy:** `docs/PRIVACY.md`, served at `/privacy` (a test keeps the two copies identical). Every storage path was reviewed (below).
+  - **Docker:** all hosted extras, a non-root user, the embedding model prefetched, `/healthz` with a Docker HEALTHCHECK, a nightly `sleep` service, Postgres not published, `.env.example`, and `docs/HOSTING.md`. The image build is unverified (no Docker here); the same steps passed in a clean Python 3.12 environment.
+  - **Hosted hook bridge (a launch blocker the end-to-end test found):**
+    - Before this, hooks wrote straight to the database, which can't work against a hosted server.
+    - Now, with `--hosted URL`: hooks parse locally and send only facts to `/api/hooks/*` with the team key, and the project is a hashed key sent in an MCP header. `install-* --hosted` writes both host configs.
+  - **End-to-end test** (`tests/test_e2e.py`): the whole flow against the hosted server over real HTTP, from team creation to the account page's savings.
+  - **Tests:** 367 pass on SQLite and Postgres (8 new). A test-isolation leak was fixed: the sleep job's exports had been written to the real `~/.horizon/exports` (29 test files). Those files, and one demo task a Codex run put in `~/.horizon/horizon.db`, were confirmed as artifacts and removed.
+  - **Launch checklist:** `docs/LAUNCH.md` separates what's ready from what waits on the owner.
+
+- **Session 13 — the world model, wired in** (`PROJECT.md` §6: "kept in the architecture from day one behind the same interface; swapped in only when it beats the stand-ins"; "log data in a trainable format").
+  - **Audit.** Only the logging existed (the decision log, JSONL and Parquet). There was no interface, nothing learned from the logs, and no gate. Actual tokens and latency were almost never recorded, because hosts can't see their own usage. So the world model had no efficiency targets, and the efficiency half of surprise was dead.
+  - **Acceptance criteria, all met with tests:**
+    1. A `WorldModel` interface, with `HORIZON_WORLD_MODEL_CLASS` to plug in another model.
+    2. A first learned model, `kernel-v1`: option-aware, learns from every episode including archived ones, predicts success, tokens, cost and latency, keeps an incremental in-memory index, and drops purged episodes.
+    3. The gate: a time-ordered replay against the stand-ins' recorded predictions, with a one-sided paired test, plus `horizon eval-world-model`.
+    4. Wiring into `evaluate_options` (`auto` by default: shadow until the gate passes). When active it fills missing estimates and settles confident close calls without spikes (`settled_by: "world_model"`), and its accuracy is tracked as predictor source `world_model`.
+    5. Real attempt usage: the PreToolUse hook (now also on `record_outcome`) sums tokens and time since the last recall from the transcript, including over the hosted bridge (`/api/hooks/usage`), and `record_outcome` uses them.
+    6. Parquet export gains flat token, cost and latency columns, and the docs and privacy policy are updated.
+  - **Measured:** at 5,000 episodes, the cold index load takes 89 ms, a forecast for 5 options takes 7 ms warm, and replaying 2,000 episodes for the gate takes 0.14 s.
+  - **Tests:** 32 new (`tests/test_world_model.py`), **426 pass on SQLite and on Postgres 14 + pgvector.**
+  - **Not done:** a Dreamer-style latent model. There's no data to train one (0 real episodes on this machine), and §13 keeps it "later". The interface, the logs and the gate are what it needs when data exists.
+
+- **Session 12 — review and cleanup pass** (branch `claude/review-pass`, on top of Phase 8; PR #9 was still open).
+  - **Open questions:** all 52 resolved or handed to the owner (the table below). New code for 30, 31, 36, 45, 46, 47, 52 and 1/44; the benchmark gap 10/33/40 is now a Claude Code headless agent, and 39 has a scorer comparison tool.
+  - **Gap audit against PROJECT.md and MEMROUTER.md, found and fixed:**
+    - scope preference now covers task > project > team (MEMROUTER §10); only project was implemented before;
+    - weight changes weren't audited (§11), so every strength, stability and link change now goes to `weight_log` with its reason;
+    - context tokens per recall weren't measured (§15);
+    - spike results weren't in the recall slice (§6 step 6);
+    - predictor trust didn't feed scoring (§12);
+    - no benchmark could measure the platform itself (§18, §14);
+    - the scorer comparison experiment didn't exist (§5).
+  - **Security:** a hosted-mode **team-isolation bug** was fixed. Hook data was matched on the hashed project key alone, so two teams with the same project path could mix; it's now scoped per team. Host-supplied ids are capped. A new database-wide **privacy sweep test** pushes code through every host-writable field and finds none stored (SQLite and Postgres). The git history is clean of keys.
+  - **Quality:** a dead-code scan found audit data that only the tests could reach, now surfaced in `show_memories` and `horizon stats`. No TODO/FIXME or leftover debug code; the one debug `print` is gated by `HORIZON_DEBUG`.
+  - **Docs:** PROJECT.md and MEMROUTER.md now carry "As built" specifications that match the code; README, CLAUDE_CODE, CODEX, HOSTING, LAUNCH and PRIVACY are updated.
+  - **Reliability** with the finished platform and live Jev, including the new long multi-step task 7: a full Sonnet run passed all 7 tasks with every workflow metric at 1.0 (`demo/reliability/RESULTS.md`). Two earlier runs were cut short by the Claude Code usage limit, and `report.py` now marks those `aborted`. One hook was cancelled at its 10 s timeout under machine load, so the installer now uses 30 s.
+  - **Tests:** 427 pass on SQLite and Postgres 14 + pgvector.
+
 ## In progress
 
-- Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
+- Nothing. Phases 1–8 are built. What remains needs the owner: real benchmark runs, the go-ahead to publish, hosting and pricing.
 
 ## Decisions made
 
@@ -406,6 +451,55 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Savings per session are counted events only**, with no invented token savings. "Tokens saved" is reported only where past spikes recorded their token cost. With 2026-07-28 (stateless HTTP, no `mcp-session-id`), a Horizon task stands in for the session.
 - **The web page is server-rendered HTML** with no JavaScript and a dark-mode style. It needs the `[web]` extra (FastAPI, python-multipart). The MCP app is mounted under it, and its lifespan runs the MCP session manager.
 
+**Phase 8 review against PROJECT.md: what was missing or inconsistent, and what was done**
+
+| § | Finding | Resolution |
+|---|---|---|
+| 11 | No AGENTS.md snippet or Codex install | `install-codex`, the shared snippet, `docs/CODEX.md`; verified with real Codex |
+| 11 | The instructions and snippet didn't mention the inspection tools | Added (item 7 of the snippet; server instructions) |
+| 3, 9, 11 | **Hooks couldn't work against a hosted server** (direct database writes; the server can't know the client's project dir) | The hosted hook bridge (`--remote`, `/api/hooks/*`, hashed `X-Horizon-Project`), covered by the end-to-end test |
+| 12 | The hook stored the raw test command (could hold inline code) | The first line only, with quoted strings elided (`command_summary`) |
+| 12 | The approval log stored raw question and answer text | Redacted |
+| 10, 12 | No public data policy page | `docs/PRIVACY.md`, and `/privacy` |
+| 14 | "Share of close calls settled from memory" wasn't reported | `horizon stats` → `decisions` (plus `host_followed_share`) |
+| 17 | Stale Docker setup | Rebuilt: extras, non-root, healthcheck, nightly sleep job, secrets from `.env` |
+| — | Tests wrote exports into the user's real home directory | The test settings now use a temp dir |
+| — | Demo: `tests/test_cache.py` broke collection for the whole suite | Added a `textkit/cache.py` stub |
+| 10 | Tracing tool (Langfuse) not integrated | **Open (50):** needs an account |
+| 13 (8) | Publishing the repo, benchmarks, write-up | **Owner** (`docs/LAUNCH.md`): public release is hard to reverse; benchmarks cost money |
+| 18 | The platform benchmark needs an MCP-capable agent (Claude Code headless, "later") | **Owner** decision (`docs/LAUNCH.md`) |
+
+**Session 12 decisions (the review pass)**
+- **A severe outcome escalates at once**, with no retries: §9 asks for a human when stakes are high, and a severe outcome is exactly that.
+- **Scope:** the same task 1.0, the same project 0.95, project-less memories 1.0, other projects `other_project_factor` 0.85. The owner's research favours walls; the default keeps §10's "prefer", and 0 gives walls.
+- **Scorer bias correction** starts after 20 outcomes and is clamped to ±0.5. The raw prediction is recorded, so trust keeps measuring the scorer and not its corrected output.
+- **The baseline-echo guard** is limited to the first `record_outcome` of a task, with host test counts, when hooks saw no new run. That's narrow enough never to eat a real outcome.
+- **Hosted hook scope** is `<team>/<project key>` on the server. Clients never choose the team part.
+- **`purge-memory` is operator-only CLI, never an MCP tool:** an agent must not be able to erase evidence. It's the single exception to "episodes are never deleted", for legal requests.
+- **The Claude Code benchmark** shares one Horizon memory across the tasks and repeats of an invocation (§14's repeated-run curve). Setup files are committed before the agent runs, so patches contain only the agent's change.
+- **The hook timeout is 30 s** (was 10). One hook was cancelled on a loaded machine.
+- **Codex MCP env passthrough and pre-approval** stay as set in session 11.
+
+**Phase 8 decisions (defaults under the decision rule)**
+- **Codex tool pre-approval:** `default_tools_approval_mode = "approve"` for Horizon only, the counterpart of Claude Code's `enabledMcpjsonServers`. Human-only actions still ask through MCP user input.
+- **Codex `env_vars` passthrough** lists names only (the database URL, team, embedder, scorer, export dir, state secret, scorer keys). No values go into the project's config file.
+- **Hosted hooks parse on the user's machine.** Only counts, failing test names, the elided command, commit ids and a hashed project key are sent. Restore commands say `git -C .` (no path). In Claude Code, the redacted 120-character prompt snippet for `/rewind` is still sent (disclosed in the policy).
+- **Project identity in hosted mode** = `prj_` + SHA-256(realpath)[:24], set by the installer as an MCP header and recomputed by each hook. It's never a path.
+- **Snippet file renamed** `agent.snippet.md` (one text for CLAUDE.md and AGENTS.md). The Claude-only `/rewind` line is phrased for both hosts.
+- **Version `1.0.0rc1`.** `v1.0.0` is tagged at launch, after the benchmark and the owner's go-ahead.
+- **The README states the repo is private until launch.** Making it public waits for the owner.
+
+**Session 13 decisions (defaults under the decision rule)**
+- **The first learned world model is non-parametric (kernel regression over outcome history), not a neural latent model.** It is useful with 10 episodes and grows with every outcome. A Dreamer-style model needs thousands of trajectories, and this is closer to a contextual bandit (state, option, outcome) than a sequential environment. It replaces the kernel model through `HORIZON_WORLD_MODEL_CLASS` once it passes the same gate.
+- **Kernel:** weight = exp((similarity − 1) / 0.1) for similarity ≥ 0.5, over episodes whose option matches (`same_option`), shrunk by one pseudo-episode of the team's base rate. Confidence = n / (n + 3).
+- **The world model reads archived episodes too:** they are world-model training data (decision 5), even though retrieval skips them.
+- **Gate = replay, not the decision log.** Every `record_outcome` makes an episode, while decisions are rarer, so the replay has far more data. It is honest because each prediction uses only earlier episodes. Stand-ins = `jev`, `llm`, `sim` and `host` predictions that weren't low-confidence. The model must win on *every* stand-in with 30+ pairs, by a one-sided paired test at 95 %, so a small lead from luck doesn't count. A forecast with less than one effective episode isn't scored (the model would defer).
+- **`auto` is the default.** It's safe: with no data it is pure shadow logging, and it switches on only when the gate says so. The gate result is cached for 10 minutes per process.
+- **An active world model settles a close call only when every untested close option has confidence ≥ 0.6.** It goes after memory (real results) and before try-and-rollback and spikes (§6: cheapest first). Jev still re-scores with the forecasts as evidence (§5: "the simulation informs; Jev decides").
+- **Forecasts fill a missing estimate dimension only when no option has a host estimate for it and every option has a forecast**, so options are never compared across sources.
+- **Attempt usage** = the sum of the transcript's model turns (input, output, cache write and cache read tokens; streamed turns counted once; subagent sidechains excluded) from the last `recall_context` to the `record_outcome` about to run, plus the elapsed time. The host's own values win when given. Cost isn't derived (it needs per-model prices).
+- **Hook matcher** `mcp__horizon__recall_context|mcp__horizon__record_outcome` (a regex). Re-running the installer updates existing projects.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -423,119 +517,50 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 
 ## Open questions
 
-Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 1 build.
+Every question raised in sessions 0–11, resolved in the session 12 review unless it needs the owner. The full reasoning for earlier resolutions is under "Decisions made".
 
-### Background
+| # | Question | Resolution |
+|---|---|---|
+| 1 | The existing memrouter project | Found (`~/Desktop/memrouter`). Its finding, that scoped retrieval beat activation on real data, became the scope knob: task > project > team, and `other_project_factor` (0 = walls). The bounded strength factor avoids its "base-level activation swamps relevance" bug. |
+| 2 | The MemRouter name clash | The product is **Horizon**; `memrouter` is only the internal component name. |
+| 3 | Memory in Phases 4–5 | Superseded: Phase 6's full recall feeds `evaluate_options`. |
+| 4, 5 | Storage split; auth before Phase 7 | Approved defaults (round 4); Phase 7 added team keys. |
+| 6–9 | Phase 1 environment, weights, smoke set, pricing | Approved (round 3). |
+| 10, 33, 40 | No benchmark of the platform (mini-SWE-agent can't call MCP) | **Built:** `horizon-bench run --agent claude-code [--with-horizon]`, the §18 second baseline, with the same agent and model for both runs. Running it needs the owner (below). |
+| 11–13 | Jev fallback, thresholds, high-stakes rule | Built and approved (round 5); values in `PROJECT.md` §5. |
+| 14 | Surprise when both values are 0 | Superseded by the zero-centred formula (round 5). |
+| 15 | Decay maths, "helpful" | Defined and documented (`MEMROUTER.md` §5 step 3, §8). |
+| 16 | Mixed-operator condition match; who says "severe" | Defined (`MEMROUTER.md` §6). The host classifies severity (the tool description lists the cases), and a severe outcome now also escalates at once. |
+| 17 | "Heavy testing"; the world-model log format | Defined (`PROJECT.md` §6, §9). |
+| 18–26 | Phase 2 items (redaction, hosts, hooks, embeddings, the task list) | Resolved in rounds 4–5 and session 4. |
+| 27, 28 | Check litellm/sb-cli fields on the first real run; the spend | **Owner** (real runs). |
+| 29, 34, 35 | Pre-existing failures; surprise bias | Resolved (round 5). |
+| 30 | Hosts without hooks get no checkpoints | `recall_context(checkpoint_commit=…)`. |
+| 31 | Severe outcome: escalate at once? | Yes: a severe outcome escalates to a human immediately (§9). |
+| 32 | Did the host restore? | The recall hook compares the tree with the rollback target and refuses one recall (session 4). |
+| 36 | Subagent provenance | `record_outcome(subagent=…)` → `agent_id = client:subagent`. |
+| 37 | Jev pricing and rate limits | Jev works live; the SDK retries 429/529. Pricing is unpublished: **owner** (TypeSafe account). |
+| 38 | The LLM scorer never run for real | Built and tested through the real SDK over a mocked transport. Running it costs API spend: **owner**. |
+| 39 | Untuned weights and thresholds | `horizon compare-scorers` produces the data (agreement, Brier against outcomes). The defaults stay until there's data. |
+| 41 | Jev rarely produces close calls | Kept the 0.10 margin; low confidence also triggers checks. The decision log's `settled_from_memory_share` and `close_calls` track it. |
+| 42 | Possible high-stakes false positive (Celery/Redis) | Accepted: it only matters on a second tie, where a human is asked. |
+| 43 | Spike cost | Capped by the per-spike budget, skipped when static checks fail, and reused from memory. |
+| 44 | The headline improvement is one constructed scenario | The scope knob gives the owner's alternative design; the real evidence is the Claude Code `--with-horizon` repeated runs. |
+| 45 | Predictor trust doesn't affect scoring | A scorer's measured bias is corrected after 20 outcomes; raw predictions are still recorded. |
+| 46 | Spike results missing from the recall slice | Added (§6 step 6). |
+| 47 | Privacy hard-delete | The mechanism is built: operator-only `horizon purge-memory`, inert until used. The **policy** for legal requests is the owner's. |
+| 48 | Pricing, free tier, payments | **Owner.** |
+| 49, 51 | Interactive approval UX (Claude Code, Codex) | Not automatable. Every non-interactive path is safe; someone should try it once interactively. |
+| 50 | Tracing (Langfuse) | **Owner** (an account). The call log, decision log, weight log and `horizon stats` cover internal debugging. |
+| 52 | Codex records its baseline run as an outcome | Acknowledged, not recorded (the baseline-echo guard). |
+| 53 | Should `auto` switch the world model on by itself, or should the owner flip it after reading `horizon eval-world-model`? | Default: `auto` (it switches on only after the gate passes, and the scorer still decides). Set `HORIZON_WORLD_MODEL=shadow` to keep it manual. |
+| 54 | Codex's transcript format differs, so attempt usage isn't captured there | Default: Claude Code only. Codex outcomes keep host-reported tokens (usually none). |
+| 55 | When to build the Dreamer-style model | Default: once there are a few thousand real episodes with outcomes (after the benchmark runs), trained on the exports, and plugged in through `HORIZON_WORLD_MODEL_CLASS` behind the same gate. |
 
-1. **Existing memrouter project.** `PROJECT.md` §15 says to "reconcile with the existing memrouter project (results not yet shared)". Where is that project? Should it shape Phase 2 and Phase 6?
-2. **Name clash.** Another GitHub project is already called MemRouter (§15). Should the component keep the name `memrouter` for now?
-
-### Build-order details
-
-3. **Memory in Phases 4 and 5.** Proposal: Phases 4 and 5 use the Phase 2 basic similarity recall for "memory feeds Jev evidence" and "memory lookup". Full simulation reuse, predictor trust and the Jev attention filter arrive in Phase 6. OK?
-4. **(Resolved: owner approved the default — same Postgres, separate tables, failure-isolated code path.) Task state and memory storage.** Task state must keep working if memrouter is down (MEMROUTER §11). Should it be a separate service or database, or the same Postgres with separate tables and a failure-isolated code path?
-5. **(Resolved: owner approved the default — stdio without auth, static dev key for HTTP.) When does API key auth start?** Key, credits and usage endpoints are Phase 7. Should Phases 2–6 use stdio locally with no auth, plus a single static dev key for HTTP?
-
-### Phase 1: benchmark harness
-
-6. **(Resolved: owner approved (a) with (b) as fallback.) Where does the agent execute task code?** mini-SWE-agent's SWE-bench mode normally runs each task inside that task's SWE-bench Docker image. The cloud session may not have Docker. The options are:
-   - (a) Docker in the session, if available (pulls images from Docker Hub, so that domain would be needed);
-   - (b) a local environment per task (clone the repo and install its dependencies; slower and can differ from the evaluation environment);
-   - (c) a remote sandbox provider (a new service and credential).
-
-   sb-cli only covers evaluation, not the agent's own runs. Proposal: support (a) with (b) as a fallback, and check which one works when real runs are enabled. This doesn't block the dry-run build.
-7. **(Resolved: weights approved.) Difficulty weighting.** SWE-bench Verified has four difficulty buckets (<15 min, 15 min–1 h, 1–4 h, >4 h), and the longest has very few tasks. Proposal:
-   - take every >4 h task;
-   - then roughly 40% from 1–4 h, 35% from 15 min–1 h and 25% from <15 min;
-   - stratify by repo within each bucket.
-
-   Are those weights OK?
-8. **(Resolved: first 10 of the 50.) Smoke run selection.** Should the 10 smoke tasks be the first 10 of the committed 50 (keeping the same stratification), or a separate set?
-9. **(Resolved: per-token prices in config.) Model pricing.** mini-SWE-agent tracks cost through litellm. If litellm doesn't yet list `claude-sonnet-5` prices, the $1 cap can't be enforced. Proposal: set per-token prices in harness config and use them for both the cap and the reports.
-10. **"Benchmark after every phase".** Phases 2–3 don't change agent behaviour much. Is a no-regression check enough for those phases?
-
-### Decision layer and Jev
-
-11. **(Default approved in round 5.)** **Jev access is unverified** (§15). Should the small-LLM comparison scorer (§5) be built first as a fallback behind the same interface?
-12. **(Default approved in round 5; values are set in the Phase 4 plan.)** **Thresholds undefined.** There are no values yet for the "clear winner" and "close call" thresholds, the score weights, or crucial-decision detection.
-13. **(Default approved in round 5; the rule is set in the Phase 4 plan.)** **"Ask human if high stakes."** A concrete rule is needed beyond the examples given.
-
-### Memrouter spec gaps
-
-14. **(Resolved: owner approved ratio 1.) Surprise when predicted and actual are both 0.** With `max(actual, ε)`, the ratio comes out as 0 instead of 1 (for example, a predicted cost of $0 when the actual cost is $0). Should this case count as a ratio of 1?
-15. **Decay maths is undefined.** No formulas are given for how `strength` and `stability` change per recall or per "usage opportunity", and "helpful" isn't defined.
-16. **Undefined terms.** "Condition match" scoring for mixed operators is not defined. Neither is who classifies a failure as "severe".
-
-### Outcomes, privacy and data
-
-17. **Undefined specs.** "Heavy testing" and the world-model logging format are both undefined. The logging format is needed from Phase 1/2 ("from day one"). Proposal: Phase 1 writes one JSON Lines record per task run with a versioned schema, and the Phase 2 episode format builds on it.
-18. **(Resolved: counts only for test results, plus redaction of decision text; see round 4.) Raw code could be stored.** Test output and `testResults` can contain code, stack traces and file paths. What sanitisation or redaction is required?
-
-### Host integration
-
-19. **(Resolved: Claude Code only.) Which hosts first?** Should Phase 2 target Claude Code only, or also Codex and Cursor? What target invocation rate counts as "reliable"?
-
-### Raised in Phase 2 (non-blocking; the default used is in brackets)
-
-20. **(Resolved: build Phase 1 next, dry run, no paid calls.) Phase 1 was skipped.** The harness isn't in the repo yet, but this session was asked to build Phase 2. §13 says to benchmark after every phase, so Phase 2 has no benchmark run. [Built Phase 2 as asked. Phase 1 is still to do, dry run first, with no paid calls.]
-21. **(Resolved: cloud Claude Code sessions run on the owner's subscription; reliability demo built in `demo/reliability/`.) Real host invocation rate is not measured yet.** This needs real Claude Code sessions, which cost API usage. [The machinery is in place: hooks plus `horizon stats` → `outcome_recording_rate`. The owner runs a few real tasks when ready.]
-22. **(Resolved: `host` approved as a fourth source; `MEMROUTER.md` updated.) `predicted.source`.** MEMROUTER §4 lists `jev | sim | memory`. Phase 2 adds `host`. Should the fallback prediction be tagged `memory`? [Today a missing prediction keeps `source: "host"`, and the fallback is marked by `lowConfidence`.]
-23. **(Resolved: basic redaction built.) Situation text can still contain code.** `situation`, `chosen` and `reason` are free text from the host. [No redaction yet. The tool descriptions ask for short summaries.]
-24. **(Resolved: keep the fallback; domains listed in round 4.) Embedding model download.** `huggingface.co` must be reachable wherever the server runs, or it falls back to the weaker hash embedder. [Fallback with a warning. `huggingface.co` is already on the §18 domain list.]
-25. **(Resolved: keep it, but quiet.) Stop-hook pushiness.** Blocking a stop once to ask for `record_outcome` could annoy users. [Enabled. Removing the `Stop` hook from `.claude/settings.json` turns it off.]
-
-### Raised in Phase 1 (the default used is in brackets)
-
-26. **(Resolved in session 4: generated and committed from the owner's Mac.) `huggingface.co` is blocked in the cloud session**, so `horizon-bench select` can't read SWE-bench Verified. [Everything else is built and tested on a synthetic pool. Allowing `huggingface.co` and `*.hf.co` (the same domains as the fastembed download) unblocks it: then run `horizon-bench select` and commit `bench/tasks/swebench_verified_50.json`.]
-27. **Verify on the first real smoke run:**
-    - litellm's Anthropic usage fields: the harness assumes `prompt_tokens` includes cache reads and writes;
-    - the key sb-cli uses for resolved ids in its report: the harness reads `resolved_ids`, falling back to `resolved`.
-    [Both are handled defensively, and the smoke run exists to catch exactly this.]
-28. **Real-run spend.** The caps bound the worst case at $10 for the smoke run and $150 for the full 50 × 3. [No real runs until the owner sets `real_runs: true` and provides the keys.]
-
-### Raised in Phase 3 (the default used is in brackets)
-
-29. **(Resolved in round 5; see decisions 23–24.)** **Repos with failing tests before the task starts** would trigger a rollback on every attempt at the 1.0 threshold. [Threshold 1.0, configurable. The better rule is "worse than the pass rate at the checkpoint", but that needs a test run at checkpoint time.]
-30. **Hosts without hooks get no checkpoints.** [Claude Code only, per decision 19. A `checkpoint` parameter on `recall_context` would cover Codex and Cursor later.]
-31. **Should a `severe` outcome escalate immediately** instead of after N attempts? [No. It follows the normal limit.]
-32. **We don't verify that the host actually restored.** [Streaks always target the first good checkpoint, which limits the damage. A hook could compare the tree with the snapshot on the next recall.]
-33. **Phase 3 has no benchmark run** (§13). [Same as open question 10: it doesn't change the baseline agent, which is mini-SWE-agent without MCP.]
-
-### Raised in session 4 (the default used is in brackets)
-
-34. **(Resolved in round 5; see decisions 23–24.)** **Surprise is biased negative by design.** `efficiency = min(1, predicted/actual)` can't go above 1, but `predicted_score` assumes efficiency = 1. Coming in under budget earns nothing and any overrun is penalised, so even a perfectly calibrated predictor averages below 0, and Phase 6 links would slowly weaken. [Implemented exactly as `MEMROUTER.md` §5 says, because changing it would contradict the doc. Proposal: use the expected efficiency (for example, the running mean) in `predicted_score`, or let the ratio go above 1 with a cap.]
-35. **(Resolved in round 5; see decisions 23–24.)** **Hook-captured test counts can include unrelated failures.** In the demo, a host sometimes ran the whole suite, which included other tasks' stubs, before its targeted run. If that were the last run, `record_outcome` would see a pass rate below 1 and trigger a rollback. [This is the same root cause as open question 29. The default keeps the latest capture. The fix is to compare against the pass rate at the checkpoint.]
-36. **Provenance can't tell subagents apart** (MEMROUTER §11). [It uses `client_info` only. An optional `agent_id` parameter on `record_outcome` would cover it when subagents arrive.]
-
-### Raised in Phase 4 (the default used is in brackets)
-
-37. **(Partly resolved in session 7: key provided, Jev verified live; pricing and rate limits still unpublished.)** **Jev has never been called for real.** This needs a `TYPESAFE_API_KEY` from console.typesafe.ai. The docs publish no pricing or rate limits (§15 "test Jev access for real" is still open). [Built and tested against the SDK over a mocked transport; `HORIZON_SCORER=none` by default.]
-38. **(Needs credentials and spend.) The LLM scorer has never been called for real.** It needs Claude API credentials. [Same as above.]
-39. **Weights and thresholds are untuned.** §5's experiment (Jev against the small LLM on real decisions, then against real outcomes) is what should set them. [Defaults above. Every raw dimension is returned, so re-weighting doesn't need re-scoring.]
-40. **Phase 4 has no benchmark run.** mini-SWE-agent doesn't speak MCP (same as open question 10). [The demo measures invocation instead.]
-
-### Raised in Phase 5 (the default used is in brackets)
-
-41. **Jev rarely produces close calls.** Three real library choices all came out as clear winners (margins 0.17–0.24), so consequence checking may seldom run at the 0.10 margin. [Kept 0.10. The decision log will show how often close calls happen; the §6 experiment ("on a sample of ties, run all options for real") needs ties, so a larger margin may be worth it for the experiment.]
-42. **Possible high-stakes false positive:** "Celery with Redis vs RQ vs APScheduler" scored as high stakes. [Only matters on a second tie (then a human is asked). Watch it in the decision log.]
-43. **Spikes cost the host's tokens and time** (about 6 extra tool calls per option in the live runs). [The plan caps each spike at `HORIZON_SPIKE_BUDGET_MINUTES` (10), static checks can skip a spike, and memory reuse avoids repeats.]
-
-### Raised in Phase 6 (the default used is in brackets)
-
-44. **The headline improvement comes from one constructed scenario.** The owner's earlier memrouter experiments (open question 1: `~/Desktop/memrouter`) found that on real data, scoped walls plus a shared schema tier beat activation-based routing, and that the working-set cap did most of the work. They also found bugs that only a live use log exposed. [Built to spec, with a bounded strength factor. Next evidence: repeated real benchmark runs (§15) and a comparison with a standard memory layer such as mem0.]
-45. **Predictor trust is tracked but doesn't yet change scoring.** [Reported in `horizon stats` and the consolidation report. Shrinking a poorly calibrated source's predictions needs samples first.]
-46. **Past spike results aren't yet part of the recall slice** (§6 step 6 lists them). [They're used where they matter, in the decision layer's memory lookup (Phase 5).]
-
-### Raised in Phase 7 (the default used is in brackets)
-
-47. **(Needs the owner: data deletion.) Privacy hard-delete.** A user may want a memory erased, not archived (e.g. under GDPR), which conflicts with "episodes are never deleted". [Archive plus audit snapshot. Hard delete would need an owner decision and a way to purge Parquet exports too.]
-48. **Pricing, the free tier and payments** (§15 "credit pricing, free tier limits"). [Placeholder prices and 1,000 free credits; operator top-ups; no payment provider.]
-49. **Interactive approval UX is untested with a human in Claude Code.** Headless runs prove the safe path (cancel → nothing happens), but not how the choice or guidance form looks. [Try `evaluate_options` on a high-stakes tie in an interactive session.]
+**Needs the owner** (credentials, money or an irreversible decision): 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
-1. **Owner:** to use Jev in your own projects, set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev` in the environment Claude Code starts from. Optionally set `HORIZON_SCORER=llm` with Claude API credentials to run the Jev-vs-small-LLM comparison (open question 39).
-2. Review the Phase 4 branch and open its PR when ready (the owner asked for PRs in batches).
-3. Phase 7 is on `claude/phase-7-inspection-approvals` (from `main`). Next is **Phase 8: launch**: publish the repo, benchmarks and a write-up. That needs the real benchmark runs (API credits) and the owner's call on hosting (§17), pricing (48) and public release (hard to reverse).
-4. Schedule `horizon consolidate` nightly where Horizon runs (cron) if 200-episode batches are too infrequent.
-4. When credits and keys exist, run the Phase 1 real benchmark (smoke run first).
+1. **Owner:** the "Needs the owner" line above. The launch waits on making the repo public, benchmark credits, a hosting provider and pricing (`docs/LAUNCH.md`).
+2. Merge the review-pass PR (it includes Phase 8; PR #9 is superseded).
+3. Run the platform benchmark: `horizon-bench run --stage full --agent claude-code` then `--with-horizon`, 3 repeats each, after `real_runs: true`.

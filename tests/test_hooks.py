@@ -134,3 +134,73 @@ def test_cli_hook_subprocess(settings, project_dir, tmp_path):
                           timeout=60)
     assert proc.returncode == 0
     assert "start_task" in json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_stored_test_commands_carry_no_inline_code():
+    from horizon.hooks import command_summary
+
+    assert command_summary('python -c "import os; os.remove(p)" && pytest -q') == 'python -c "…" && pytest -q'
+    assert command_summary("python - <<EOF\nimport secret_module\nEOF") == "python - <<EOF"
+    assert command_summary("pytest -q tests/test_api.py") == "pytest -q tests/test_api.py"
+
+
+def test_hosted_hooks_send_parsed_facts_only(monkeypatch, tmp_path):
+    """Hosted mode: no test output, no code and no paths leave the machine; the project is a hash."""
+    from horizon.hooks import Remote, project_key
+
+    sent = []
+    monkeypatch.setattr(Remote, "_post", lambda self, op, body: sent.append((op, body)) or None)
+    monkeypatch.setenv("HORIZON_API_KEY", "hzn_test")
+    output = "FAILED tests/test_a.py::test_x - AssertionError: secret_value=42\n==== 1 failed, 3 passed in 0.1s ===="
+    payload = {"session_id": "s1", "cwd": str(tmp_path), "tool_name": "Bash",
+               "tool_input": {"command": 'python -c "import app; app.run()" && pytest -q'},
+               "tool_response": {"stdout": output, "stderr": "Traceback ... private"}}
+    run_hook("post-tool-use", json.dumps(payload), remote="https://horizon.example.com")
+    [(op, body)] = sent
+    assert op == "capture" and body["project"] == project_key(str(tmp_path)) and body["project"].startswith("prj_")
+    assert body["capture"] == {"command": 'python -c "…" && pytest -q', "runner": "pytest", "passed": 3,
+                               "failed": 1, "failing": ["tests/test_a.py::test_x"]}
+    wire = json.dumps(sent)
+    assert "secret_value" not in wire and "Traceback" not in wire and str(tmp_path) not in wire
+
+
+def test_hosted_hook_api_needs_a_team_key(settings):
+    import dataclasses
+
+    from fastapi.testclient import TestClient
+
+    from horizon.server import http_app
+
+    api = TestClient(http_app(dataclasses.replace(settings)))
+    assert api.post("/api/hooks/session-start", json={"project": "prj_x"}).status_code == 401
+    assert api.post("/api/hooks/session-start", json={"project": "prj_x"},
+                    headers={"Authorization": "Bearer hzn_nope"}).status_code == 401
+
+
+def test_hosted_teams_with_the_same_project_path_stay_isolated(settings):
+    """Two teams' users with the same path hash to the same project key: their hooks must not mix."""
+    import dataclasses
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    from horizon.accounts import Accounts
+    from horizon.db import connect
+    from horizon.server import hosted_scope, http_app
+    from horizon.taskstate.store import TaskStore
+
+    app = http_app(dataclasses.replace(settings))
+    api = TestClient(app)
+    accounts = Accounts(connect(settings.db_url))
+    (a, key_a), (b, key_b) = accounts.create_team("A"), accounts.create_team("B")
+    cap = {"command": "pytest", "runner": "pytest", "passed": 1, "failed": 2, "failing": ["t::x", "t::y"]}
+    api.post("/api/hooks/capture", json={"project": "prj_same", "session_id": "s", "capture": cap},
+             headers={"Authorization": f"Bearer {key_a}"})
+    store = TaskStore(connect(settings.db_url))
+    assert len(store.pending_captures(hosted_scope(a, "prj_same"))) == 1
+    assert store.pending_captures(hosted_scope(b, "prj_same")) == []
+    ckpt = {"id": "ckpt_x", "cwd": hosted_scope(b, "prj_same"), "git": {"repo": ".", "commit": "abc"}}
+    api.post("/api/hooks/checkpoint", json={"checkpoint": ckpt}, headers={"Authorization": f"Bearer {key_a}"})
+    # A client naming another team's scope gets it re-scoped under its own team.
+    assert store.take_checkpoint(hosted_scope(b, "prj_same"), datetime(2000, 1, 1, tzinfo=UTC), "t") is None
+    assert store.take_checkpoint(f"{a}/{b}/prj_same", datetime(2000, 1, 1, tzinfo=UTC), "t") is not None

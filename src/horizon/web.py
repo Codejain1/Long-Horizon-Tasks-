@@ -8,6 +8,7 @@ no JavaScript. The JSON API (`/api/...`) takes the API key as a Bearer token.
 from __future__ import annotations
 
 from html import escape
+from importlib import resources
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -16,6 +17,48 @@ from horizon.accounts import TOOL_CREDITS, Accounts
 from horizon.taskstate.store import TaskStore
 
 COOKIE = "horizon_session"
+PRIVACY = (resources.files("horizon").joinpath("data/PRIVACY.md")).read_text()
+
+
+def markdown_page(md: str) -> str:
+    """Just enough Markdown for the privacy page: headings, paragraphs, lists, tables, `code`, **bold**, links."""
+    import re
+
+    def inline(text: str) -> str:
+        text = escape(text)
+        text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+        text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+        return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<a href='\2'>\1</a>", text)
+
+    out, table, items = [], [], []
+
+    def flush():
+        if table:
+            rows = [r for r in table if not re.fullmatch(r"\|?[\s:|-]+\|?", r)]
+            cells = [[c.strip() for c in r.strip("|").split("|")] for r in rows]
+            head = "".join(f"<th>{inline(c)}</th>" for c in cells[0])
+            body = "".join("<tr>" + "".join(f"<td>{inline(c)}</td>" for c in r) + "</tr>" for r in cells[1:])
+            out.append(f"<table><tr>{head}</tr>{body}</table>")
+            table.clear()
+        if items:
+            out.append("<ul>" + "".join(f"<li>{inline(i)}</li>" for i in items) + "</ul>")
+            items.clear()
+
+    for line in md.splitlines():
+        if line.startswith("|"):
+            table.append(line)
+            continue
+        if line.startswith("- "):
+            items.append(line[2:])
+            continue
+        flush()
+        if line.startswith("#"):
+            level = len(line) - len(line.lstrip("#"))
+            out.append(f"<h{level}>{inline(line.lstrip('# '))}</h{level}>")
+        elif line.strip():
+            out.append(f"<p>{inline(line)}</p>")
+    flush()
+    return "\n".join(out)
 
 STYLE = """
 body{font:15px/1.5 system-ui,sans-serif;max-width:920px;margin:2rem auto;padding:0 1rem;color:#1d1d1f;background:#fff}
@@ -74,7 +117,16 @@ def create_web_app(accounts: Accounts, tasks: TaskStore, lifespan=None) -> FastA
 <form method=post action=/login><input type=password name=api_key placeholder="hzn_..." autocomplete=off required>
 <button>Sign in</button></form>
 <p class=muted>New team? An operator creates it with <code>horizon create-team NAME</code>, which prints the first
-key.</p>""", status)
+key. <a href=/privacy>Data and privacy</a>: no source code is ever stored.</p>""", status)
+
+    @app.get("/healthz")
+    def healthz():
+        tasks.db.fetchone("SELECT 1")  # the database answers
+        return {"ok": True}
+
+    @app.get("/privacy", response_class=HTMLResponse)
+    def privacy():
+        return page("Horizon: data and privacy", markdown_page(PRIVACY))
 
     @app.get("/", response_class=HTMLResponse)
     def home(request: Request):
@@ -127,7 +179,8 @@ Tokens saved are counted only where past spikes reported their token cost.</p>
                                      'No calls yet.')}
 <h2>Credit history</h2>{_table(s['ledger'], [('at', 'When'), ('delta', 'Credits'), ('reason', 'Reason')],
                                 'No grants yet.')}
-<p class=muted>Human approvals asked: {s['human_approvals']['asked']}, answered: {s['human_approvals']['answered']}.</p>"""
+<p class=muted>Human approvals asked: {s['human_approvals']['asked']}, answered: {s['human_approvals']['answered']}.
+<a href=/privacy>Data and privacy</a>.</p>"""
         return page(f"Horizon: {s['team']['name']}", body)
 
     @app.get("/account", response_class=HTMLResponse)
@@ -148,6 +201,45 @@ Tokens saved are counted only where past spikes reported their token cost.</p>
         if team:
             accounts.revoke_key(team, key_id)
         return RedirectResponse("/account" if team else "/", 303)
+
+    # --- hosted hooks (the hook bridge: parsed facts from the user's machine) ----------------------------
+
+    @app.post("/api/hooks/{op}")
+    async def hooks_api(op: str, request: Request, authorization: str | None = Header(None)):
+        from horizon.hooks import Local
+        from horizon.models import Checkpoint
+
+        from horizon.server import hosted_scope
+
+        team = api_team(authorization)
+        body = await request.json()
+        local = Local(tasks, team)
+        project = hosted_scope(team, str(body.get("project") or ""))
+        if op == "session-start":
+            return local.session_start(project)
+        if op == "capture":
+            cap = body["capture"]
+            cap = {"command": str(cap["command"])[:200], "runner": str(cap["runner"])[:20],
+                   "passed": int(cap["passed"]), "failed": int(cap["failed"]),
+                   "failing": None if cap.get("failing") is None else [str(t)[:300] for t in cap["failing"][:500]]}
+            return local.capture(project, str(body.get("session_id") or "")[:100] or None, cap)
+        if op == "restore-checks":
+            return local.restore_checks(project)
+        if op == "checkpoint":
+            ckpt = Checkpoint.model_validate(body["checkpoint"])
+            ckpt.cwd = hosted_scope(team, ckpt.cwd)  # a client can't put a checkpoint into another team's scope
+            local.checkpoint(ckpt)
+            return None
+        if op == "stop":
+            return local.stop(project, str(body.get("session_id") or "")[:100] or None)
+        if op == "usage":  # counts and a duration only
+            raw = body["usage"]
+            usage = {k: max(0, int(raw.get(k) or 0)) for k in ("tokens", "input", "output", "cache_write",
+                                                                "cache_read", "turns")}
+            usage["latency_ms"] = None if raw.get("latency_ms") is None else max(0, int(raw["latency_ms"]))
+            local.usage(project, str(body.get("session_id") or "")[:100] or None, usage)
+            return None
+        raise HTTPException(404, "unknown hook")
 
     # --- JSON API ------------------------------------------------------------------------
 

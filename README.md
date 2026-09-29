@@ -1,48 +1,99 @@
-# Long-Horizon Tasks
+# Horizon
 
-An MCP server that gives coding agents task state and outcome-learning memory. See `docs/PROJECT.md` (source of truth) and `docs/MEMROUTER.md` (memory spec). Build status is in `PROGRESS.md`.
+**Experience for coding agents.** Horizon is an MCP server that plugs into Claude Code or Codex. It keeps long tasks on track, scores crucial decisions before your agent commits to them, rolls back cleanly when a change breaks something, and remembers what actually worked, so the next task starts smarter.
 
-## What's here
+> Other tools give agents a better notebook. Horizon gives them experience.
 
-**Phase 1 — benchmark harness** (`src/horizon/bench/`, `bench/`): mini-SWE-agent + `claude-sonnet-5` on 50 fixed SWE-bench Verified tasks. Dry run by default; see `bench/README.md`.
+Your agent still does all the coding with your own subscription. Horizon decides, remembers and learns. It never needs your code: see [Data and privacy](docs/PRIVACY.md).
 
-**Phase 2 — MCP server and basic memory:**
+## What it does
 
-- **MCP tools:** `start_task`, `recall_context` and `record_outcome` (`src/horizon/server.py`), over stdio or streamable HTTP with a dev API key.
-- **Task state** (`src/horizon/taskstate/`): goal (verbatim), constraints, plan, progress, decisions and open issues.
-- **Memrouter step 1** (`src/horizon/memrouter/`): episodes, the write path with surprise scoring, and basic similarity recall.
-- **Claude Code integration:** hooks, a CLAUDE.md snippet and an installer. See `docs/CLAUDE_CODE.md`.
-- **Storage:** SQLite for zero-setup local use, or Postgres + pgvector.
+- **Task state:** the goal verbatim, constraints, plan, decisions and progress, sent back to the agent at every step so it doesn't drift.
+- **Decisions:** at a crucial choice (framework, database, architecture), `evaluate_options` scores the options on success, compatibility, fit and cost. It uses [Jev](https://typesafe.ai) or a small LLM, plus your estimates.
+- **Consequence checks:** close calls get cheap checks, then small throwaway spikes built on your machine. Past results are reused instead of re-spiking.
+- **Rollback:** before each decision, hooks snapshot git. When a change breaks tests that used to pass, the agent is told to restore and retry differently. After 3 failed attempts it asks you. Tests that were already failing when the task started don't count against it.
+- **Memory that learns:** outcomes strengthen or weaken what's remembered, a nightly sleep job distils lessons and strategies, and severe failures become warnings that always surface.
+- **You stay in charge:** high-stakes ties, clearing a warning and deleting a memory are asked of **you** in the client. The agent can't approve on your behalf. `explain_decision` and `show_memories` show why and what.
 
-**Phase 4 — decision layer** (`src/horizon/decision/`): the `evaluate_options` tool scores the host's options for a crucial choice. It uses Jev (or the small-LLM comparison scorer) plus the host's cost estimates, with weights and thresholds in code. See `docs/CLAUDE_CODE.md`.
+## Set up in under 5 minutes
 
-**Phase 7 — inspection, approvals, accounts:**
-- **Inspection tools:** `explain_decision`, `show_memories`, `delete_memory` and `clear_fear`.
-- **Human approvals** through MCP user-input requests, for high-stakes ties, escalations, deleting a memory and clearing a fear.
-- **The hosted server** (`horizon serve --transport http`): team API keys and metered credits for MCP at `/mcp`, and an account page at `/` for keys, credits, usage and savings per session.
+You need Python 3.12+, [uv](https://docs.astral.sh/uv/) (or pip), git, and Claude Code or Codex. A cold setup takes about a minute; a one-time 64 MB model download happens on first use.
 
-**Phase 6 — memrouter learning** (`src/horizon/memrouter/`):
-- **learning:** links learnt from surprise (Hebbian), spaced-repetition decay and pruning;
-- **recall:** 2-hop spreading activation, then the Jev attention filter within a token budget;
-- **sleep job** (`horizon consolidate`): distils lessons and strategies, archives episodes to cold storage, exports Parquet;
-- **conditions** refined when a lesson is contradicted (reconsolidation);
-- **fear memories**, cleared only by a human (`horizon clear-fear`);
-- **predictor trust** per source.
+```bash
+# 1. Install Horizon (the repo is private until launch: you need access to clone it)
+git clone https://github.com/Codejain1/Long-Horizon-Tasks- horizon && cd horizon
+uv venv -p 3.12 && uv pip install -e ".[embeddings]"
 
-**Phase 5 — consequence checking**: close calls are checked cheapest first (past spike results from memory, try-and-rollback, static checks and local spikes run by the host). `submit_consequences` re-scores with the results as evidence. Every decision goes to a world-model decision log (`horizon export-decisions`).
+# 2. Wire it into your project (pick your agent)
+cd /path/to/your/project
+/path/to/horizon/.venv/bin/horizon install-claude-code     # Claude Code
+/path/to/horizon/.venv/bin/horizon install-codex           # Codex
+```
 
-**Phase 3 — checkpoints and rollback** (`src/horizon/taskstate/checkpoints.py`, `rollback.py`): a hook records a git and Claude Code checkpoint reference before each decision. A failed outcome returns a rollback (restore, the failure reasons fed back, a retry limit), and the task is escalated to the user after the limit. See `docs/CLAUDE_CODE.md`.
+**3. Start your agent in the project.**
+- **Claude Code:** run `claude`, then approve the `horizon` server once when asked. `claude mcp list` should show `horizon … ✓ Connected`.
+- **Codex:** run `codex`, then trust the project and its hooks once (`/hooks`). `codex mcp list` should show `horizon`.
 
-## Quick start
+**4. Give it a task as usual.** The installed instructions tell the agent when to call Horizon, and the hooks capture real test results, checkpoints and missing outcomes on their own. Check it's working with:
+
+```bash
+/path/to/horizon/.venv/bin/horizon stats
+```
+
+That's the whole setup. Everything runs locally, in a SQLite file at `~/.horizon/horizon.db`, and nothing leaves your machine.
+
+### What the installers write
+
+| | Claude Code (`install-claude-code`) | Codex (`install-codex`) |
+|---|---|---|
+| MCP server | `.mcp.json` | `.codex/config.toml` (`[mcp_servers.horizon]`, tools pre-approved) |
+| Hooks | `.claude/settings.json` | `.codex/hooks.json` (same format) |
+| Instructions | a snippet in `CLAUDE.md` | the same snippet in `AGENTS.md` |
+| Spike scratch space | `.horizon/` added to `.gitignore` | same |
+
+Both installers are idempotent and keep your existing settings. The snippet lives between `<!-- horizon:start -->` and `<!-- horizon:end -->`: see [`src/horizon/data/agent.snippet.md`](src/horizon/data/agent.snippet.md).
+
+## Optional: score decisions with Jev
+
+Horizon works without a scorer: decisions come back `unscored`, and the rest still works. To score them:
+
+```bash
+export HORIZON_SCORER=jev TYPESAFE_API_KEY=...        # Jev by TypeSafe (console.typesafe.ai)
+# or: HORIZON_SCORER=llm with Claude API credentials   # the small-LLM comparison scorer
+uv pip install -e ".[embeddings,decision]"
+```
+
+Set these in the environment you start your agent from. Enabling a scorer sends decision summaries (never code) to that provider; see [privacy](docs/PRIVACY.md#who-else-sees-it).
+
+## Hosted mode
+
+Teams can run one shared Horizon: `docker compose up` gives you Postgres, the server, an account page with API keys, credits, usage and savings per session, and the nightly sleep job. Connect a project with:
+
+```bash
+export HORIZON_API_KEY=hzn_...        # from `horizon create-team` or the account page
+horizon install-claude-code --hosted https://horizon.example.com    # or install-codex --hosted …
+```
+
+Hooks still run on your machine and send only parsed facts (test counts, failing test names, commit ids, a hashed project key). See [docs/HOSTING.md](docs/HOSTING.md).
+
+## Documentation
+
+- [Claude Code](docs/CLAUDE_CODE.md): hooks, configuration, the decision layer, rollback, memory, inspection and approvals.
+- [Codex](docs/CODEX.md): the same for Codex, and what differs.
+- [Hosting](docs/HOSTING.md): Docker, accounts, credits, backups and upgrades.
+- [Data and privacy](docs/PRIVACY.md): exactly what is stored, where, and who sees it.
+- [Launch checklist](docs/LAUNCH.md): what's done and what's pending.
+- Design: [PROJECT.md](docs/PROJECT.md) (the source of truth), [MEMROUTER.md](docs/MEMROUTER.md) (memory). Build history: [PROGRESS.md](PROGRESS.md).
+
+## Development
 
 ```bash
 uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision,export,web]"
-.venv/bin/pytest                                   # SQLite tests
-HORIZON_TEST_PG_URL=postgresql://user:pass@localhost/db .venv/bin/pytest   # also Postgres + pgvector
-
-.venv/bin/horizon install-claude-code --dir /path/to/project   # wire into Claude Code
-.venv/bin/horizon stats                                        # invocation reliability
-HORIZON_DEV_API_KEY=change-me docker compose up --build        # Postgres + HTTP server
-.venv/bin/horizon-bench run --stage smoke                        # Phase 1 harness, dry run
-demo/reliability/run.sh /tmp/rel1                              # host reliability demo (real Claude Code)
+.venv/bin/pytest                                                   # SQLite
+HORIZON_TEST_PG_URL=postgresql://user:pass@localhost/db .venv/bin/pytest   # plus Postgres + pgvector
+.venv/bin/horizon-bench run --stage smoke                          # benchmark harness, dry run
+.venv/bin/horizon-bench run --stage smoke --agent claude-code --with-horizon   # Horizon itself, dry run
+demo/reliability/run.sh /tmp/rel1                                   # does a real Claude Code call the tools?
 ```
+
+`tests/test_e2e.py` runs the whole flow against the hosted server over real HTTP, from start to account page. MIT licensed.

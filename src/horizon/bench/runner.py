@@ -232,13 +232,17 @@ def run(cfg: BenchConfig, stage: str, repeats: int | None = None, out_root: Path
     tasks, source = load_task_list(cfg)
     tasks = stage_tasks(tasks, stage, cfg.selection.smoke_n)[:limit]
     instances = load_instances(cfg, tasks, source)
+    claude_code = cfg.execution.agent == "claude-code"
     env_kind = resolve_environment(cfg)
-    base = base_mini_config()
+    if claude_code and env_kind == "docker":
+        env_kind = "local"  # Claude Code runs on the host, in a local checkout
+    base = None if claude_code else base_mini_config()
     out_root = out_root or cfg.path(cfg.output_dir)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dirs = []
     for repeat in range(1, (repeats or 1) + 1):
-        run_id = f"{stamp}-{stage}-{'dry' if cfg.dry_run else 'real'}-r{repeat}"
+        agent = ("cc-horizon" if cfg.execution.horizon else "cc") if claude_code else "mini"
+        run_id = f"{stamp}-{stage}-{agent}-{'dry' if cfg.dry_run else 'real'}-r{repeat}"
         run_dir = out_root / run_id
         run_dir.mkdir(parents=True)
         meta = {"run_id": run_id, "stage": stage, "repeat": repeat, "dry_run": cfg.dry_run,
@@ -248,7 +252,14 @@ def run(cfg: BenchConfig, stage: str, repeats: int | None = None, out_root: Path
         preds: dict[str, dict] = {}
         with (run_dir / "results.jsonl").open("w") as out:
             for task in tasks:
-                rec = run_task(instances[task["instance_id"]], cfg, run_dir, env_kind, base, meta)
+                if claude_code:
+                    from horizon.bench import claude_code as cc
+
+                    # One Horizon memory for the whole invocation: it carries over tasks and repeats (§14).
+                    rec = cc.run_task(instances[task["instance_id"]], cfg, run_dir, env_kind, meta,
+                                      horizon=cfg.execution.horizon, memory_db=out_root / f"{stamp}-horizon.db")
+                else:
+                    rec = run_task(instances[task["instance_id"]], cfg, run_dir, env_kind, base, meta)
                 patch = rec.pop("_patch")
                 preds[rec["instance_id"]] = {"instance_id": rec["instance_id"], "model_name_or_path": cfg.model.name,
                                              "model_patch": patch}

@@ -138,13 +138,17 @@ def _ask(scorer: Scorer | None, state: dict, questions: dict) -> tuple[dict[str,
         return None, "unavailable"
 
 
-def _rows(options: list[Option], answers: dict[str, Answer] | None, settings, second_pass: bool) -> list[dict]:
+def _rows(options: list[Option], answers: dict[str, Answer] | None, settings, second_pass: bool,
+          bias: float = 0.0) -> list[dict]:
     rows, rel = [], {d: measured(options, d) for d in MEASURED}
     for i, o in enumerate(options):
         dims = {d: round(rel[d][i], 3) for d in MEASURED if rel[d] is not None}
         confidence = reversible = None
         if answers:
-            dims["success"] = round(answers[f"o{i}.success"].value, 3)
+            # Predictor trust (MEMROUTER §12 "feeds Jev scoring"): the scorer's measured bias is removed before
+            # ranking. The raw value is kept: it's what the episode records, so trust keeps measuring the scorer.
+            raw = answers[f"o{i}.success"].value
+            dims["success"] = round(min(1.0, max(0.0, raw - bias)), 3)
             for d in JUDGED:
                 dims[d] = round(answers[f"o{i}.{d}"].value, 3)
             if second_pass:
@@ -155,7 +159,8 @@ def _rows(options: list[Option], answers: dict[str, Answer] | None, settings, se
             reversible = round(answers[f"o{i}.reversible"].value, 3)
         c = composite(dims, settings.decision_weights)
         rows.append({"label": o.label, "composite": None if c is None else round(c, 3), "confidence": confidence,
-                     "dimensions": dims, "reversible": reversible})
+                     "dimensions": dims, "reversible": reversible,
+                     "success_raw": round(answers[f"o{i}.success"].value, 3) if answers else None})
     return rows
 
 
@@ -184,17 +189,18 @@ def _second_tie(close: list[dict], options: list[Option], high_stakes: bool, fea
 
 def _result(out: dict, kind: str, row: dict | None, reason: str, next_: str) -> dict:
     return {**out, "decision": kind, "chosen": row["label"] if row else None,
-            "predicted_success": row["dimensions"].get("success") if row else None, "reason": reason, "next": next_}
+            "predicted_success": row["dimensions"].get("success") if row else None,
+            "predicted_success_raw": row.get("success_raw") if row else None, "reason": reason, "next": next_}
 
 
 def first_pass(state: dict, options: list[Option], scorer: Scorer | None, settings, *,
-               crucial_hint: bool | None = None, fear_warnings: int = 0) -> dict:
+               crucial_hint: bool | None = None, fear_warnings: int = 0, bias: float = 0.0) -> dict:
     """Returns a final decision, or `decision: "close"` with the close options for consequence checking."""
     answers, status = _ask(scorer, state, build_questions(len(options)))
-    rows = _rows(options, answers, settings, second_pass=False)
+    rows = _rows(options, answers, settings, second_pass=False, bias=bias)
     ranked = sorted((r for r in rows if r["composite"] is not None), key=lambda r: -r["composite"])
     out = {"scorer": scorer.name if scorer else None, "scorer_status": status, "options": rows,
-           "answers": _raw(answers)}
+           "answers": _raw(answers), "calibration_bias": round(bias, 3)}
 
     if not answers:
         # Estimates alone only say what is cheap, not what works, so nothing is chosen (seen in a real run: the
@@ -222,14 +228,19 @@ def first_pass(state: dict, options: list[Option], scorer: Scorer | None, settin
 
 
 def plan_consequences(first: dict, situation: str, from_memory: dict[str, dict], settings, *,
-                      can_roll_back: bool) -> dict:
+                      can_roll_back: bool, forecasts: dict[str, dict] | None = None) -> dict:
     """What to check for the close options, cheapest first (§6). Returns the plan; `mode` is one of
-    "memory" (everything already tested before), "try_and_rollback" or "spikes"."""
+    "memory" (everything already tested before), "world_model" (the rest confidently forecast),
+    "try_and_rollback" or "spikes". `forecasts` are the world model's, passed only when it is active."""
     close = first["close"]
     rows = {r["label"]: r for r in first["options"]}
     to_test = [label for label in close if label not in from_memory]
     if not to_test:
         return {"mode": "memory", "from_memory": from_memory}
+    if forecasts and all((forecasts.get(label) or {}).get("confidence", 0) >= settings.world_model_settle_confidence
+                         for label in to_test):
+        return {"mode": "world_model", "from_memory": from_memory,
+                "forecasts": {label: forecasts[label] for label in to_test}}
     cheap_to_undo = all((rows[label]["reversible"] or 0) >= settings.try_reversible_threshold for label in close)
     if can_roll_back and cheap_to_undo and not first["high_stakes"]:
         return {"mode": "try_and_rollback", "from_memory": from_memory, "order": close}
@@ -253,18 +264,20 @@ def plan_consequences(first: dict, situation: str, from_memory: dict[str, dict],
 
 
 def second_pass(state: dict, options: list[Option], evidence: dict[str, dict], scorer: Scorer | None,
-                settings, first: dict, *, fear_warnings: int = 0, stage: str = "after consequence checks") -> dict:
+                settings, first: dict, *, fear_warnings: int = 0, stage: str = "after consequence checks",
+                bias: float = 0.0) -> dict:
     """Re-score the close options with `evidence` ({label: consequence result}) and decide. No further loop."""
     close = [o for o in options if o.label in first["close"]]
-    # Real measurements from spikes replace the host's estimates.
+    # Real measurements from spikes replace the host's estimates; failing those, the world model's forecasts.
     for i, o in enumerate(close):
-        metrics = ((evidence.get(o.label) or {}).get("spike") or {}).get("metrics") or {}
-        close[i] = replace(o, **{f"est_{d}": float(metrics[d]) for d in MEASURED if d in metrics})
+        ev = evidence.get(o.label) or {}
+        metrics = (ev.get("spike") or {}).get("metrics") or ev.get("world_model") or {}
+        close[i] = replace(o, **{f"est_{d}": float(metrics[d]) for d in MEASURED if metrics.get(d) is not None})
     state = {**state, "options": [{"label": o.label, "description": o.description} for o in close],
              "consequences": [{"option": o.label, **(evidence.get(o.label) or {"tested": False})} for o in close]}
 
     answers, status = _ask(scorer, state, consequence_questions(len(close)))
-    rows = _rows(close, answers, settings, second_pass=True)
+    rows = _rows(close, answers, settings, second_pass=True, bias=bias)
     if answers is None:  # keep pass 1's judgement, now with the measured values
         by_label = {r["label"]: r for r in first["options"]}
         for r in rows:

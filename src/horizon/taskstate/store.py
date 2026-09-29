@@ -11,6 +11,7 @@ from datetime import datetime
 
 from horizon.db import Database, load_json
 from horizon.models import Checkpoint, TaskState, TestCapture, now
+from horizon.redact import redact
 
 
 def ts(db: Database, value: datetime | None):
@@ -38,6 +39,9 @@ _SCHEMA = {
         """CREATE TABLE IF NOT EXISTS approvals (
             id TEXT PRIMARY KEY, team_id TEXT NOT NULL, task_id TEXT, kind TEXT NOT NULL, action TEXT NOT NULL,
             question TEXT NOT NULL, answer TEXT, approver TEXT, created_at TEXT NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS attempt_usage (
+            id TEXT PRIMARY KEY, session_id TEXT, cwd TEXT NOT NULL, tokens INTEGER NOT NULL, latency_ms INTEGER,
+            data TEXT NOT NULL, created_at TEXT NOT NULL, consumed_by TEXT)""",
     ],
     "postgres": [
         """CREATE TABLE IF NOT EXISTS tasks (
@@ -58,12 +62,16 @@ _SCHEMA = {
         """CREATE TABLE IF NOT EXISTS approvals (
             id TEXT PRIMARY KEY, team_id TEXT NOT NULL, task_id TEXT, kind TEXT NOT NULL, action TEXT NOT NULL,
             question TEXT NOT NULL, answer TEXT, approver TEXT, created_at TIMESTAMPTZ NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS attempt_usage (
+            id TEXT PRIMARY KEY, session_id TEXT, cwd TEXT NOT NULL, tokens BIGINT NOT NULL, latency_ms BIGINT,
+            data JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, consumed_by TEXT)""",
     ],
 }
 _INDEXES = [
     "CREATE INDEX IF NOT EXISTS tasks_team_status ON tasks (team_id, status)",
     "CREATE INDEX IF NOT EXISTS captures_cwd ON test_captures (cwd, created_at)",
     "CREATE INDEX IF NOT EXISTS checkpoints_cwd ON checkpoints (cwd, created_at)",
+    "CREATE INDEX IF NOT EXISTS attempt_usage_cwd ON attempt_usage (cwd, created_at)",
 ]
 
 
@@ -171,6 +179,26 @@ class TaskStore:
             self.db.execute("UPDATE checkpoints SET consumed_by = %s WHERE id = %s", (task_id, cid))
         return Checkpoint.model_validate(load_json(rows[0][1])) if rows else None
 
+    # --- attempt usage (PreToolUse hook on record_outcome) --------------------------------------
+
+    def add_usage(self, cwd: str, session_id: str | None, usage: dict) -> None:
+        from horizon.models import new_id
+
+        self.db.execute(
+            "INSERT INTO attempt_usage (id, session_id, cwd, tokens, latency_ms, data, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (new_id("use"), session_id, cwd, int(usage["tokens"]), usage.get("latency_ms"), self.db.json(usage),
+             ts(self.db, now())))
+
+    def take_usage(self, cwd: str, since: datetime, consumer: str) -> dict | None:
+        """The newest unclaimed usage for a directory; claims it and any older ones."""
+        rows = self.db.fetchall(
+            "SELECT id, data FROM attempt_usage WHERE cwd = %s AND consumed_by IS NULL AND created_at >= %s"
+            " ORDER BY created_at DESC", (cwd, ts(self.db, since)))
+        for uid, _ in rows:
+            self.db.execute("UPDATE attempt_usage SET consumed_by = %s WHERE id = %s", (consumer, uid))
+        return load_json(rows[0][1]) if rows else None
+
     # --- human approvals (PROJECT.md §10; §14 "human approval rate should fall") -------------------
 
     def log_approval(self, team_id: str, task_id: str | None, kind: str, action: str, question: str,
@@ -179,8 +207,9 @@ class TaskStore:
 
         self.db.execute("INSERT INTO approvals (id, team_id, task_id, kind, action, question, answer, approver,"
                         " created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                        (new_id("apr"), team_id, task_id, kind, action, question[:500], answer and answer[:500],
-                         approver, ts(self.db, now())))
+                        # Questions and answers carry host and user text (reasons, guidance): no raw code (§12).
+                        (new_id("apr"), team_id, task_id, kind, action, redact(question, 500), redact(answer, 300),
+                         approver and redact(approver, 100), ts(self.db, now())))
 
     def approvals(self, team_id: str) -> list[dict]:
         rows = self.db.fetchall("SELECT task_id, kind, action, answer, approver, created_at FROM approvals"

@@ -14,7 +14,8 @@ from horizon.taskstate.store import TaskStore
 PG_URL = os.environ.get("HORIZON_TEST_PG_URL")
 TABLES = ("tasks", "test_captures", "tool_calls", "checkpoints", "decisions", "episodes", "recall_log", "spike_results",
           "lessons", "links", "memory_state", "predictor_stats", "consolidation_runs", "episodes_archive",
-          "approvals", "memory_removals", "teams", "api_keys", "credit_ledger", "usage", "web_sessions")
+          "approvals", "memory_removals", "teams", "api_keys", "credit_ledger", "usage", "web_sessions",
+          "weight_log", "attempt_usage")
 
 
 def _reset_postgres(url: str) -> None:
@@ -35,8 +36,9 @@ def db_url(request, tmp_path):
 
 
 @pytest.fixture
-def settings(db_url):
-    return dataclasses.replace(Settings(), db_url=db_url, embedder="hash")
+def settings(db_url, tmp_path):
+    # Exports go to the test's temp dir: the default (~/.horizon/exports) is the user's real one.
+    return dataclasses.replace(Settings(), db_url=db_url, embedder="hash", export_dir=str(tmp_path / "exports"))
 
 
 @pytest.fixture

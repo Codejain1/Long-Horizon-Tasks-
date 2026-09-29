@@ -76,7 +76,7 @@ def consolidate(router, team_id: str) -> dict:
                 st = graph.states([existing.id])[existing.id]
                 st.strength = min(1.0, st.strength + 0.1)
                 st.stability = min(20.0, st.stability * 1.2)
-                graph.set_state(existing.id, team_id, st)
+                graph.set_state(existing.id, team_id, st, reason=f"sleep job merged {len(new)} new episodes")
                 report["merged"].append(existing.id)
             lesson = existing
         else:
@@ -126,6 +126,9 @@ def export_parquet(router, team_id: str) -> str | None:
                          "situation": e["situation"], "chosen": e["chosen"]["label"],
                          "predicted_success": e["predicted"].get("success"), "predicted_source": e["predicted"]["source"],
                          "actual_success": e["actual"]["success"], "surprise": e["surprise"],
+                         # The world model's efficiency targets (PROJECT.md §6), flat for training.
+                         **{f"{side}_{k}": e[side].get(k) for side in ("predicted", "actual")
+                            for k in ("tokens", "cost_usd", "latency_ms")},
                          "low_confidence": e["low_confidence"], "severity": e["severity"],
                          "created_at": e["provenance"]["created_at"], "episode_json": json.dumps(e)})
     out = Path(router.settings.export_dir)
