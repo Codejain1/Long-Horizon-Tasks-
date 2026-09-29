@@ -42,6 +42,12 @@ WORKFLOW = (
     "record_outcome after every test run with the real test counts."
 )
 
+LEAN_WORKFLOW = (
+    "This project uses the Horizon MCP server for task continuity. For any coding task: call start_task first "
+    "with the user's request verbatim, its constraints and the team rules below; after your final test run, "
+    "call record_outcome once with the real test counts and task_complete: true."
+)
+
 
 def project_dir(payload: dict) -> str:
     return os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
@@ -272,7 +278,8 @@ HANDLERS = {"session-start": session_start, "pre-tool-use": pre_tool_use, "post-
             "stop": stop}
 
 
-def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: str | None = None) -> str:
+def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: str | None = None,
+             profile: str = "full") -> str:
     """Run a hook and return what it should print. Swallows all errors.
 
     Local mode writes to the shared database. With `remote` (the hosted server's URL), it sends parsed facts
@@ -290,6 +297,12 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                 result = HANDLERS[name](payload, Local(TaskStore(db), settings.team_id), project_dir(payload))
             finally:
                 db.close()
+        if profile == "lean" and result:
+            if name == "post-tool-use":
+                return ""  # the capture is stored; lean records one outcome at the end, not one per run
+            if name == "session-start":
+                ctx = result["hookSpecificOutput"]
+                ctx["additionalContext"] = ctx["additionalContext"].replace(WORKFLOW, LEAN_WORKFLOW)
         return json.dumps(result) if result else ""
     except Exception as exc:  # a hook must never break the host session
         if os.environ.get("HORIZON_DEBUG"):

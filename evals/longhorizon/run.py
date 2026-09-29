@@ -51,9 +51,10 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo")
     git(repo, "commit", "-qm", "start")
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
     env["PATH"] = f"{Path(python).parent}:{env.get('PATH', '')}"
-    if arm == "horizon":
+    if arm in ("horizon", "lean"):
         env["HORIZON_DB_URL"] = f"sqlite:///{work / 'horizon.db'}"
-        subprocess.run([python, "-m", "horizon", "install-claude-code", "--dir", str(repo)], check=True, env=env,
+        subprocess.run([python, "-m", "horizon", "install-claude-code", "--dir", str(repo),
+                        "--profile", "lean" if arm == "lean" else "full"], check=True, env=env,
                        capture_output=True)
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", "install horizon")
@@ -63,8 +64,8 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo")
 def run_session(prompt: str, repo: Path, *, claude: str, model: str, arm: str, env: dict, log: Path) -> dict:
     cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
            "--model", model, "--setting-sources", "project,local", "--strict-mcp-config", "--allowedTools",
-           *AGENT_TOOLS, *(HORIZON_TOOLS if arm == "horizon" else [])]
-    if arm == "horizon":
+           *AGENT_TOOLS, *(HORIZON_TOOLS if arm != "baseline" else [])]
+    if arm != "baseline":
         cmd += ["--mcp-config", ".mcp.json", "--include-hook-events"]
     start = time.monotonic()
     proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=45 * 60,
@@ -129,7 +130,7 @@ def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[s
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", required=True)
-    ap.add_argument("--arm", choices=["baseline", "horizon"], required=True)
+    ap.add_argument("--arm", choices=["baseline", "horizon", "lean"], required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--sessions", type=int, default=None, help="Stop after this many sessions.")

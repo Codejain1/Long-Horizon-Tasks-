@@ -35,6 +35,8 @@ class Settings:
     db_url: str = field(default_factory=default_db_url)
     # Single team until API keys arrive in Phase 7; all memory is scoped to it.
     team_id: str = "local"
+    # "lean": continuity only (goals, constraints, team rules); no baseline run, recall or scoring per step.
+    profile: str = "full"
     # "fastembed" (default, BAAI/bge-small-en-v1.5) or "hash" (offline, deterministic).
     embedder: str = "fastembed"
     embedding_dim: int = 384
@@ -106,6 +108,7 @@ class Settings:
         return cls(
             db_url=get("DB_URL", base.db_url),
             team_id=get("TEAM_ID", base.team_id),
+            profile=get("PROFILE", base.profile),
             embedder=get("EMBEDDER", base.embedder),
             embedding_dim=get("EMBEDDING_DIM", base.embedding_dim, int),
             surprise_weights=SurpriseWeights(

@@ -32,8 +32,9 @@ def default_command() -> list[str]:
     return [sys.executable, "-m", "horizon"]
 
 
-def snippet() -> str:
-    return resources.files("horizon").joinpath("data/agent.snippet.md").read_text()
+def snippet(profile: str = "full") -> str:
+    name = "agent.snippet.lean.md" if profile == "lean" else "agent.snippet.md"
+    return resources.files("horizon").joinpath(f"data/{name}").read_text()
 
 
 def _load(path: Path) -> dict:
@@ -45,7 +46,7 @@ def _dump(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def install_mcp_json(project: Path, command: list[str], hosted: str | None = None) -> None:
+def install_mcp_json(project: Path, command: list[str], hosted: str | None = None, profile: str = "full") -> None:
     path = project / ".mcp.json"
     data = _load(path)
     if hosted:  # Claude Code expands ${HORIZON_API_KEY} from the environment: the key isn't written here
@@ -53,15 +54,18 @@ def install_mcp_json(project: Path, command: list[str], hosted: str | None = Non
                  "headers": {"Authorization": "Bearer ${HORIZON_API_KEY}", "X-Horizon-Project": project_key(str(project))}}
     else:
         entry = {"command": command[0], "args": command[1:] + ["serve"]}
+        if profile != "full":
+            entry["env"] = {"HORIZON_PROFILE": profile}
     data.setdefault("mcpServers", {})["horizon"] = entry
     _dump(path, data)
 
 
-def merge_hooks(data: dict, command: list[str], hosted: str | None = None) -> dict:
+def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profile: str = "full") -> dict:
     """Add Horizon's hooks to a Claude-format `{"hooks": {...}}` document, replacing earlier Horizon entries."""
     hooks = data.setdefault("hooks", {})
     for event, (matcher, name) in HOOK_EVENTS.items():
-        cmd = shlex.join(command + ["hook", name] + (["--remote", hosted.rstrip("/")] if hosted else []))
+        cmd = shlex.join(command + ["hook", name] + (["--remote", hosted.rstrip("/")] if hosted else [])
+                             + (["--profile", profile] if profile != "full" else []))
         groups = hooks.setdefault(event, [])
         # Drop any earlier Horizon hook for this event (e.g. from an old interpreter path).
         for group in groups:
@@ -76,19 +80,19 @@ def merge_hooks(data: dict, command: list[str], hosted: str | None = None) -> di
     return data
 
 
-def install_settings(project: Path, command: list[str], hosted: str | None = None) -> None:
+def install_settings(project: Path, command: list[str], hosted: str | None = None, profile: str = "full") -> None:
     path = project / ".claude" / "settings.json"
-    data = merge_hooks(_load(path), command, hosted)
+    data = merge_hooks(_load(path), command, hosted, profile)
     enabled = data.setdefault("enabledMcpjsonServers", [])
     if "horizon" not in enabled:
         enabled.append("horizon")
     _dump(path, data)
 
 
-def install_claude_md(project: Path, filename: str = "CLAUDE.md") -> None:
+def install_claude_md(project: Path, filename: str = "CLAUDE.md", profile: str = "full") -> None:
     path = project / filename
     text = path.read_text() if path.exists() else ""
-    block = snippet().strip()
+    block = snippet(profile).strip()
     pattern = re.compile(re.escape(MARK_START) + r".*?" + re.escape(MARK_END), re.S)
     if pattern.search(text):
         text = pattern.sub(lambda _: block, text)
@@ -164,14 +168,17 @@ def install_codex(project: Path, command: list[str] | None = None, agents_md: bo
 
 
 def install(project: Path, command: list[str] | None = None, claude_md: bool = True,
-            hosted: str | None = None) -> list[str]:
+            hosted: str | None = None, profile: str = "full") -> list[str]:
+    if hosted and profile != "full":
+        # ponytail: the hosted server's profile is server-wide; per-project profiles when a team asks.
+        raise SystemExit("--profile lean is local-only for now")
     command = command or default_command()
     project = project.resolve()
-    install_mcp_json(project, command, hosted)
-    install_settings(project, command, hosted)
+    install_mcp_json(project, command, hosted, profile)
+    install_settings(project, command, hosted, profile)
     install_gitignore(project)
     changed = [".mcp.json", ".claude/settings.json", ".gitignore"]
     if claude_md:
-        install_claude_md(project)
+        install_claude_md(project, profile=profile)
         changed.append("CLAUDE.md")
     return changed

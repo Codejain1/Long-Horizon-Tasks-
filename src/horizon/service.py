@@ -202,7 +202,14 @@ class Platform:
                 cwd=cwd or self.cwd,
                 target_tests=list(dict.fromkeys((redact_list(target_tests, MAX_OPTION) or [])
                                                 + targets_from_goal(goal))),
+                # Lean has no pre-edit test run, so outcomes are judged on the absolute pass rate.
+                baseline="missing" if self.settings.profile == "lean" else "pending",
             ))
+            if self.settings.profile == "lean":
+                return {"task_id": task.id, "task_state": self._compact(task),
+                        "team_rules": task.team_rules or self.tasks.team_rules(self.settings.team_id),
+                        "next": "Do the task. After your final test run, call record_outcome once with "
+                                "task_complete: true."}
             return {
                 "task_id": task.id,
                 "task_state": self._compact(task),

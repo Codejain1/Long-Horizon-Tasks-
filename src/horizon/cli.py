@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("hook", help="Run a Claude Code hook (reads the hook JSON on stdin).")
     p.add_argument("name", choices=["session-start", "pre-tool-use", "post-tool-use", "stop"])
     p.add_argument("--remote", help="Hosted server URL: send parsed facts there (key in HORIZON_API_KEY).")
+    p.add_argument("--profile", choices=["full", "lean"], default="full")
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
@@ -63,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
     p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
+    p.add_argument("--profile", choices=["full", "lean"], default="full",
+                   help="lean: task continuity only (goals, constraints, team rules), far fewer tool calls.")
 
     args = parser.parse_args(argv)
     from horizon.config import Settings
@@ -74,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "hook":
         from horizon.hooks import run_hook
 
-        out = run_hook(args.name, sys.stdin.read(), remote=args.remote)
+        out = run_hook(args.name, sys.stdin.read(), remote=args.remote, profile=args.profile)
         if out:
             print(out)
     elif args.cmd == "stats":
@@ -176,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "install-claude-code":
         from horizon.install import install
 
-        changed = install(Path(args.dir), claude_md=not args.no_claude_md, hosted=args.hosted)
+        changed = install(Path(args.dir), claude_md=not args.no_claude_md, hosted=args.hosted,
+                          profile=args.profile)
         print("Updated: " + ", ".join(changed))
     return 0
 
