@@ -2,7 +2,7 @@
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 os.environ["TZ"] = "Asia/Kolkata"  # the team CI's timezone: local-time bugs show up as a 5h30 shift
 time.tzset()
@@ -17,6 +17,16 @@ def is_stamp(value, expected=None):
     if expected is not None:
         assert parsed == expected, (value, expected)
     return parsed
+
+
+def is_instant(value, expected=None):
+    """A timestamp the prompt didn't ask to serialise: an aware UTC datetime, or a stamp string."""
+    if not isinstance(value, datetime):
+        return is_stamp(value, expected)
+    assert value.utcoffset() == timedelta(0), value
+    if expected is not None:
+        assert value == expected, (value, expected)
+    return value
 
 
 def is_id(value):

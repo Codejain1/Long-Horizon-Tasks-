@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 import pytest
-from conventions import UTC, is_cents, is_id, is_stamp
+from conventions import UTC, is_cents, is_id, is_instant
 
 import payouts
 
@@ -12,8 +12,8 @@ def test_payout_follows_the_team_rules(capsys):
     p = payouts.schedule_payout("shop", 25000, WHEN)
     is_id(p["id"])
     is_cents(p["amount_cents"], 25000)
-    is_stamp(p["scheduled_for"], WHEN)
-    assert abs(is_stamp(p["created_at"]) - datetime.now(UTC)) < timedelta(minutes=5)
+    is_instant(p["scheduled_for"], WHEN)
+    assert abs(is_instant(p["created_at"]) - datetime.now(UTC)) < timedelta(minutes=5)
     assert capsys.readouterr().out == ""
 
 
