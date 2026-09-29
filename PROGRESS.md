@@ -222,6 +222,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Session 13 — long-horizon A/B** (branch `claude/longhorizon-eval`).
   - **Built:** `evals/longhorizon/`, 2 scenarios × 4 fresh Claude Code sessions each, with hidden acceptance tests and constraint checks run outside the repo. Reference solutions prove the tests are fair; a naive store proves the concurrency test discriminates. 5 tests in `tests/test_longhorizon.py`.
   - **Run 1** (Sonnet, live Jev; `evals/longhorizon/RESULTS.md`): **both arms were perfect** on the hidden tests and constraints. **Horizon cost +33 % (ledger) and +140 % (notes).** The baseline kept its own `NOTES.md`.
+  - **Team scenario** (3 projects, fresh repos, the team's rules stated once): without Horizon, project 2 lost the rules (dashed ids, `+00:00` stamps). With Horizon it kept the timestamp rule, only because a past episode's situation matched, and lost the id rule. So **`start_task(team_rules=…)`**: the rules the user sets for every project are shown at session start in any project of the team. Run 1 was cut short in project 3 by the usage limit.
   - **Gap found and fixed:** every Horizon session finished its own task, so session 1's constraints never reached later sessions. SessionStart now lists the project's recently completed tasks and their constraints.
 
 ## In progress
@@ -233,6 +234,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 **Long-horizon eval (session 13)**
 - The hidden tests and checks run outside the repo, so neither arm can see or overfit them.
 - One run per arm to start; repeat before believing a difference.
+- Team rules: the latest task that sets `team_rules` holds the current set, so the user can drop a rule. It's read from the last 50 tasks' data, with no new table and no schema change.
 - SessionStart shows the last 3 completed tasks in the project (goal plus up to 10 constraints). Cheaper than resuming tasks automatically, and it keeps "one task per request" intact.
 
 **Repo conventions**

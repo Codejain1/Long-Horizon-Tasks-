@@ -134,6 +134,17 @@ class TaskStore:
                                 " ORDER BY updated_at DESC LIMIT %s", (team_id, cwd, limit))
         return [TaskState.model_validate(load_json(r[0])) for r in rows]
 
+    def team_rules(self, team_id: str) -> list[str]:
+        """The team's rules for every project: those of its latest task that set any."""
+        # ponytail: scans the latest 50 tasks' JSON; a team_rules table if teams outgrow that window.
+        rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s ORDER BY created_at DESC LIMIT 50",
+                                (team_id,))
+        for row in rows:
+            rules = load_json(row[0]).get("team_rules")
+            if rules:
+                return rules
+        return []
+
     # --- test captures (PostToolUse hook) --------------------------------------
 
     def add_capture(self, cap: TestCapture) -> TestCapture:

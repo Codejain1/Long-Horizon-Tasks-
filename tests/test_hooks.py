@@ -48,6 +48,18 @@ def test_session_start_carries_finished_tasks_constraints(platform, settings, ta
     assert "Build the ledger" in ctx and "constraint: amounts are integer cents" in ctx
 
 
+def test_team_rules_reach_every_project(platform, settings, project_dir, tmp_path):
+    """Rules the user set for all projects show up at session start in a different project, and the latest
+    task that sets them is the current set."""
+    platform.start_task("Build invoices", team_rules=["ids are uuid4 hex", "stamps end in Z"], cwd="/elsewhere")
+    ctx = hook("session-start", {"cwd": project_dir}, settings)["hookSpecificOutput"]["additionalContext"]
+    assert "Team rules" in ctx and "- ids are uuid4 hex" in ctx and "Build invoices" not in ctx
+    started = platform.start_task("Build payouts")
+    assert started["team_rules"] == ["ids are uuid4 hex", "stamps end in Z"]
+    platform.start_task("Build refunds", team_rules=["stamps end in Z"])
+    ctx = hook("session-start", {"cwd": project_dir}, settings)["hookSpecificOutput"]["additionalContext"]
+    assert "stamps end in Z" in ctx and "uuid4" not in ctx
+
 def test_post_tool_use_captures_counts_not_output(platform, settings, task_store, project_dir):
     platform.start_task("x")
     out = hook("post-tool-use", bash_payload(project_dir), settings)

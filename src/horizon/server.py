@@ -202,6 +202,9 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
     async def start_task(
         goal: Annotated[str, Field(description="The user's request, verbatim.")],
         constraints: Annotated[list[str] | None, Field(description="Hard requirements and limits.")] = None,
+        team_rules: Annotated[list[str] | None, Field(description="Rules the user set for all their projects "
+                                                                  "(the current full set, as listed at session "
+                                                                  "start plus any new ones).")] = None,
         plan: Annotated[list[str] | None, Field(description="Initial plan as short steps.")] = None,
         open_issues: Annotated[list[str] | None, Field(description="Known unknowns or blockers.")] = None,
         project_id: Annotated[str | None, Field(description="Stable project name, e.g. the repo name.")] = None,
@@ -210,7 +213,8 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
         ctx: Context | None = None,
     ) -> dict[str, Any] | InputRequiredResult:
         return await gw.run(ctx, "start_task", lambda p: p.start_task(goal, constraints, plan, open_issues, project_id,
-                                                                      target_tests, cwd=gw.project_scope(ctx)))
+                                                                      target_tests, cwd=gw.project_scope(ctx),
+                                                                      team_rules=team_rules))
 
     @server.tool(description=RECALL_CONTEXT)
     async def recall_context(
