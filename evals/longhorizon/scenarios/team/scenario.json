@@ -1,0 +1,22 @@
+{
+  "id": "team",
+  "about": "Three separate projects for one team, one session each, in fresh repos. The team's rules are stated only in the first. Tests whether conventions and lessons travel across projects.",
+  "repos": [
+    "invoices",
+    "subscriptions",
+    "payouts"
+  ],
+  "start_files": {
+    "ci.sh": "#!/bin/sh\n# The team CI: tests run in India Standard Time.\nTZ=Asia/Kolkata exec python -m pytest -q \"$@\"\n",
+    "README.md": "# A service for the payments team\n"
+  },
+  "constraints": {
+    "stdlib_only": true,
+    "python39": true
+  },
+  "sessions": [
+    "New project: a Python package `invoices`. Our team's rules for every service we build, now and in future projects: (1) every timestamp we store or return is a timezone-aware UTC datetime, and when serialised it is an ISO-8601 string ending in \"Z\" (like \"2026-01-31T09:30:00Z\", no \"+00:00\"); (2) money is integer cents, never floats; (3) ids are `uuid.uuid4().hex` (32 lowercase hex characters, no dashes); (4) library code never prints; failures raise `ValueError` with a message; (5) standard library only. Our CI runs `./ci.sh`, which runs the tests in the Asia/Kolkata timezone; run it before you finish. Implement `create_invoice(customer, amount_cents, due)` where `due` is a datetime; it returns a dict with `id`, `customer`, `amount_cents`, `created_at` and `due` (both serialised timestamps) and `status` \"open\". Add `overdue(invoices, now)` returning the open invoices whose due time is before `now` (a datetime), and `to_json(invoice)` / `from_json(text)` that round-trip an invoice. Write tests.",
+    "New project for the same team: a Python package `subscriptions`. Implement `subscribe(customer, plan_cents, start)` (`start` is a datetime) returning a dict with `id`, `customer`, `plan_cents`, `started_at` and `renews_at` (30 days after start, both serialised timestamps). Add `renew(sub)` that returns a new dict moved forward 30 days with `renewed_at` set to now, and `monthly_revenue(subs)` summing the plans. `plan_cents` must be positive. Write tests.",
+    "New project for the same team: a Python package `payouts`. Implement `schedule_payout(merchant, amount_cents, when)` (`when` is a datetime) returning a dict with `id`, `merchant`, `amount_cents`, `scheduled_for` and `created_at`; `due_payouts(payouts, now)` returns those scheduled at or before `now`; `split(amount_cents, shares)` splits an amount across a list of integer weights so the parts add up exactly. Write tests."
+  ]
+}

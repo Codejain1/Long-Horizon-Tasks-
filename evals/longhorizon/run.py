@@ -26,7 +26,8 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 AGENT_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(python:*)", "Bash(python3:*)", "Bash(pytest:*)",
                "Bash(ls:*)", "Bash(mkdir:*)", "Bash(cat:*)", "Bash(git status:*)", "Bash(git diff:*)",
-               "Bash(git log:*)", "Bash(git -C:*)", "Bash(git restore:*)", "Bash(rm -rf .horizon/spikes:*)"]
+               "Bash(git log:*)", "Bash(git -C:*)", "Bash(git restore:*)", "Bash(rm -rf .horizon/spikes:*)",
+               "Bash(./ci.sh:*)", "Bash(sh ci.sh:*)"]
 HORIZON_TOOLS = ["mcp__horizon__start_task", "mcp__horizon__recall_context", "mcp__horizon__evaluate_options",
                  "mcp__horizon__submit_consequences", "mcp__horizon__record_outcome", "mcp__horizon__explain_decision",
                  "mcp__horizon__show_memories"]
@@ -38,11 +39,13 @@ def git(repo: Path, *args: str) -> str:
                           check=True, capture_output=True, text=True).stdout
 
 
-def setup(scenario: dict, arm: str, work: Path, python: str) -> tuple[Path, dict]:
-    repo = work / "repo"
+def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo") -> tuple[Path, dict]:
+    repo = work / name
     repo.mkdir(parents=True)
     for name, text in scenario["start_files"].items():
         (repo / name).write_text(text)
+        if name.endswith(".sh"):
+            (repo / name).chmod(0o755)
     git(repo, "init", "-q")
     git(repo, "add", "-A")
     git(repo, "commit", "-qm", "start")
@@ -91,11 +94,13 @@ def run_session(prompt: str, repo: Path, *, claude: str, model: str, arm: str, e
     }
 
 
-def hidden_tests(scenario_dir: Path, upto: int, repo: Path, python: str) -> dict:
-    """Acceptance tests of sessions 1..upto, run outside the repo against the agent's package."""
+def hidden_tests(scenario_dir: Path, sessions: range, repo: Path, python: str) -> dict:
+    """Acceptance tests of the given sessions, run outside the repo against the agent's package."""
     with tempfile.TemporaryDirectory() as tmp:
-        for i in range(1, upto + 1):
+        for i in sessions:
             shutil.copy(scenario_dir / "hidden" / f"test_s{i}.py", tmp)
+        for helper in (scenario_dir / "hidden").glob("[!t]*.py"):  # shared checks, e.g. team conventions
+            shutil.copy(helper, tmp)
         proc = subprocess.run([python, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "--tb=no", tmp],
                               env={**os.environ, "PYTHONPATH": str(repo)}, capture_output=True, text=True, timeout=600)
     passed = re.findall(r"^PASSED \S+::(\S+)", proc.stdout, re.M)
@@ -103,11 +108,11 @@ def hidden_tests(scenario_dir: Path, upto: int, repo: Path, python: str) -> dict
     return {"passed": sorted(passed), "failed": sorted(f or "collection" for f in failed)}
 
 
-def constraints(scenario: dict, repo: Path, python: str) -> list[str]:
+def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[str]:
     """Session 1's constraints, checked in a separate process (a fresh import of the agent's package)."""
-    pkg = repo / scenario["package"]
+    pkg = repo / package
     if not pkg.is_dir():
-        return [f"package {scenario['package']}/ missing"]
+        return [f"package {package}/ missing"]
     code = (f"import json, sys; sys.path.insert(0, {str(HERE)!r}); import checks; from pathlib import Path; "
             f"c = json.loads({json.dumps(json.dumps(scenario['constraints']))}); p = Path({str(pkg)!r}); v = []\n"
             "if c.get('stdlib_only'): v += ['stdlib: ' + x for x in checks.stdlib_only(p)]\n"
@@ -137,16 +142,23 @@ def main(argv: list[str] | None = None) -> int:
     if work.exists():
         raise SystemExit(f"{work} exists; pick a fresh --out")
     python = sys.executable
-    repo, env = setup(scenario, args.arm, work, python)
+    # "repos": one fresh repo per session (a new project for the same team), sharing only Horizon's memory.
+    # Then each session's hidden tests run on its own repo; otherwise they accumulate on the one repo.
+    repos = scenario.get("repos")
+    if not repos:
+        repo, env = setup(scenario, args.arm, work, python)
     rows = []
     for i, prompt in enumerate(scenario["sessions"][: args.sessions], start=1):
         print(f"[{args.scenario}/{args.arm}] session {i}", flush=True)
+        if repos:
+            repo, env = setup(scenario, args.arm, work, python, repos[i - 1])
+        package = repos[i - 1] if repos else scenario["package"]
         row = {"session": i, **run_session(prompt, repo, claude=args.claude, model=args.model, arm=args.arm, env=env,
                                            log=work / f"session{i}.jsonl")}
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", f"after session {i}", "--allow-empty")
-        row["hidden"] = hidden_tests(scenario_dir, i, repo, python)
-        row["violations"] = constraints(scenario, repo, python)
+        row["hidden"] = hidden_tests(scenario_dir, range(i, i + 1) if repos else range(1, i + 1), repo, python)
+        row["violations"] = constraints(scenario, repo, python, package)
         rows.append(row)
         (work / "results.json").write_text(json.dumps({"scenario": args.scenario, "arm": args.arm,
                                                        "model": args.model, "sessions": rows}, indent=2))

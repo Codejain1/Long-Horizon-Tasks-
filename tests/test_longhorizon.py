@@ -93,3 +93,35 @@ def test_usage_limit_stops_the_scenario(tmp_path):
     run.main(["--scenario", "ledger", "--arm", "baseline", "--out", str(tmp_path / "out"), "--claude", str(limit)])
     rows = json.loads((tmp_path / "out" / "ledger-baseline" / "results.json").read_text())["sessions"]
     assert len(rows) == 1 and rows[0]["aborted"] == "usage limit"
+
+
+def test_team_scenario_gives_each_project_a_fresh_repo(tmp_path):
+    """Three projects, one fresh repo each: the reference passes every project's hidden tests, and a typical
+    fresh-start implementation (dashed uuids, "+00:00" stamps, a print) fails the team's rules."""
+    run = load("run")
+    ref = EVAL / "reference" / "team"
+    good = fake(tmp_path, "good", f"shutil.copytree({str(ref)!r} + '/' + repo.name, repo / repo.name)",
+                "writes the reference for this project")
+    run.main(["--scenario", "team", "--arm", "baseline", "--out", str(tmp_path / "ok"), "--claude", good])
+    rows = json.loads((tmp_path / "ok" / "team-baseline" / "results.json").read_text())["sessions"]
+    assert [(len(r["hidden"]["passed"]), r["hidden"]["failed"], r["violations"]) for r in rows] == [(4, [], [])] * 3
+    assert sorted(p.name for p in (tmp_path / "ok" / "team-baseline").iterdir() if p.is_dir()) == \
+        ["invoices", "payouts", "subscriptions"]
+
+    body = '''pkg = repo / "invoices"; pkg.mkdir()
+(pkg / "__init__.py").write_text("""import json, uuid
+from datetime import datetime, timezone
+def create_invoice(customer, amount_cents, due):
+    print("creating invoice")
+    return {"id": str(uuid.uuid4()), "customer": customer, "amount_cents": amount_cents,
+            "created_at": datetime.now(timezone.utc).isoformat(), "due": due.isoformat(), "status": "open"}
+def overdue(invoices, now): return []
+def to_json(i): return json.dumps(i)
+def from_json(t): return json.loads(t)
+""")'''
+    drift = fake(tmp_path, "drift", body, "ignores the team's rules")
+    run.main(["--scenario", "team", "--arm", "baseline", "--out", str(tmp_path / "bad"), "--claude", drift,
+              "--sessions", "1"])
+    [row] = json.loads((tmp_path / "bad" / "team-baseline" / "results.json").read_text())["sessions"]
+    assert set(row["hidden"]["failed"]) == {"test_invoice_follows_the_team_rules", "test_overdue_compares_real_instants",
+                                            "test_bad_amount_raises_value_error"}

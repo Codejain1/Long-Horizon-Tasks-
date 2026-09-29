@@ -219,11 +219,21 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Reliability** with the finished platform and live Jev, including the new long multi-step task 7: a full Sonnet run passed all 7 tasks with every workflow metric at 1.0 (`demo/reliability/RESULTS.md`). Two earlier runs were cut short by the Claude Code usage limit, and `report.py` now marks those `aborted`. One hook was cancelled at its 10 s timeout under machine load, so the installer now uses 30 s.
   - **Tests:** 427 pass on SQLite and Postgres 14 + pgvector.
 
+- **Session 13 — long-horizon A/B** (branch `claude/longhorizon-eval`).
+  - **Built:** `evals/longhorizon/`, 2 scenarios × 4 fresh Claude Code sessions each, with hidden acceptance tests and constraint checks run outside the repo. Reference solutions prove the tests are fair; a naive store proves the concurrency test discriminates. 5 tests in `tests/test_longhorizon.py`.
+  - **Run 1** (Sonnet, live Jev; `evals/longhorizon/RESULTS.md`): **both arms were perfect** on the hidden tests and constraints. **Horizon cost +33 % (ledger) and +140 % (notes).** The baseline kept its own `NOTES.md`.
+  - **Gap found and fixed:** every Horizon session finished its own task, so session 1's constraints never reached later sessions. SessionStart now lists the project's recently completed tasks and their constraints.
+
 ## In progress
 
 - Nothing. Phases 1–8 are built. What remains needs the owner: real benchmark runs, the go-ahead to publish, hosting and pricing.
 
 ## Decisions made
+
+**Long-horizon eval (session 13)**
+- The hidden tests and checks run outside the repo, so neither arm can see or overfit them.
+- One run per arm to start; repeat before believing a difference.
+- SessionStart shows the last 3 completed tasks in the project (goal plus up to 10 constraints). Cheaper than resuming tasks automatically, and it keeps "one task per request" intact.
 
 **Repo conventions**
 - Project docs live in `docs/`. The two docs refer to each other by bare filename, and that still works because they sit in the same folder.
