@@ -203,6 +203,22 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Tests:** 32 new (`tests/test_world_model.py`), **426 pass on SQLite and on Postgres 14 + pgvector.**
   - **Not done:** a Dreamer-style latent model. There's no data to train one (0 real episodes on this machine), and §13 keeps it "later". The interface, the logs and the gate are what it needs when data exists.
 
+- **Session 12 — review and cleanup pass** (branch `claude/review-pass`, on top of Phase 8; PR #9 was still open).
+  - **Open questions:** all 52 resolved or handed to the owner (the table below). New code for 30, 31, 36, 45, 46, 47, 52 and 1/44; the benchmark gap 10/33/40 is now a Claude Code headless agent, and 39 has a scorer comparison tool.
+  - **Gap audit against PROJECT.md and MEMROUTER.md, found and fixed:**
+    - scope preference now covers task > project > team (MEMROUTER §10); only project was implemented before;
+    - weight changes weren't audited (§11), so every strength, stability and link change now goes to `weight_log` with its reason;
+    - context tokens per recall weren't measured (§15);
+    - spike results weren't in the recall slice (§6 step 6);
+    - predictor trust didn't feed scoring (§12);
+    - no benchmark could measure the platform itself (§18, §14);
+    - the scorer comparison experiment didn't exist (§5).
+  - **Security:** a hosted-mode **team-isolation bug** was fixed. Hook data was matched on the hashed project key alone, so two teams with the same project path could mix; it's now scoped per team. Host-supplied ids are capped. A new database-wide **privacy sweep test** pushes code through every host-writable field and finds none stored (SQLite and Postgres). The git history is clean of keys.
+  - **Quality:** a dead-code scan found audit data that only the tests could reach, now surfaced in `show_memories` and `horizon stats`. No TODO/FIXME or leftover debug code; the one debug `print` is gated by `HORIZON_DEBUG`.
+  - **Docs:** PROJECT.md and MEMROUTER.md now carry "As built" specifications that match the code; README, CLAUDE_CODE, CODEX, HOSTING, LAUNCH and PRIVACY are updated.
+  - **Reliability** with the finished platform and live Jev, including the new long multi-step task 7: a full Sonnet run passed all 7 tasks with every workflow metric at 1.0 (`demo/reliability/RESULTS.md`). Two earlier runs were cut short by the Claude Code usage limit, and `report.py` now marks those `aborted`. One hook was cancelled at its 10 s timeout under machine load, so the installer now uses 30 s.
+  - **Tests:** 427 pass on SQLite and Postgres 14 + pgvector.
+
 ## In progress
 
 - Nothing. Phases 1–8 are built. What remains needs the owner: real benchmark runs, the go-ahead to publish, hosting and pricing.
@@ -453,6 +469,17 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 | 13 (8) | Publishing the repo, benchmarks, write-up | **Owner** (`docs/LAUNCH.md`): public release is hard to reverse; benchmarks cost money |
 | 18 | The platform benchmark needs an MCP-capable agent (Claude Code headless, "later") | **Owner** decision (`docs/LAUNCH.md`) |
 
+**Session 12 decisions (the review pass)**
+- **A severe outcome escalates at once**, with no retries: §9 asks for a human when stakes are high, and a severe outcome is exactly that.
+- **Scope:** the same task 1.0, the same project 0.95, project-less memories 1.0, other projects `other_project_factor` 0.85. The owner's research favours walls; the default keeps §10's "prefer", and 0 gives walls.
+- **Scorer bias correction** starts after 20 outcomes and is clamped to ±0.5. The raw prediction is recorded, so trust keeps measuring the scorer and not its corrected output.
+- **The baseline-echo guard** is limited to the first `record_outcome` of a task, with host test counts, when hooks saw no new run. That's narrow enough never to eat a real outcome.
+- **Hosted hook scope** is `<team>/<project key>` on the server. Clients never choose the team part.
+- **`purge-memory` is operator-only CLI, never an MCP tool:** an agent must not be able to erase evidence. It's the single exception to "episodes are never deleted", for legal requests.
+- **The Claude Code benchmark** shares one Horizon memory across the tasks and repeats of an invocation (§14's repeated-run curve). Setup files are committed before the agent runs, so patches contain only the agent's change.
+- **The hook timeout is 30 s** (was 10). One hook was cancelled on a loaded machine.
+- **Codex MCP env passthrough and pre-approval** stay as set in session 11.
+
 **Phase 8 decisions (defaults under the decision rule)**
 - **Codex tool pre-approval:** `default_tools_approval_mode = "approve"` for Horizon only, the counterpart of Claude Code's `enabledMcpjsonServers`. Human-only actions still ask through MCP user input.
 - **Codex `env_vars` passthrough** lists names only (the database URL, team, embedder, scorer, export dir, state secret, scorer keys). No values go into the project's config file.
@@ -534,8 +561,6 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 
 ## Next step
 
-1. **Owner:** review `docs/LAUNCH.md`. The launch waits on your go-ahead to make the repo public, API credits for the benchmark, a hosting provider and pricing.
-2. Build the Docker image once on a machine with Docker (`docker compose up --build`).
-3. Run the Claude Code benchmark with and without Horizon (`horizon-bench run --agent claude-code [--with-horizon]`). This is the first real data for the world model's gate; check it afterwards with `horizon eval-world-model`.
-4. Re-run `horizon install-claude-code` in existing projects, so the new `record_outcome` hook is installed.
-5. Launch day: merge, tag `v1.0.0`, run and publish the benchmark, go public, deploy.
+1. **Owner:** the "Needs the owner" line above. The launch waits on making the repo public, benchmark credits, a hosting provider and pricing (`docs/LAUNCH.md`).
+2. Merge the review-pass PR (it includes Phase 8; PR #9 is superseded).
+3. Run the platform benchmark: `horizon-bench run --stage full --agent claude-code` then `--with-horizon`, 3 repeats each, after `real_runs: true`.

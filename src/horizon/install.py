@@ -68,7 +68,8 @@ def merge_hooks(data: dict, command: list[str], hosted: str | None = None) -> di
             group["hooks"] = [h for h in group.get("hooks", [])
                               if not re.search(rf"horizon hook {name}( |$)", h.get("command", ""))]
         groups[:] = [g for g in groups if g.get("hooks")]
-        group = {"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}
+        # 30 s: hooks take well under a second, but a loaded machine once pushed one past a 10 s limit.
+        group = {"hooks": [{"type": "command", "command": cmd, "timeout": 30}]}
         if matcher:
             group = {"matcher": matcher, **group}
         groups.append(group)
