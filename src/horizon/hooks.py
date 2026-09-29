@@ -73,6 +73,15 @@ def core_session_start(store: TaskStore, team: str, project: str) -> dict:
         lines.append("Active tasks in this project (continue with recall_context; do not start_task again):")
         lines += [f"- {t.id}: {t.goal[:200]}" + (" [escalated: ask the user how to proceed]"
                                                   if t.status == "escalated" else "") for t in active[:3]]
+    done = store.recent_completed(team, project)
+    if done:
+        # Multi-session work: each session tends to finish its own task, so earlier sessions' goals and
+        # constraints would otherwise never reach the next one (evals/longhorizon/RESULTS.md, run 1).
+        lines.append("Earlier tasks in this project (their constraints still apply unless the user changes them;"
+                     " copy them into start_task's constraints):")
+        for t in done:
+            lines.append(f"- {t.goal[:200]}")
+            lines += [f"  - constraint: {c[:200]}" for c in t.constraints[:10]]
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}}
 
 

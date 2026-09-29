@@ -128,6 +128,12 @@ class TaskStore:
         rows = self.db.fetchall(sql + " ORDER BY updated_at DESC", params)
         return [TaskState.model_validate(load_json(r[0])) for r in rows]
 
+    def recent_completed(self, team_id: str, cwd: str, limit: int = 3) -> list[TaskState]:
+        """The project's latest finished tasks: their goals and constraints carry over to the next session."""
+        rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s AND cwd = %s AND status = 'completed'"
+                                " ORDER BY updated_at DESC LIMIT %s", (team_id, cwd, limit))
+        return [TaskState.model_validate(load_json(r[0])) for r in rows]
+
     # --- test captures (PostToolUse hook) --------------------------------------
 
     def add_capture(self, cap: TestCapture) -> TestCapture:

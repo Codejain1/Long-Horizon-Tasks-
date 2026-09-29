@@ -37,6 +37,17 @@ def test_session_start_injects_workflow_and_active_task(platform, settings, proj
     assert task_id in ctx and "Ship the export feature" in ctx
 
 
+def test_session_start_carries_finished_tasks_constraints(platform, settings, task_store, project_dir):
+    """Multi-session work: a later session sees the goal and constraints of the session that finished."""
+    task_id = platform.start_task("Build the ledger", constraints=["amounts are integer cents"])["task_id"]
+    task = task_store.get(task_id, settings.team_id)
+    task.status = "completed"
+    task_store.save(task)
+    ctx = hook("session-start", {"cwd": project_dir}, settings)["hookSpecificOutput"]["additionalContext"]
+    assert "Active tasks" not in ctx
+    assert "Build the ledger" in ctx and "constraint: amounts are integer cents" in ctx
+
+
 def test_post_tool_use_captures_counts_not_output(platform, settings, task_store, project_dir):
     platform.start_task("x")
     out = hook("post-tool-use", bash_payload(project_dir), settings)
