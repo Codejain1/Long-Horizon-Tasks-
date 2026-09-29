@@ -1,0 +1,17 @@
+{
+  "id": "notes",
+  "package": "notes",
+  "about": "A note store built over 4 sessions. The storage choice made in session 1 is tested in session 3, when several processes must write at once without losing notes.",
+  "start_files": {"README.md": "# notes\n\nA small note-taking library.\n"},
+  "constraints": {
+    "stdlib_only": true,
+    "python39": true,
+    "public_names": {"add_note": ["store_path", "text", "tags"], "get_note": ["store_path", "note_id"], "list_notes": ["store_path"]}
+  },
+  "sessions": [
+    "Start a small Python package `notes` in this repo that stores text notes with tags in a single store file. Constraints for this project from now on: standard library only; the code must run on Python 3.9; public function names and their first parameters must never change. Implement `add_note(store_path, text, tags)` returning the new note's id, `get_note(store_path, note_id)` returning a dict with `text` and `tags`, and `list_notes(store_path, tag=None)` returning ids, and write tests. This store will grow over later sessions, so choose its design with care. This is the first of several sessions on this project; you may keep notes for later sessions in the repo if useful.",
+    "Continue the notes project: add full-text search. `search(store_path, query)` returns the ids of notes containing every word of the query, case-insensitively.",
+    "Continue the notes project: several worker processes will now call `add_note` on the same store file at the same time. Make sure no note is ever lost or corrupted, and that all the existing functions keep working.",
+    "Continue the notes project: add `edit_note(store_path, note_id, text=None, tags=None)` and `delete_note(store_path, note_id)`. Edits and deletes must also be safe while other processes are writing."
+  ]
+}
