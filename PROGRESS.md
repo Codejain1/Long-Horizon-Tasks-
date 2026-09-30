@@ -386,12 +386,55 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - `test_session_episodes.py`: 4 more;
     - `test_longhorizon.py`: 1 more.
     - The `log` fixture moved to `conftest.py`.
+- **Session 19: track C, world model v2 (session forecasts with Jev as the prior).** C came before D because stall detection (Phase 2), and the composer's "when to show", both need a forecast. It also serves the owner's goal of cutting trial and error, and it can be evaluated offline for free.
+  - **`eventlog/forecast.py`** (model `session-v2`): `SessionWorldModel.predict(team, project, task, so_far=None)` returns a `SessionForecast`:
+    - the chance the session ends with its tests passing;
+    - failing test runs on the way (mean and p90);
+    - tokens (median and p90) and turns;
+    - confidence, effective samples, and which prior was used.
+  - **How it forecasts:**
+    - It uses a similarity kernel over the team's session episodes, the same as `kernel-v1`: width 0.1, a similarity floor, and the `other_project_factor` walls.
+    - Each episode's failing runs, runs and turns come from its segment's events.
+    - The estimate is shrunk towards a prior. That prior is the project's base rate, blended with Jev's reading of the task (5 ordered levels for failing runs, worth 2 sessions) by how many sessions the project has.
+    - `so_far={"failed_runs": k}` counts only sessions that also hit k or more failing runs. This is stall detection's question, and Jev isn't asked it.
+  - **`horizon eval-forecast [--jev] [--limit]`:** replays each session from strictly earlier ones. It reports:
+    - the Brier score against memory's current surprise baseline and the base rate, with a paired one-sided test for each;
+    - the mean error on failing runs;
+    - the mean absolute log error on tokens.
+    - With `--jev` it also scores the prior alone.
+  - **Acceptance criteria**, each covered by a test in `tests/test_forecast.py` (10 tests, run on SQLite and Postgres):
+    1. With no history, it gives the fallback with confidence 0.
+    2. Similar sessions drive the forecast: easy stays easy and hard stays hard, with the right p90s, tokens and turns.
+    3. An unrelated task gets the prior.
+    4. Walls between projects hold.
+    5. The Jev prior leads with nothing to go on, and similar sessions outweigh it.
+    6. A failing scorer falls back to the base rate.
+    7. `so_far` filters correctly.
+    8. Replay forecasts only from the past and beats the base rate on separable data.
+    9. Replay needs 2 sessions.
+    10. The CLI works.
+  - **Real data** (the Q67 marathon logs: lean 8 sessions, candidate 6):
+    - The pipeline runs end to end with fastembed.
+    - Every session ended green, so the constant baselines score 0 and there's nothing to beat.
+    - This exposed a flaw, which is now fixed. Jev alone reads a task as risky: Brier 0.28, predicting 2+ failing runs for tickets that passed first time. At a fixed weight of 2, it dragged the model to 0.12. With the project blend, the model's Brier score is 0.023.
+  - **Latency:** about 20 ms per forecast over the real logs, once the embedder is loaded. The first load of one script hung once and never again (question 71).
+  - **Tests:** 636 pass on SQLite and Postgres (616 before, plus 20). Ruff is clean on the changed files.
 
 ## In progress
 
-- Nothing. Tracks A, B and E are built, and Q65/Q66 are resolved; C and D are next (see "Next step").
+- Nothing. Tracks A, B, C and E are built; D is next (see "Next step").
 
 ## Decisions made
+
+**v2 Phase 1 track C (session 19)**
+- **C before D.** Stall detection and the composer's "when to show" need a forecast, and C can be evaluated offline for free. D is also easier to judge once "how risky is this task" exists.
+- **Forecast sessions, not options.** v2's ground truth is the session (tests at its end, failing runs on the way). `kernel-v1` stays for the decision layer's per-option forecasts.
+- **Forecast failing runs and their p90, not just success.** Stall detection needs "is this more failing runs than sessions like it usually take?", and the owner's goal is less trial and error. A p90 or median is given only once there is at least 1 effective session behind it.
+- **Reuse `kernel-v1`'s kernel and settings** (width 0.1, `HORIZON_WORLD_MODEL_MIN_SIMILARITY`, `HORIZON_OTHER_PROJECT_FACTOR`). This keeps one notion of "similar" across both models, with no new knobs.
+- **The Jev prior is blended with the project's base rate by the project's session count, not used alone.** On real logs, Jev alone was pessimistic about a capable agent (Brier 0.28), since it reads only the task. Jev leads in a new project and fades as the project's own history grows.
+- **Jev answers failing runs on 5 ordered levels** (none, 1, 2–3, 4–6, 7+), mapped to 0, 1, 2.5, 5 and 8 and interpolated by its score. Ordered levels are Jev's calibrated shape, and a raw count isn't.
+- **A running session (`so_far`) gets no Jev prior.** Jev reads the task, not how the session is going. The prior is the base rate of sessions that got as far.
+- **Nothing reads the forecast yet.** Wiring it into surprise and stall detection is Phase 2, and only if `eval-forecast` shows it is clearly better (principle 5).
 
 **v2 Phase 1: Q65, Q66 and track B (session 18)**
 - **Q66: close idle sessions after 2 hours (configurable).** A crash, a killed terminal or a closed laptop leaves no `SessionEnd`. Of the options, a timeout is the only one that catches all of these without the host's help. 2 hours is long enough that a lunch break doesn't split a session. If a split session resumes, its rest becomes its own segment, like a resumed invocation.
@@ -801,15 +844,16 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 67 | Turn `HORIZON_SESSION_MEMORY` on by default? | **Owner approved a short real run (session 18).** Marathon tickets 1–6, one run each: same quality (17/17, 0 violations), but `candidate` cost more (+29 % turns, +44 % tokens, +33 % cost; `evals/longhorizon/RESULTS.md`). Earlier tickets had all passed cleanly, so the note held only file lists. **It stays off.** The note now shows only sessions that hit trouble. Next check: a later stretch of marathon, where the CI policies trip tickets (e.g. `--resume` from a lean run at ticket 9, tickets 9–16, 2 repeats), once the usage limit allows. |
 | 68 | The TypeSafe key was pasted in chat | It's used only as an environment variable and not stored anywhere in the repo. The owner should **rotate it** when convenient. |
 | 69 | Jev judged "No, refunds over the order total must be rejected." as a correction at only 0.26 | Default: that's fine. A new requirement isn't quite a correction, and the correction answers only block contradicted verdicts; they don't set the score. Revisit with real judged sessions. |
+| 70 | When the session forecast beats the fallback on replay, should Phase 2 switch surprise to it by itself (like `HORIZON_WORLD_MODEL=auto`)? | Default: yes, behind the same gate as `kernel-v1`: at least 30 paired sessions and a one-sided paired test at 95 %, re-checked periodically. It can be decided when Phase 2 wires it. |
+| 71 | One latency script hung before its first forecast and couldn't be reproduced (the same script then ran at 12–20 ms per forecast) | Default: most likely the first fastembed model load waiting on its cache lock, not the forecast code. Watch hook latency in the next real run. |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
 **Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 67 (a second `candidate` run on a later marathon stretch), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
-**v2 (this copy):** the rest of Phase 1 of `PROJECT.md` §0. Tracks E (session 16), A (session 17) and B (session 18) are built, and so is Q65's past-sessions context (behind its setting). The others are independent:
-- C: world model v2 with Jev as the prior;
-- D: the context composer. It should absorb the past-sessions note as one of its sources, alongside session start, each prompt, after compaction and before risky actions.
+**v2 (this copy):** the last track of Phase 1 of `PROJECT.md` §0. Tracks E (session 16), A (session 17), B (session 18) and C (session 19) are built, and so is Q65's past-sessions context (behind its setting). Next:
+- D: the context composer. It decides what to show and when, within a budget. It should absorb the session-start context and the past-sessions note, alongside each prompt, after compaction and before risky actions. It can use track C's forecast to show more on tasks forecast as risky and stay quiet on easy ones. Its gate: the same quality with fewer context tokens on `team` and `marathon`.
 
 **Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, a `candidate` against `lean` run on a later marathon stretch (question 67).
 

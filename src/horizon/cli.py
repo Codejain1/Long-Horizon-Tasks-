@@ -42,6 +42,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rejudge", action="store_true", help="Reconsider segments skipped for having no ground truth "
                                                           "(e.g. after configuring HORIZON_SCORER=jev).")
 
+    p = sub.add_parser("eval-forecast", help="Replay past sessions through world model v2: each forecast from "
+                                             "strictly earlier sessions, against memory's current baseline.")
+    p.add_argument("--jev", action="store_true", help="Use the configured scorer's prior (one call per session).")
+    p.add_argument("--limit", type=int, default=500, help="The most recent sessions to replay.")
+
     p = sub.add_parser("clear-fear", help="Clear a fear lesson. Human only: it records who cleared it.")
     p.add_argument("lesson_id")
     p.add_argument("--by", required=True, help="Your name, recorded on the lesson.")
@@ -178,6 +183,21 @@ def main(argv: list[str] | None = None) -> int:
                            judge=configured_scorer(settings))
         print(json.dumps({"written": len(report["written"]), "skipped": report["skipped"],
                           "failed": report["failed"]}))
+    elif args.cmd == "eval-forecast":
+        from horizon.db import connect
+        from horizon.eventlog.episodes import SessionEpisodes, configured_scorer
+        from horizon.eventlog.forecast import SessionWorldModel, replay
+        from horizon.memrouter.embedding import make_embedder
+
+        settings = Settings.from_env()
+        judge = configured_scorer(settings) if args.jev else None
+        if args.jev and judge is None:
+            print("--jev needs HORIZON_SCORER=jev (or llm).", file=sys.stderr)
+            return 1
+        model = SessionWorldModel(SessionEpisodes(connect(settings.db_url)),
+                                  make_embedder(settings.embedder, settings.embedding_dim), settings,
+                                  judge() if judge else None)
+        print(json.dumps({"model": model.name, **replay(model, settings.team_id, args.limit)}, indent=2))
     elif args.cmd in ("consolidate", "clear-fear"):
         from horizon.server import build_memrouter
 
