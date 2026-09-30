@@ -86,3 +86,14 @@ Each sentence of a prompt is classified as a team rule (all projects), a project
 Jev is used whenever `HORIZON_SCORER=jev`, with keywords as the fallback. The labelled set is small and written by us, so this is a first measurement.
 
 **Found while building the replay:** Horizon's test-run capture recognised only known commands like `pytest` and `npm test`, so CI run through `./ci.sh` was **never captured**. In the backlog and team runs, lean's pitfall memory therefore couldn't see most test runs. Capture now also accepts wrapper scripts and task-runner test targets, when their output parses as a test run.
+
+## Pitfall warning, tested directly: backlog tickets 4–8 replayed (2026-09-30, Sonnet, 1 run each)
+
+Both arms start from the no-Horizon run's repo after ticket 3. Lean's memory is seeded by replaying that run's real test runs (tickets 1–3) through Horizon's own `PostToolUse` hook. The changelog policy had failed in 2 of those sessions, so lean's session start says: *"Checks that failed in several earlier sessions here (get them right the first time): tests/test_policy.py::test_every_public_function_is_in_the_changelog (failed in 2 sessions)"*.
+
+| | Warning shown | Sessions breaking the changelog policy | Failed / all test runs | Hidden tests | Turns | Cost |
+|---|---|---|---|---|---|---|
+| no Horizon | – | **3 of 5** (tickets 4, 5, 6) | 3/11 | 13/13 | 80 | $0.90 |
+| lean | 5 of 5 sessions | **0 of 5** | **0/6** | 13/13 | 71 | **$0.75 (−17 %)** |
+
+**The first result where Horizon is both better and cheaper.** Warned up front, each session updated the changelog as it went, so no CI run failed. Without the warning, fresh sessions kept rediscovering the policy by breaking it: 3 of 5 here, matching the original run's 3 of 5 for tickets 4–8. They paid for the extra test runs and fixes. One run each, from seeded history, so this is a strong signal, not proof.
