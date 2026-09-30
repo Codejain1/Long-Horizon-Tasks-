@@ -61,6 +61,13 @@ def install_mcp_json(project: Path, command: list[str], hosted: str | None = Non
     _dump(path, data)
 
 
+def remove_mcp_entry(project: Path) -> None:
+    path = project / ".mcp.json"
+    data = _load(path)
+    if data.get("mcpServers", {}).pop("horizon", None) is not None:
+        _dump(path, data)
+
+
 def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profile: str = "full") -> dict:
     """Add Horizon's hooks to a Claude-format `{"hooks": {...}}` document, replacing earlier Horizon entries."""
     hooks = data.setdefault("hooks", {})
@@ -174,12 +181,15 @@ def install_codex(project: Path, command: list[str] | None = None, agents_md: bo
 
 def install(project: Path, command: list[str] | None = None, claude_md: bool = True,
             hosted: str | None = None, profile: str = "full") -> list[str]:
-    if hosted and profile != "full":
-        # ponytail: the hosted server's profile is server-wide; per-project profiles when a team asks.
-        raise SystemExit("--profile lean is local-only for now")
     command = command or default_command()
     project = project.resolve()
-    install_mcp_json(project, command, hosted, profile)
+    if hosted and profile == "lean":
+        # Lean's value is in the hooks. The hosted MCP endpoint serves every team the full tool list, whose
+        # "call this every time" descriptions only draw extra calls.
+        # ponytail: a lean MCP endpoint when a team wants the optional tools (evaluate_options, show_memories).
+        remove_mcp_entry(project)
+    else:
+        install_mcp_json(project, command, hosted, profile)
     install_settings(project, command, hosted, profile)
     install_gitignore(project)
     changed = [".mcp.json", ".claude/settings.json", ".gitignore"]

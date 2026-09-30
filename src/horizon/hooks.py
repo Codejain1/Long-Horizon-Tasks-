@@ -171,7 +171,8 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
     return out
 
 
-def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | None, prompt: str) -> dict | None:
+def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | None, prompt: str,
+                     tools: bool = True) -> dict | None:
     """The session's first message starts its task (the goal, code removed); later ones are progress notes.
     Sentences that set lasting rules become the task's constraints or the team's rules."""
     text = redact(prompt, MAX_GOAL)
@@ -190,7 +191,7 @@ def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | N
         current = store.team_rules(team)
         task.team_rules = current + [r for r in team_rules if r not in current]
     store.save(task)
-    if created:
+    if created and tools:  # hosted lean has no MCP tools to pass the id to
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext":
                 f"Horizon task id: {task.id} (only needed if you call evaluate_options)."}}
     return None
@@ -234,6 +235,12 @@ class Local:
     def session_start(self, project):
         return core_session_start(self.store, self.team, project)
 
+    def lean_session_start(self, project, session):
+        return lean_session_start(self.store, self.team, project, session)
+
+    def user_prompt(self, project, session, prompt):
+        return lean_user_prompt(self.store, self.team, project, session, prompt)
+
     def capture(self, project, session, cap):
         return core_capture(self.store, self.team, project, session, cap)
 
@@ -268,6 +275,13 @@ class Remote:
 
     def session_start(self, project):
         return self._post("session-start", {"project": project})
+
+    def lean_session_start(self, project, session):
+        return self._post("lean-session-start", {"project": project, "session_id": session})
+
+    def user_prompt(self, project, session, prompt):
+        # Code never leaves the machine: the prompt is redacted here (and again on the server).
+        return self._post("user-prompt", {"project": project, "session_id": session, "prompt": redact(prompt, MAX_GOAL)})
 
     def capture(self, project, session, cap):
         return self._post("capture", {"project": project, "session_id": session, "capture": cap})
@@ -338,10 +352,9 @@ def stop(payload: dict, backend, project: str) -> dict | None:
 
 HANDLERS = {"session-start": session_start, "pre-tool-use": pre_tool_use, "post-tool-use": post_tool_use,
             "stop": stop, "user-prompt": lambda payload, backend, project: None}
-LEAN_HANDLERS = {  # local only (the installer refuses lean with --hosted)
-    "session-start": lambda p, b, project: lean_session_start(b.store, b.team, project, p.get("session_id")),
-    "user-prompt": lambda p, b, project: lean_user_prompt(b.store, b.team, project, p.get("session_id"),
-                                                          str(p.get("prompt") or "")),
+LEAN_HANDLERS = {
+    "session-start": lambda p, b, project: b.lean_session_start(project, p.get("session_id")),
+    "user-prompt": lambda p, b, project: b.user_prompt(project, p.get("session_id"), str(p.get("prompt") or "")),
     # Test runs are still captured; lean asks for no outcome per run and never blocks the stop.
     "post-tool-use": lambda p, b, project: post_tool_use(p, b, project) and None,
     "stop": lambda p, b, project: None,
@@ -357,14 +370,14 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
     """
     try:
         payload = json.loads(stdin or "{}")
+        handler = LEAN_HANDLERS.get(name, HANDLERS[name]) if profile == "lean" else HANDLERS[name]
         if remote:
             backend = Remote(remote, os.environ.get("HORIZON_API_KEY", ""))
-            result = HANDLERS[name](payload, backend, project_key(project_dir(payload)))
+            result = handler(payload, backend, project_key(project_dir(payload)))
         else:
             settings = settings or Settings.from_env()
             db = connect(settings.db_url)
             try:
-                handler = LEAN_HANDLERS.get(name, HANDLERS[name]) if profile == "lean" else HANDLERS[name]
                 result = handler(payload, Local(TaskStore(db), settings.team_id), project_dir(payload))
             finally:
                 db.close()

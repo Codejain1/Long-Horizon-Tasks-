@@ -20,8 +20,17 @@ def test_install_lean_writes_the_lean_snippet_env_and_hooks(tmp_path):
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
     assert "UserPromptSubmit" not in hooks and [len(groups) for groups in hooks.values()] == [1, 1, 1, 1]
     assert "--profile" not in json.dumps(hooks) and "env" not in (tmp_path / ".mcp.json").read_text()
-    with pytest.raises(SystemExit):
-        install(tmp_path, hosted="https://h.example", profile="lean")
+
+
+def test_install_hosted_lean_is_hooks_only(tmp_path):
+    """Hosted lean: hooks that talk to the server, and no MCP entry (an earlier full install's is removed)."""
+    install(tmp_path, command=["py", "-m", "horizon"], hosted="https://h.example")
+    assert "horizon" in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
+    install(tmp_path, command=["py", "-m", "horizon"], hosted="https://h.example", profile="lean")
+    assert "horizon" not in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
+    hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
+    commands = [g["hooks"][0]["command"] for groups in hooks.values() for g in groups]
+    assert len(commands) == 5 and all("--remote https://h.example --profile lean" in c for c in commands)
 
 
 def lean(name, payload, settings):
@@ -94,3 +103,52 @@ def test_lean_server_offers_only_the_optional_tools(platform):
     full, lean_tools = names(create_server(platform, lean=False)), names(create_server(platform, lean=True))
     assert {"start_task", "recall_context", "record_outcome"} <= full
     assert full - lean_tools == {"start_task", "recall_context", "record_outcome"}
+
+
+def test_hosted_lean_prompt_is_redacted_before_it_leaves_the_machine(monkeypatch):
+    from horizon.hooks import Remote
+
+    sent = []
+    monkeypatch.setattr(Remote, "_post", lambda self, op, body: sent.append((op, body)))
+    Remote("https://h.example", "hzn_x").user_prompt("prj_a", "s1", TEAM_PROMPT)
+    [(op, body)] = sent
+    assert op == "user-prompt" and "SECRET" not in json.dumps(body) and "uuid4().hex" in body["prompt"]
+
+
+def test_team_rules_reach_a_teammate_on_another_machine(settings, free_tcp_port, monkeypatch):
+    """Two people on one team, different machines and projects, one hosted server: Alice states the team's
+    rules once; Bob's next session in his own project is shown them. Another team never is."""
+    import dataclasses
+    import threading
+    import time as clock
+
+    import uvicorn
+
+    from horizon.accounts import Accounts
+    from horizon.db import connect
+    from horizon.server import http_app
+
+    app = http_app(dataclasses.replace(settings))
+    accounts = Accounts(connect(settings.db_url))
+    team, alice_key = accounts.create_team("Acme")
+    bob_key = accounts.create_key(team, "bob")[1]
+    other_key = accounts.create_team("Other")[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=free_tcp_port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    while not server.started:
+        clock.sleep(0.05)
+    url = f"http://127.0.0.1:{free_tcp_port}"
+
+    def hook(name, key, cwd, session, **body):
+        monkeypatch.setenv("HORIZON_API_KEY", key)
+        out = run_hook(name, json.dumps({"cwd": cwd, "session_id": session, **body}), remote=url, profile="lean")
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+    try:
+        hook("session-start", alice_key, "/alice/invoices", "a1")
+        assert hook("user-prompt", alice_key, "/alice/invoices", "a1", prompt=TEAM_PROMPT) == ""  # no MCP tools
+        bob = hook("session-start", bob_key, "/bob/payouts", "b1")
+        assert "Team rules" in bob and "uuid4().hex" in bob and "SECRET" not in bob
+        assert "uuid4" not in hook("session-start", other_key, "/bob/payouts", "o1")
+    finally:
+        server.should_exit = True

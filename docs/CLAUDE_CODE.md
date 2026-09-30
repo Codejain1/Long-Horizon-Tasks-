@@ -49,7 +49,12 @@ Check the connection with `claude mcp list`. It should show `horizon: … √ Co
 | `PostToolUse` | Still captures test counts, but doesn't ask for `record_outcome`. |
 | `Stop` | Never blocks. |
 
-In lean, the server leaves out `start_task`, `recall_context` and `record_outcome`: the hooks capture the task, and those tools' "call this every time" descriptions only drew extra calls. It keeps `evaluate_options` (the prompt hook gives the task id), `submit_consequences`, `show_memories`, `explain_decision`, `delete_memory` and `clear_fear`. Lean is local-only for now: the installer refuses `--profile lean --hosted`, because a hosted server's profile is server-wide. Re-running `install-claude-code` without `--profile` switches back to the full workflow.
+In lean, the server leaves out `start_task`, `recall_context` and `record_outcome`: the hooks capture the task, and those tools' "call this every time" descriptions only drew extra calls. It keeps `evaluate_options` (the prompt hook gives the task id), `submit_consequences`, `show_memories`, `explain_decision`, `delete_memory` and `clear_fear`. **Hosted lean** (`install-claude-code --hosted URL --profile lean`) is hooks only:
+- The hooks send the prompt to the team's server, with code removed on your machine first.
+- **Team rules are shared by everyone using the team's API keys,** across machines and projects.
+- It writes no MCP entry, and removes an earlier one. The hosted MCP endpoint serves the full tool list, whose descriptions draw extra calls, so hosted lean has no optional tools yet.
+
+Re-running `install-claude-code` without `--profile` switches back to the full workflow.
 
 ## Configuration
 
