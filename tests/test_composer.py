@@ -108,6 +108,53 @@ def test_a_resumed_session_sees_its_task_first(composed, project_dir):
     assert ctx.splitlines()[1:3] == [SESSION_START[0].heading, f"- {ticket(1)}"]
 
 
+# --- re-anchoring after a compaction (Phase 2) ------------------------------------------------------------
+
+LONG_GOAL = ("Build `tab`, a package for sharing expenses. These constraints hold for the whole job: money is always "
+             "an integer number of cents, never a float; standard library only. " + "Part detail. " * 60)
+
+
+def compacted(settings, project, source="compact"):
+    """A session that set its task, said more, ran tests and edited, then was compacted; returns the new start."""
+    s = Session(settings, project, "s1")
+    s.play(LONG_GOAL, runs=[(3, 1), (3, 1)], end=False)
+    s.hook("user-prompt", prompt="Also keep the CSV export stable.")
+    s.hook("user-prompt", prompt="/compact")
+    out = s.hook("session-start", source=source)
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_after_a_compaction_the_task_comes_back_whole_with_its_progress(composed, project_dir):
+    from horizon.composer import REANCHOR
+
+    ctx = compacted(composed, project_dir)
+    lines = ctx.splitlines()
+    assert lines[1:3] == [REANCHOR[0].heading, f"- {LONG_GOAL.strip()}"]  # whole: past classic's 200 characters
+    progress = ctx.split(REANCHOR[1].heading + "\n", 1)[1].splitlines()[:3]
+    assert progress == ["- a later message: Also keep the CSV export stable.",
+                        "- last test run: 3/4 passing, after 2 runs (2 failing); still failing: tests/test_o.py::test_refund",
+                        "- files changed: shop/orders.py"]
+    assert "/compact" not in ctx and len(ctx) <= composed.context_budget_chars
+
+
+def test_only_a_compaction_restates_the_task(settings, composed, project_dir, tmp_path):
+    """A resumed session still has its conversation; classic lean re-shows only the start of the goal."""
+    from horizon.composer import REANCHOR
+
+    assert REANCHOR[1].heading not in compacted(composed, project_dir, source="resume")
+    classic = compacted(settings, str(tmp_path / "other"))
+    assert REANCHOR[1].heading not in classic and LONG_GOAL[:1000] not in classic
+
+
+def test_restating_stays_within_the_budget_however_long_the_session(composed, project_dir):
+    s = Session(composed, project_dir, "s1")
+    s.play(LONG_GOAL * 3, runs=[(1, 3)] * 20, end=False)
+    for i in range(30):
+        s.hook("user-prompt", prompt=f"Follow-up number {i}: " + "more detail " * 30)
+    ctx = json.loads(s.hook("session-start", source="compact"))["hookSpecificOutput"]["additionalContext"]
+    assert len(ctx) <= composed.context_budget_chars and "Follow-up number 29" in ctx and "number 24" not in ctx
+
+
 # --- when: the past-sessions note needs the forecast to expect trouble -----------------------------------
 
 @pytest.fixture
@@ -171,3 +218,9 @@ def test_hosted_lean_uses_the_composer_when_the_server_is_set_to(composed):
         ctx = client.post("/api/hooks/lean-session-start", json={"project": "p", "session_id": "s3"},
                           headers=headers).json()["hookSpecificOutput"]["additionalContext"]
         assert (SESSION_START[4].heading in ctx) is composes and RULE in ctx
+        client.post("/api/hooks/user-prompt", json={"project": "p", "session_id": "s3", "prompt": ticket(3)},
+                    headers=headers)
+        ctx = client.post("/api/hooks/lean-session-start", json={"project": "p", "session_id": "s3",
+                                                                 "source": "compact"},
+                          headers=headers).json()["hookSpecificOutput"]["additionalContext"]
+        assert ("restated: the context was just compacted" in ctx) is composes

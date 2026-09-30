@@ -220,7 +220,7 @@ Tokens saved are counted only where past spikes reported their token cost.</p>
         if op == "session-start":
             return local.session_start(project)
         if op == "lean-session-start":
-            return local.lean_session_start(project, session)
+            return local.lean_session_start(project, session, str(body.get("source") or "")[:20] or None)
         if op == "user-prompt":  # redacted on the client; again here, in case a client doesn't
             from horizon.hooks import MAX_GOAL, lean_user_prompt
 

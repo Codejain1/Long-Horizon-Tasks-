@@ -32,6 +32,7 @@ from horizon.decision.scorers import make_scorer
 from horizon.eventlog.store import EventStore
 from horizon.models import Checkpoint, ProgressEntry, TaskState, TestCapture
 from horizon.redact import CODE_REMOVED, MAX_NOTE, redact
+from horizon.stall import HEADER as STALL_HEADER
 from horizon.taskstate.checkpoints import capture, restore_steps, same_tree
 from horizon.taskstate.store import TaskStore
 from horizon.taskstate.usage import attempt_usage, turn_usage
@@ -176,10 +177,11 @@ def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
 
 
 def lean_session_start(store: TaskStore, team: str, project: str, session: str | None,
-                       budget: int | None = None) -> dict:
+                       budget: int | None = None, source: str | None = None) -> dict:
     """A new session: the previous sessions' tasks are done, so their goals and constraints show as earlier
     tasks. A resumed or compacted session keeps its session id, and its task stays active. With a `budget`, the
-    context composer chooses what to show (`HORIZON_CONTEXT=composer`)."""
+    context composer chooses what to show (`HORIZON_CONTEXT=composer`), and after a compaction (`source`
+    "compact") restates this session's task with its progress."""
     for task in store.active(team, cwd=project):
         if task.status == "active" and task.session_id and task.session_id != session:
             task.status = "completed"
@@ -188,7 +190,8 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
         from horizon import composer
 
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext":
-                                       composer.session_start(store, team, project, LEAN_WORKFLOW, budget)}}
+                                       composer.session_start(store, team, project, LEAN_WORKFLOW, budget,
+                                                              session, reanchor=source == "compact")}}
     out = core_session_start(store, team, project)
     ctx = out["hookSpecificOutput"]
     ctx["additionalContext"] = ctx["additionalContext"].replace(WORKFLOW, LEAN_WORKFLOW)
@@ -263,16 +266,17 @@ class Local:
     """Local mode: the hooks share the MCP server's database."""
 
     def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None, briefing=None,
-                 context_budget: int | None = None):
+                 context_budget: int | None = None, stall=None):
         self.store, self.team, self.scorer_factory = store, team, scorer_factory
         self.briefing = briefing  # (project, session, goal) -> context from similar past sessions
         self.context_budget = context_budget  # set: the context composer chooses lean's session-start context
+        self.stall = stall  # (store, team, project, session) -> a stall warning or None
 
     def session_start(self, project):
         return core_session_start(self.store, self.team, project)
 
-    def lean_session_start(self, project, session):
-        return lean_session_start(self.store, self.team, project, session, self.context_budget)
+    def lean_session_start(self, project, session, source=None):
+        return lean_session_start(self.store, self.team, project, session, self.context_budget, source)
 
     def user_prompt(self, project, session, prompt):
         brief = self.briefing
@@ -284,6 +288,9 @@ class Local:
 
     def restore_checks(self, project):
         return core_restore_checks(self.store, self.team, project)
+
+    def stall_check(self, project, session):
+        return self.stall(self.store, self.team, project, session) if self.stall and session else None
 
     def checkpoint(self, ckpt: Checkpoint):
         self.store.add_checkpoint(ckpt)
@@ -314,8 +321,11 @@ class Remote:
     def session_start(self, project):
         return self._post("session-start", {"project": project})
 
-    def lean_session_start(self, project, session):
-        return self._post("lean-session-start", {"project": project, "session_id": session})
+    def stall_check(self, project, session):
+        return None  # needs the event log and the forecast, which hosted installs don't have yet
+
+    def lean_session_start(self, project, session, source=None):
+        return self._post("lean-session-start", {"project": project, "session_id": session, "source": source})
 
     def user_prompt(self, project, session, prompt):
         # Code never leaves the machine: the prompt is redacted here (and again on the server).
@@ -388,16 +398,26 @@ def stop(payload: dict, backend, project: str) -> dict | None:
     return backend.stop(project, payload.get("session_id"))
 
 
+def lean_post_tool_use(payload: dict, backend, project: str) -> dict | None:
+    """Capture a test run; with stall detection on, warn a session stuck on the same failing check."""
+    cap = parsed_capture(payload)
+    if not cap:
+        return None
+    backend.capture(project, payload.get("session_id"), cap)
+    warn = backend.stall_check(project, payload.get("session_id"))
+    return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": warn}} if warn else None
+
+
 HANDLERS = {"session-start": session_start, "pre-tool-use": pre_tool_use, "post-tool-use": post_tool_use,
             "stop": stop, "user-prompt": lambda payload, backend, project: None,
             # Observed for the event log only (v2 Phase 0); nothing to say to the host yet.
             "pre-compact": lambda payload, backend, project: None,
             "session-end": lambda payload, backend, project: None}
 LEAN_HANDLERS = {
-    "session-start": lambda p, b, project: b.lean_session_start(project, p.get("session_id")),
+    "session-start": lambda p, b, project: b.lean_session_start(project, p.get("session_id"), p.get("source")),
     "user-prompt": lambda p, b, project: b.user_prompt(project, p.get("session_id"), str(p.get("prompt") or "")),
     # Test runs are still captured; lean asks for no outcome per run and never blocks the stop.
-    "post-tool-use": lambda p, b, project: post_tool_use(p, b, project) and None,
+    "post-tool-use": lambda p, b, project: lean_post_tool_use(p, b, project),
     "stop": lambda p, b, project: None,
 }
 
@@ -413,14 +433,18 @@ def injected_chars(result: dict | None) -> int:
     return sum(len(str(d.get(k) or "")) for d in (result, inner) for k in MODEL_VISIBLE)
 
 
-def log_events(name: str, payload: dict, events: EventStore, team: str, project: str, injected: int = 0) -> int:
+def log_events(name: str, payload: dict, events: EventStore, team: str, project: str, injected: int = 0,
+               flags: dict | None = None) -> int:
     """Append what this hook call observed to the event log (v2 Phase 0). Returns the number of events.
-    `injected` (what the hook gave the model) goes on the call's first event, so a session's context cost sums."""
+    `injected` (what the hook gave the model) and `flags` (e.g. a stall warning) go on the call's first event, so
+    a session's context cost sums."""
     usage = turn_usage(payload.get("transcript_path")) if name == "stop" else None
     new = events_from_hook(name, payload, team_id=team, project=project, project_dir=project,
                            source=os.environ.get("HORIZON_HOST", "claude-code"), usage=usage)
     if new and injected:
         new[0].data["injected_chars"] = injected
+    if new and flags:
+        new[0].data.update(flags)
     for event in new:
         events.append(event)
     return len(new)
@@ -432,11 +456,12 @@ def write_session_episodes(db, settings: Settings, project: str) -> dict:
     the hook's own work, so it can't change its output."""
     from horizon.eventlog.episodes import SessionEpisodes, configured_scorer, local_memory
 
-    tasks = TaskStore(db)
-    return SessionEpisodes(db, settings.session_idle_minutes).write(
-        settings.team_id, lambda: local_memory(settings, db), project,
-        task_for=lambda proj, session: tasks.session_task(settings.team_id, proj, session),
-        judge=configured_scorer(settings))
+    from horizon.eventlog.forecast import configured_predictor
+
+    tasks, log = TaskStore(db), SessionEpisodes(db, settings.session_idle_minutes)
+    return log.write(settings.team_id, lambda: local_memory(settings, db), project,
+                     task_for=lambda proj, session: tasks.session_task(settings.team_id, proj, session),
+                     judge=configured_scorer(settings), predictor=configured_predictor(settings, log))
 
 
 def past_sessions_briefing(db, settings: Settings):
@@ -459,6 +484,43 @@ def past_sessions_briefing(db, settings: Settings):
                              settings.session_memory_min_similarity)
 
     return brief
+
+
+def stall_checker(db, settings: Settings):
+    """Lean's stall check (v2 Phase 2), when `stall` is on: once per session, from its test runs and the forecast."""
+    if settings.stall != "on":
+        return None
+    from horizon import stall
+
+    def forecasts(team, project, session, k):
+        from horizon.eventlog.episodes import SessionEpisodes
+        from horizon.eventlog.forecast import SessionWorldModel
+        from horizon.memrouter.embedding import make_embedder
+
+        log = SessionEpisodes(db, settings.session_idle_minutes)
+        task = next((t for t in TaskStore(db).active(team, cwd=project) if t.session_id == session), None)
+        if task is None or not log.has_episodes(team, project):
+            return None, None
+        model = SessionWorldModel(log, make_embedder(settings.embedder, settings.embedding_dim), settings)
+        return (model.predict(team, project, task.goal),
+                model.predict(team, project, task.goal, so_far={"failed_runs": k}))
+
+    def check(store, team, project, session):
+        if any(e.data.get("stall_warning") for e in EventStore(db).session(team, project, session)):
+            return None
+        runs = [stall.Run(p, f, tuple(k) if k is not None else None) for p, f, k in store.session_runs(project, session)]
+
+        def safe(k):
+            try:
+                return forecasts(team, project, session, k)
+            except Exception as exc:  # no forecast: the floor still holds
+                if os.environ.get("HORIZON_DEBUG"):
+                    print(f"horizon: stall forecast failed: {exc!r}", file=sys.stderr)
+                return None, None
+
+        return stall.check(runs, settings.stall_min_runs, safe)
+
+    return check
 
 
 def _episodes_quietly(db, settings: Settings, project: str) -> None:
@@ -498,12 +560,16 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                 project = project_dir(payload)
                 brief = past_sessions_briefing(db, settings) if profile == "lean" else None
                 budget = settings.context_budget_chars if settings.context == "composer" else None
-                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief, budget), project)
+                stalls = stall_checker(db, settings) if profile == "lean" else None
+                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief, budget, stalls),
+                                 project)
                 if name == "session-start" and profile == "lean":
                     # before this start is logged, so a resumed session's idle part still reads as idle
                     _episodes_quietly(db, settings, project)
                 try:
-                    log_events(name, payload, EventStore(db), settings.team_id, project, injected_chars(result))
+                    warned = name == "post-tool-use" and STALL_HEADER in json.dumps(result or {})
+                    log_events(name, payload, EventStore(db), settings.team_id, project, injected_chars(result),
+                               {"stall_warning": True} if warned else None)
                 except Exception as exc:
                     if os.environ.get("HORIZON_DEBUG"):
                         print(f"horizon: event log failed in {name}: {exc!r}", file=sys.stderr)

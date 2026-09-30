@@ -50,6 +50,20 @@ SESSION_START = (  # display order
 )
 
 
+# After a compaction the agent keeps only the host's summary, so the task comes back whole, with where it got to.
+REANCHOR = (
+    Section("active", "The task this session is working on (restated: the context was just compacted):", 0),
+    Section("progress", "Where this session had got to:", 3),
+    Section("constraints", SESSION_START[3].heading, 1),
+    Section("team_rules", SESSION_START[2].heading, 2),
+    Section("pitfalls", SESSION_START[1].heading, 4),
+    Section("earlier", SESSION_START[4].heading, 5),
+)
+MAX_GOAL_REANCHOR = 1500
+MAX_NOTES = 5
+MAX_FILES = 10
+
+
 def distinct(task: str, goal: str, shared: int = 40) -> str:
     """A task without the opening it shares with another (a standing preamble), so its label says what that task
     was about."""
@@ -117,8 +131,35 @@ def session_start_items(store, team: str, project: str) -> list[Item]:
     return items
 
 
-def session_start(store, team: str, project: str, preamble: str, budget: int) -> str:
-    return compose(preamble, SESSION_START, session_start_items(store, team, project), budget)[0]
+def progress_items(store, team: str, project: str, session: str, task) -> list[Item]:
+    """What the session did before the compaction: the user's later messages, the last test run, the files it
+    changed. All from the task and the event log: ids and project-relative paths, never code or output."""
+    from horizon.eventlog.briefing import trace
+    from horizon.eventlog.store import EventStore
+
+    t = trace(EventStore(store.db).session(team, project, session))
+    notes = [p.note for p in task.progress if not p.note.lstrip().startswith("/")][-MAX_NOTES:]
+    items = [Item("progress", f"- a later message: {clip(n, 200)}") for n in notes]
+    if t.last:
+        failing = f"; still failing: {', '.join(t.still_failing[:4])}" if t.still_failing else ""
+        items.append(Item("progress", f"- last test run: {t.last['passed']}/{t.last['total']} passing, after "
+                                      f"{t.runs} runs ({t.failed_runs} failing){failing}"))
+    if t.files:
+        more = f" (+{len(t.files) - MAX_FILES} more)" if len(t.files) > MAX_FILES else ""
+        items.append(Item("progress", f"- files changed: {', '.join(t.files[:MAX_FILES])}{more}"))
+    return items
+
+
+def session_start(store, team: str, project: str, preamble: str, budget: int, session: str | None = None,
+                  reanchor: bool = False) -> str:
+    """Lean's session-start context. `reanchor` (a start after a compaction): this session's task in full,
+    first, with its progress."""
+    items = session_start_items(store, team, project)
+    task = next((t for t in store.active(team, cwd=project) if t.session_id == session), None) if session else None
+    if not (reanchor and task):
+        return compose(preamble, SESSION_START, items, budget)[0]
+    items = [Item("active", f"- {clip(task.goal, MAX_GOAL_REANCHOR)}")] + [i for i in items if i.section != "active"]
+    return compose(preamble, REANCHOR, items + progress_items(store, team, project, session, task), budget)[0]
 
 
 def expects_trouble(log, embedder, settings, team: str, project: str, goal: str) -> bool:

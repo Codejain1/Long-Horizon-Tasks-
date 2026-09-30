@@ -220,14 +220,29 @@ class SessionEpisodes:
         return [{"project": p, "session_id": s, "through_n": int(n), "episode_id": e, "skipped": k}
                 for p, s, n, e, k in self.db.fetchall(sql + " ORDER BY through_n", params)]
 
+    @staticmethod
+    def _predicted(cache: list, predictor, router, project: str, situation: str):
+        """The forecast an episode is recorded against, or None (memory's fallback). Never stops the write."""
+        if predictor is None:
+            return None
+        try:
+            if not cache:
+                cache.append(predictor(router))
+            return cache[0](project, situation) if cache[0] else None
+        except Exception as exc:
+            log.warning("no forecast for the session episode: %s", exc)
+            return None
+
     def write(self, team_id: str, memory: Callable[[], object], project: str | None = None,
               task_for: Callable[[str, str], str | None] = lambda project, session: None,
-              at: datetime | None = None, judge: Callable[[], object] | None = None) -> dict:
+              at: datetime | None = None, judge: Callable[[], object] | None = None,
+              predictor: Callable[[object], Callable | None] | None = None) -> dict:
         """Turn the pending segments into episodes. `memory` builds the memrouter, only when there's an episode
         to write (loading the embedder is the slow part); `task_for` names the task a session worked on;
-        `judge` builds the outcome judge for segments with no test run."""
+        `judge` builds the outcome judge for segments with no test run. `predictor(router)` gives what an episode
+        is predicted against (the session forecast, Phase 2) or None for memory's fallback; built once a batch."""
         report = {"written": [], "skipped": 0, "failed": 0}
-        router, scorer = None, []
+        router, scorer, predict = None, [], []
 
         def once():  # one scorer for the whole batch
             scorer[:] = scorer or [judge()]
@@ -242,7 +257,8 @@ class SessionEpisodes:
                 continue
             try:
                 router = router or memory()
-                result = router.record(team_id=team_id, situation=draft.situation, chosen=CHOSEN,
+                predicted = self._predicted(predict, predictor, router, seg.project, draft.situation)
+                result = router.record(team_id=team_id, situation=draft.situation, chosen=CHOSEN, predicted=predicted,
                                        actual=draft.actual, conditions=draft.conditions, project_id=seg.project,
                                        task_id=task_for(seg.project, seg.session_id), agent_id=draft.agent_id)
             except Exception as exc:  # memory is down: leave it pending for the next attempt

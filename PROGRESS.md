@@ -458,11 +458,59 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - The forecast gate would have kept the past-sessions note out (every similar session was clean). That note was behind the Q67 candidate's +44 % tokens. The forecast adds about 150 ms.
   - **Tests:** 660 pass on SQLite and Postgres (636 before, plus 24). Ruff's one finding, in `web.py`, predates this change.
 
+- **Session 21: Phase 2 (joining): re-anchoring after compaction, stall detection, surprise against the forecast.**
+  - **Re-anchoring** (the composer, `HORIZON_CONTEXT=composer`): a `compact` session start restates this session's task in full (up to 1,500 characters; classic shows 200), with where it got to. That means:
+    - the user's later messages (up to 5; slash commands such as `/compact` left out);
+    - the last test run, with what still fails;
+    - the files changed, all from the task and the event log.
+    - Then the constraints, team rules and the rest, within the 4,000-character budget.
+    - A resumed session keeps its conversation, so it isn't restated. The hosted server gets the start's `source` too.
+  - **Stall detection** (`src/horizon/stall.py`, `HORIZON_STALL=on`; the evals' candidate arm turns it on):
+    - after each captured test run, lean checks whether the same check failed in each of the last N runs (`TaskStore.session_runs`) with no more tests passing than when the streak began;
+    - N is the larger of `HORIZON_STALL_MIN_RUNS` (4) and the forecast's 90th percentile of failing runs for similar sessions, plus 2;
+    - it stays quiet when similar sessions that got as far (the forecast's `so_far`) ended green at least 80 % of the time, over at least 2 sessions;
+    - it warns once per session. The warning is flagged on the logged event (`stall_warning`), and `run.py` counts it per session (`horizon.stall_warnings`);
+    - the embedder and forecast load only once the database-only pattern holds;
+    - hosted installs have none yet;
+    - `./ci.sh` output is parsed with failing ids, so the stall scenario's runs are seen.
+  - **Surprise against the forecast** (`HORIZON_SESSION_SURPRISE=auto` by default, or `forecast`/`fallback`): `SessionEpisodes.write(predictor=…)` records a session episode with the forecast as `predicted`, with the new prediction source `world_model` (an added literal; stored data still validates). With `auto`, that happens only once `gate()` passes: at least `HORIZON_WORLD_MODEL_MIN_PAIRS` (30) pairs, and a clear win over the fallback on the latest 200 sessions' replay. Below 31 sessions the replay isn't even run. The gate takes 59 ms at 200 sessions. A forecast with confidence 0 is no prediction (memory's low-confidence rule), and a failing forecast never stops the write.
+  - **Acceptance criteria**, all met and tested:
+    - **Re-anchoring** (3 tests plus the hosted case in `test_composer.py`): the task is restated whole with its progress; only a compaction restates it (not a resume, not classic); it stays within the budget however long the session; hosted follows the setting.
+    - **Stall detection** (`test_stall_detection.py`, 12 tests):
+      - off by default;
+      - a stuck session is warned exactly once, with the flag logged;
+      - ten failing runs that make progress are never warned;
+      - a history of hard sessions raises the bar to 7;
+      - it stays quiet when similar long sessions ended green (checked by mutation: with that rule off, the same history warns);
+      - the embedder loads only at the 4th stuck run;
+      - a failing forecast still warns at the floor;
+      - hosted has no check.
+    - **Surprise** (`test_session_surprise.py`, 7 tests):
+      - `auto` keeps the fallback below the gate, with no replay;
+      - `forecast` records the forecast, so an expected outcome has surprise 0;
+      - accuracy is tracked as source `world_model`;
+      - the gate needs enough pairs and a clear win;
+      - `auto` switches once the gate passes;
+      - a failing forecast never blocks the episode;
+      - `fallback` never builds a forecast.
+  - **Tests:** 699 pass on SQLite and Postgres (660 before, plus 39). Ruff is clean on the changed files.
+
 ## In progress
 
-- Nothing. Phase 1's tracks A–E are all built. The composer and session memory wait for the eval gate (question 72).
+- Nothing. Phases 1 and 2 are built. What's behind the gate (composer with re-anchoring, session memory, stall detection) waits for real runs (questions 62, 72, 74).
 
 ## Decisions made
+
+**v2 Phase 2 (session 21)**
+- **Order: re-anchoring, stall detection, surprise.** Re-anchoring extends the composer. Stall detection is the owner's "stop endless trial and error". Surprise is plumbing whose effect shows only over many sessions.
+- **Re-anchor only on `compact`.** A resumed session still has its conversation. The compact start's context stays in the compacted conversation, so a resume after it needs nothing more.
+- **Stall means "the same check failing with no more tests passing", not "many failing runs".** Hard but solvable work fails too, but makes progress; the pass criterion is zero false alarms. Runs without failing ids never count.
+- **The floor is 4 stuck runs, raised to the forecast's 90th percentile plus 2.** Seeded normal history has a low 90th percentile, so the floor protects the hard control ticket. A project whose normal work needs long streaks raises the bar by itself.
+- **Quiet when similar sessions that got as far mostly ended green** (80 %, at least 2 sessions). This uses track C's `so_far` question. It covers a project where most work is easy but hard tickets still finish.
+- **One warning per session, suggesting a stop only for causes the agent may not change.** A second warning would add pressure without new information. Stopping is right only for real blockers; otherwise the advice is to change approach.
+- **Surprise defaults to `auto`, as the decision layer's world model does (question 53).** It switches only after the same gate (30 pairs, one-sided 95 %). It changes only what memory learns from, never what the agent sees.
+- **A zero-confidence forecast is not a prediction.** Recording the bare prior as `predicted` would skip memory's halved learning rate for unpredicted outcomes.
+- **The new prediction source is `world_model`,** so memory tracks the forecast's calibration apart from the similar-episodes fallback (`memory`).
 
 **v2 Phase 1 track D (session 20)**
 - **Pick by value, not size.** Horizon's injection is about 300 tokens against 0.5–1.9M a session spends, so saving characters barely moves cost. What moves it is what the context makes the agent do (Q67). The composer therefore fixes what is missing (older constraints) and what misleads (preamble-only labels, the note on clean histories), and it also comes out shorter.
@@ -897,18 +945,20 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 71 | One latency script hung before its first forecast and couldn't be reproduced (the same script then ran at 12–20 ms per forecast) | Default: most likely the first fastembed model load waiting on its cache lock, not the forecast code. Watch hook latency in the next real run. |
 | 72 | The gate run for Phase 1's context: `candidate` (session memory plus the composer) against `lean` on `marathon` | **Owner** (subscription). Suggested: tickets 1–12, 1 repeat each arm, then `--set HORIZON_CONTEXT=classic` for an ablation if it shows a signal. Replaces question 67's second run, since the candidate changed. Default until then: both stay off. |
 | 73 | Should classic lean's constraint window (the last three tasks) be fixed even if the composer as a whole doesn't pass? | Default: no, not separately. The composer carries the fix; if the gate fails on cost only, the constraint part can be split out and tested alone. |
+| 74 | The `stall` gate run: `candidate` against `baseline`, seeded from a marathon baseline run (`--seed`) | **Owner** (subscription). Check zero `stall_warnings` on the controls (especially ticket 5, the `Asia/Kolkata` one) and tokens before stopping on tickets 3 and 5. Default floor `HORIZON_STALL_MIN_RUNS=4`; raise it if the control ticket's debugging produces 4 stuck runs. |
+| 75 | Should hosted installs get stall detection? | Default: later, with event forwarding (question 60). It needs the event log and the forecast on the server. |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
-**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 72 (the `candidate` gate run on `marathon`, which replaces 67's second run), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
+**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1, then the `compaction` gate run for re-anchoring), 72 (the `candidate` gate run on `marathon`, which replaces 67's second run), 74 (the `stall` gate run), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
 **v2 (this copy):** Phase 1 of `PROJECT.md` §0 is built: tracks E (session 16), A (17), B (18), C (19) and D (20). Next:
-- **The gate run for Phase 1 (owner, question 72):** `candidate` against `lean` on `marathon`, then `team` for the composer's "same quality with fewer tokens".
-- **Phase 2 (joining):**
-  - surprise measured against the session forecast (wired only if `horizon eval-forecast` passes);
-  - stall detection (the forecast's `so_far` question against the `stall` scenario);
-  - re-anchoring after compaction (the composer's session start already re-sends the active task and constraints on a `compact` start; Phase 2 measures it with the `compaction` scenario).
+- **Phase 2 is built (session 21).** Phase 3 is the gate itself (`PROJECT.md` §0): real runs on the owner's subscription, cheapest and most informative first.
+  1. `compaction` F1 check, then `baseline`/`lean`/`candidate` (question 62): one short session per arm.
+  2. `stall`, `baseline` against `candidate`, seeded (question 74): 6 tickets per arm.
+  3. `marathon`, `lean` against `candidate` (question 72), then `team` for the composer.
+- Until those runs: nothing more is built on top (principle 5). Phase 4 starts only if the gate passes.
 
 **Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, the `candidate` against `lean` gate run on `marathon` (question 72).
 

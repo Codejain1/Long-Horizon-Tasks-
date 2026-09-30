@@ -26,7 +26,7 @@ from horizon.db import load_json
 from horizon.decision.scorers import noul, score
 from horizon.eventlog.briefing import trace
 from horizon.eventlog.episodes import SessionEpisodes
-from horizon.models import Condition, episode_text
+from horizon.models import Condition, Predicted, episode_text
 
 BANDWIDTH = 0.1  # as kernel-v1: a 0.1 drop in similarity divides the weight by e
 BASE_PRIOR_WEIGHT = 1.0  # pseudo-sessions of the team's base rate
@@ -259,3 +259,40 @@ def versus(model: list[float], other: list[float]) -> dict:
     return {"pairs": len(d), "advantage": round(float(d.mean()), 4) if len(d) else None,
             "advantage_se": round(se, 4) if math.isfinite(se) else None,
             "clearly_better": bool(len(d) > 1 and d.mean() > Z_ONE_SIDED_95 * se)}
+
+
+# --- surprise: what a session episode is recorded against (Phase 2) -----------------------------------------
+
+GATE_WINDOW = 200  # the latest sessions the gate replays
+
+
+def gate(model: SessionWorldModel, team_id: str, min_pairs: int) -> bool:
+    """Whether the forecast is clearly better than memory's fallback on the latest sessions' replay."""
+    n = model.log.db.fetchone("SELECT COUNT(*) FROM session_episodes WHERE team_id = %s AND episode_id IS NOT NULL",
+                              (team_id,))[0]
+    if int(n) - 1 < min_pairs:  # not enough pairs yet: skip the replay
+        return False
+    v = replay(model, team_id, GATE_WINDOW).get("versus", {}).get("fallback")
+    return bool(v and v["pairs"] >= min_pairs and v["clearly_better"])
+
+
+def surprise_predictor(model: SessionWorldModel, team_id: str, mode: str, min_pairs: int):
+    """`(project, situation) -> Predicted` for the episodes being written, or None to keep memory's fallback:
+    always with "forecast", with "auto" only once the gate passes. A forecast with no evidence behind it
+    (confidence 0) is no prediction: the episode stays low-confidence, as MEMROUTER.md §5 wants."""
+    if mode not in ("auto", "forecast") or (mode == "auto" and not gate(model, team_id, min_pairs)):
+        return None
+
+    def predict(project: str, situation: str) -> Predicted | None:
+        f = model.predict(team_id, project, situation)
+        if f.confidence <= 0:
+            return None
+        return Predicted(success=f.success, tokens=f.tokens or None, confidence=f.confidence, source="world_model")
+
+    return predict
+
+
+def configured_predictor(settings, log: SessionEpisodes):
+    """For `SessionEpisodes.write(predictor=…)`: built from the memrouter once it exists (its embedder)."""
+    return lambda router: surprise_predictor(SessionWorldModel(log, router.embedder, settings), settings.team_id,
+                                             settings.session_surprise, settings.world_model_min_pairs)

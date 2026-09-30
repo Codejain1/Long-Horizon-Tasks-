@@ -178,9 +178,11 @@ def main(argv: list[str] | None = None) -> int:
         log = SessionEpisodes(db, settings.session_idle_minutes)
         if args.rejudge:
             log.unskip(settings.team_id, project)
+        from horizon.eventlog.forecast import configured_predictor
+
         report = log.write(settings.team_id, lambda: local_memory(settings, db), project,
                            task_for=lambda proj, s: tasks.session_task(settings.team_id, proj, s),
-                           judge=configured_scorer(settings))
+                           judge=configured_scorer(settings), predictor=configured_predictor(settings, log))
         print(json.dumps({"written": len(report["written"]), "skipped": report["skipped"],
                           "failed": report["failed"]}))
     elif args.cmd == "eval-forecast":

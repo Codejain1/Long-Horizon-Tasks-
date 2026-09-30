@@ -77,7 +77,7 @@
 
 **Measured:** constraint violations in parts 4–8, parts completed, hidden tests, tokens after the compaction, and the tokens re-anchoring adds.
 
-**Arms:** `baseline`; `lean`, which already re-shows the task's goal on a compacted session start, but not its constraints; `candidate` (goal, constraints and progress).
+**Arms:** `baseline`; `lean`, which already re-shows the task's goal on a compacted session start, but not its constraints; `candidate` (goal, constraints and progress: **built**, the composer's re-anchoring, Phase 2).
 
 **Pass:** `candidate` has fewer violations than `baseline` and no more than `lean`, adding at most 1k tokens per compaction. 3 repeats; each arm needs one session per repeat.
 
@@ -106,7 +106,7 @@
 - on stall tickets: tokens and turns before the session stops, and whether `BLOCKED.md` gives the right reason;
 - on controls: false alarms (a stall warning injected), completion and tokens.
 
-**Arms:** `baseline` and `candidate`. Lean has no stall detection, so it behaves like `baseline` here.
+**Arms:** `baseline` and `candidate`. Lean has no stall detection, so it behaves like `baseline` here. **Built** (Phase 2): `candidate` sets `HORIZON_STALL=on`, and each session row counts the warnings injected (`horizon.stall_warnings`), so false alarms on controls are read straight from `results.json`.
 
 **Pass:** on stall tickets, at least 30 % fewer tokens before stopping, and `BLOCKED.md` at least as often. On controls, zero false alarms and no loss of completion. 3 repeats.
 
@@ -119,7 +119,7 @@ A cheaper model faces hard-to-undo choices (migrations, dependency and storage d
 Every Horizon-arm session leaves its event log (`events` table), which is step-level training data for the world model.
 - **Built:** the `observe` profile and arm log events in a baseline run too, injecting nothing the agent can see (`injected_chars` stays 0). That doubles the step-level data without changing the baseline.
 - **Built:** each run exports its whole event log to `events.jsonl`, and each row records the session's events by kind and the characters Horizon injected.
-- **Built:** the `candidate` arm (`run.py --arm candidate`) is lean plus the settings under test, set in `run.py`'s `ARM_ENV`. It currently turns on `HORIZON_SESSION_MEMORY` (past sessions as context) and `HORIZON_CONTEXT=composer` (the context composer, whose metric is the same quality with fewer injected characters). `--set KEY=VALUE` runs an ablation (e.g. `--set HORIZON_CONTEXT=classic` for session memory alone), and `results.json` records the settings. `marathon` is where that should show: fewer failed test runs, repeat failures and tokens on tickets like earlier ones, at the cost of `injected_chars`. It becomes the default only if it beats `lean` there.
+- **Built:** the `candidate` arm (`run.py --arm candidate`) is lean plus the settings under test, set in `run.py`'s `ARM_ENV`. It currently turns on `HORIZON_SESSION_MEMORY` (past sessions as context) `HORIZON_CONTEXT=composer` (the context composer, whose metric is the same quality with fewer injected characters; it also re-anchors after compaction) and `HORIZON_STALL=on` (stall detection, measured on `stall`). `--set KEY=VALUE` runs an ablation (e.g. `--set HORIZON_CONTEXT=classic` for session memory alone), and `results.json` records the settings. `marathon` is where that should show: fewer failed test runs, repeat failures and tokens on tickets like earlier ones, at the cost of `injected_chars`. It becomes the default only if it beats `lean` there.
 - **Built:** `horizon eval-forecast [--jev]` on a run's `horizon.db` (`HORIZON_DB_URL`) replays the session forecasts (world model v2): each session forecast from the earlier ones, with the Brier score against memory's current surprise baseline and the base rate, and the error on failing runs and tokens. It is free and offline, apart from Jev calls with `--jev`. Phase 2 wires the forecast into surprise and stall detection only if it is clearly better. On the Q67 marathon logs (8 and 6 sessions, every one ending green) there is nothing to beat yet: the constant baselines score 0.
 
 ## Budget

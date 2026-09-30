@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 EPISODE_SCHEMA_VERSION = 1
 
 SignalType = Literal["auto", "implicit", "human"]
-PredictionSource = Literal["jev", "sim", "memory", "host", "llm"]
+PredictionSource = Literal["jev", "sim", "memory", "host", "llm", "world_model"]
 Severity = Literal["normal", "severe"]
 ConditionOp = Literal["=", "!=", ">", ">=", "<", "<=", "in", "contains"]
 

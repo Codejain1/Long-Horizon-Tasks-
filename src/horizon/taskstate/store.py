@@ -171,6 +171,12 @@ class TaskStore:
         )
         return cap
 
+    def session_runs(self, cwd: str, session_id: str) -> list[tuple[int, int, list[str] | None]]:
+        """A session's test runs here, oldest first: (passed, failed, failing ids or None)."""
+        rows = self.db.fetchall("SELECT passed, failed, failing FROM test_captures WHERE cwd = %s AND session_id = %s"
+                                " ORDER BY created_at, id", (cwd, session_id))
+        return [(int(p), int(f), load_json(k) if k is not None else None) for p, f, k in rows]
+
     def pending_captures(self, cwd: str, since: datetime | None = None) -> list[TestCapture]:
         """Unconsumed captures for a directory, newest first."""
         sql = ("SELECT id, session_id, cwd, command, runner, passed, failed, total, created_at, consumed_by,"

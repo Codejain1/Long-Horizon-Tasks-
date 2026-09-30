@@ -107,6 +107,13 @@ class Settings:
     context_budget_chars: int = 4000  # the session-start block's ceiling, about 1,000 tokens
     # The past-sessions note shows only when the session forecast expects at least this many failing runs.
     context_min_failed_runs: float = 0.5
+    # "on": lean warns a session stuck on the same failing check (v2 Phase 2). Off until it passes the gate.
+    stall: str = "off"
+    stall_min_runs: int = 4  # never fewer consecutive stuck runs than this, whatever the forecast says
+    # What a session episode's surprise is measured against (v2 Phase 2): "forecast" (the session forecast),
+    # "fallback" (similar episodes' success, MEMROUTER.md §5), or "auto": the forecast once its replay is clearly
+    # better than the fallback over `world_model_min_pairs` sessions.
+    session_surprise: str = "auto"
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -152,6 +159,9 @@ class Settings:
             context=get("CONTEXT", base.context),
             context_budget_chars=get("CONTEXT_BUDGET_CHARS", base.context_budget_chars, int),
             context_min_failed_runs=get("CONTEXT_MIN_FAILED_RUNS", base.context_min_failed_runs, float),
+            stall=get("STALL", base.stall),
+            stall_min_runs=get("STALL_MIN_RUNS", base.stall_min_runs, int),
+            session_surprise=get("SESSION_SURPRISE", base.session_surprise),
             scorer=get("SCORER", base.scorer),
             jev_model=get("JEV_MODEL", base.jev_model),
             llm_scorer_model=get("LLM_SCORER_MODEL", base.llm_scorer_model),
