@@ -10,7 +10,7 @@ demo/reliability/run.sh /tmp/horizon-run1
 ```
 
 For each task, `run.sh`:
-1. copies `project/` to `OUT/project` and runs `horizon install-claude-code`, which declares Horizon in `.mcp.json` and installs the hooks and the CLAUDE.md snippet;
+1. copies `project/` to `OUT/project` and runs `horizon install-claude-code --profile full` (the workflow whose tool calls it measures), which declares Horizon in `.mcp.json` and installs the hooks and the CLAUDE.md snippet;
 2. runs one fresh `claude -p` session with the prompt from `tasks.json`, logging the transcript to `OUT/logs/<task>.jsonl`;
 3. runs that task's tests again itself (`OUT/logs/<task>.check.txt`).
 

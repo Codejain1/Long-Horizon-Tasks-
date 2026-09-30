@@ -240,7 +240,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 **Long-horizon eval (session 13)**
 - The hidden tests and checks run outside the repo, so neither arm can see or overfit them.
 - One run per arm to start; repeat before believing a difference.
-- Lean stays opt-in: making it the default changes the product PROJECT.md describes, so that's the owner's call (open question 56).
+- Lean is the default for Claude Code (owner go-ahead). The reliability demo pins `--profile full`, since it measures the full workflow's tool calls. The benchmark's `--with-horizon` uses the default, the product as shipped.
 - Team rules: the latest task that sets `team_rules` holds the current set, so the user can drop a rule. It's read from the last 50 tasks' data, with no new table and no schema change.
 - SessionStart shows the last 3 completed tasks in the project (goal plus up to 10 constraints). Cheaper than resuming tasks automatically, and it keeps "one task per request" intact.
 
@@ -576,7 +576,7 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 54 | Codex's transcript format differs, so attempt usage isn't captured there | Default: Claude Code only. Codex outcomes keep host-reported tokens (usually none). |
 | 55 | When to build the Dreamer-style model | Default: once there are a few thousand real episodes with outcomes (after the benchmark runs), trained on the exports, and plugged in through `HORIZON_WORLD_MODEL_CLASS` behind the same gate. |
 
-| 56 | Make `--profile lean` the default install? | Default: no, full stays the default until the owner decides. Evidence: equal quality at lower cost (evals/longhorizon/RESULTS.md). |
+| 56 | Make `--profile lean` the default install? | **Done, owner-approved (2026-09-30):** lean is the default for Claude Code; `--profile full` keeps the whole workflow. Codex stays full until its `UserPromptSubmit` support is checked. See PROJECT.md §0. |
 
 **Needs the owner** (credentials, money or an irreversible decision): 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 

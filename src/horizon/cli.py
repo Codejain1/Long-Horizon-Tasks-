@@ -64,8 +64,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
     p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
-    p.add_argument("--profile", choices=["full", "lean"], default="full",
-                   help="lean: task continuity only (goals, constraints, team rules), far fewer tool calls.")
+    p.add_argument("--profile", choices=["full", "lean"], default="lean",
+                   help="lean (default): continuity through hooks (goals, constraints, team rules, recurring "
+                        "pitfalls), no agent calls. full: the whole workflow (decision scoring, recall per step, "
+                        "outcomes per test run, rollback).")
 
     args = parser.parse_args(argv)
     from horizon.config import Settings

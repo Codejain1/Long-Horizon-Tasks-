@@ -180,7 +180,7 @@ def install_codex(project: Path, command: list[str] | None = None, agents_md: bo
 
 
 def install(project: Path, command: list[str] | None = None, claude_md: bool = True,
-            hosted: str | None = None, profile: str = "full") -> list[str]:
+            hosted: str | None = None, profile: str = "lean") -> list[str]:
     command = command or default_command()
     project = project.resolve()
     if hosted and profile == "lean":

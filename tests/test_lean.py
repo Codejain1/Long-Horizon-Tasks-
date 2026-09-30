@@ -10,13 +10,13 @@ from horizon.install import install
 
 
 def test_install_lean_writes_the_lean_snippet_env_and_hooks(tmp_path):
-    install(tmp_path, command=["py", "-m", "horizon"], profile="lean")
+    install(tmp_path, command=["py", "-m", "horizon"])  # lean is the default
     assert "You don't need to call it" in (tmp_path / "CLAUDE.md").read_text()
     assert json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["horizon"]["env"] == {"HORIZON_PROFILE": "lean"}
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
     assert "UserPromptSubmit" in hooks
     assert all(g["hooks"][0]["command"].endswith("--profile lean") for groups in hooks.values() for g in groups)
-    install(tmp_path, command=["py", "-m", "horizon"])  # back to full: replaces, doesn't duplicate
+    install(tmp_path, command=["py", "-m", "horizon"], profile="full")  # back to full: replaces, doesn't duplicate
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
     assert "UserPromptSubmit" not in hooks and [len(groups) for groups in hooks.values()] == [1, 1, 1, 1]
     assert "--profile" not in json.dumps(hooks) and "env" not in (tmp_path / ".mcp.json").read_text()
@@ -24,7 +24,7 @@ def test_install_lean_writes_the_lean_snippet_env_and_hooks(tmp_path):
 
 def test_install_hosted_lean_is_hooks_only(tmp_path):
     """Hosted lean: hooks that talk to the server, and no MCP entry (an earlier full install's is removed)."""
-    install(tmp_path, command=["py", "-m", "horizon"], hosted="https://h.example")
+    install(tmp_path, command=["py", "-m", "horizon"], hosted="https://h.example", profile="full")
     assert "horizon" in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
     install(tmp_path, command=["py", "-m", "horizon"], hosted="https://h.example", profile="lean")
     assert "horizon" not in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]

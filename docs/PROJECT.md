@@ -5,6 +5,15 @@
 >
 > Status: design complete for the core; several component specs still to write (see §15).
 
+## 0. Direction after the evals (2026-09-30, owner-approved)
+
+The long-horizon A/B evals (`evals/longhorizon/RESULTS.md`) tested this design against plain Claude Code:
+- **Continuity paid off.** Team rules carried to new projects: 24/24 against 15/24 over 3 repeats. Pitfall warnings from real test history: 0/5 repeat CI failures against 3/5, at 17 % lower cost. Both reach the next session through hooks.
+- **The decision layer (§5–6) didn't.** It never changed an outcome, and it cost the most. An advisor that sees a summary can't out-decide the agent that has read the code. Horizon helps when it holds information the agent can't get any other way: the past, real outcomes, and other people's rules.
+- **In interactive solo work the human is the memory,** so the gain is for unattended agents and teams.
+
+Therefore **the default install is the lean profile**: hooks capture the task, rules (picked out by Jev, §5's model in a better-suited role) and test history, and the agent makes no Horizon calls. The full workflow below stays available as `--profile full`. Its components stay in the code and keep logging, off by default until an eval shows they move success rate or cost (§13: "cut anything that doesn't").
+
 ---
 
 ## 1. Problem
