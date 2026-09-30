@@ -223,7 +223,8 @@ def hidden_tests(scenario_dir: Path, sessions: range, repo: Path, python: str) -
 
 
 def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[str]:
-    """Session 1's constraints, checked in a separate process (a fresh import of the agent's package)."""
+    """Session 1's constraints, checked in a separate process (a fresh import of the agent's package):
+    stdlib only, Python 3.9 syntax, integer cents (no floats), uuid4().hex ids and unchanged public names."""
     pkg = repo / package
     if not pkg.is_dir():
         return [f"package {package}/ missing"]
@@ -231,6 +232,8 @@ def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[s
             f"c = json.loads({json.dumps(json.dumps(scenario['constraints']))}); p = Path({str(pkg)!r}); v = []\n"
             "if c.get('stdlib_only'): v += ['stdlib: ' + x for x in checks.stdlib_only(p)]\n"
             "if c.get('python39'): v += ['py39: ' + x for x in checks.python39(p)]\n"
+            "if c.get('no_floats'): v += ['cents: ' + x for x in checks.no_floats(p)]\n"
+            "if c.get('uuid_hex'): v += ['ids: ' + x for x in checks.uuid_hex_ids(p)]\n"
             "v += ['names: ' + x for x in checks.public_names(p, c.get('public_names', {}))]\n"
             "print(json.dumps(v))")
     proc = subprocess.run([python, "-c", code], capture_output=True, text=True, timeout=120)

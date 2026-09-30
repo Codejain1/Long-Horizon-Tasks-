@@ -52,6 +52,32 @@ def python39(package: Path) -> list[str]:
     return bad
 
 
+def no_floats(package: Path) -> list[str]:
+    """Money stays integer cents: no float literals and no float() calls anywhere in the package."""
+    bad = []
+    for f in _files(package):
+        for node in ast.walk(ast.parse(f.read_text())):
+            if isinstance(node, ast.Constant) and isinstance(node.value, float):
+                bad.append(f"{f.name}:{node.lineno}: float literal {node.value!r}")
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "float":
+                bad.append(f"{f.name}:{node.lineno}: float()")
+    return bad
+
+
+def uuid_hex_ids(package: Path) -> list[str]:
+    """Ids come from `uuid.uuid4().hex`: every uuid4() call is read through `.hex`, never str() or the UUID."""
+    bad = []
+    for f in _files(package):
+        tree = ast.parse(f.read_text())
+        through_hex = {id(node.value) for node in ast.walk(tree)
+                       if isinstance(node, ast.Attribute) and node.attr == "hex"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", None)) == "uuid4" \
+                    and id(node) not in through_hex:
+                bad.append(f"{f.name}:{node.lineno}: uuid4() not taken as .hex")
+    return bad
+
+
 def public_names(package: Path, required: dict[str, list[str]]) -> list[str]:
     """Functions from the first session still exist in the package's public namespace, with their parameters
     in the same positions (callers depend on them)."""
