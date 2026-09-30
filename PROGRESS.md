@@ -302,11 +302,41 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - seeding without tool calls.
   - **Tests:** 537 pass on SQLite and Postgres 16 + pgvector: 492 before, plus 45 new (`test_marathon.py` 19, `test_compaction.py` 9, `test_stall.py` 10, and 7 in `test_longhorizon.py` and `test_eventlog.py`).
 
+- **Session 17: v2 Phase 1, track A: session episodes from the event log.**
+  - **Built:**
+    - `src/horizon/eventlog/episodes.py`: `draft_episode` (pure) turns one session segment's events into the arguments of `MemRouter.record`. `SessionEpisodes` finds ended segments with nothing recorded, writes them and marks each one written or skipped in the new `session_episodes` table.
+    - The lean `SessionEnd` hook writes the project's pending segments after its own work, isolated from it.
+    - New `horizon episodes-from-log [--project DIR]` backfills any log.
+    - `TaskStore.session_task` scopes each episode to the lean task its session worked on.
+    - The coding outcome now carries the last run's counts (`facts["tests"]`).
+  - **Acceptance criteria**, all met:
+    1. a lean session with tests becomes one episode: the first prompt, the last run's pass rate and counts, the turn's real tokens, low confidence, and scoped to its project and task;
+    2. every segment is written once, and a resumed session adds an episode for its new segment only;
+    3. sessions with no test run or no prompt are skipped with the reason and not reconsidered;
+    4. a failed write leaves the segment pending, and it's caught up at the next session end;
+    5. a failing memory or writer never changes or breaks the hook;
+    6. only lean writes session episodes (observe, full and hosted don't);
+    7. the episodes feed memory: the next similar session's surprise is measured against their history, memory's forecast is scored under task type `session`, and recall finds them;
+    8. code in a prompt never reaches an episode;
+    9. the CLI backfills an observe log;
+    10. both backends pass. The hook takes 0.7–1.0 s at session end when it writes an episode with fastembed, and 0.22 s when nothing is pending, the same as the other hooks. Episodes carry the server's embedding model name, so the MCP server finds them.
+  - **Mutation checks:** turning off the dedupe, starting every segment at the session's start, writing for every profile, and marking failed writes as done were each caught.
+  - **Also fixed:** track E's docs commit changed `docs/PRIVACY.md` without the packaged copy that `/privacy` serves, which `test_phase7` caught. Both copies now match, with a line on session episodes.
+  - **Tests:** 561 pass on SQLite and Postgres (537 before, plus 24 in `tests/test_session_episodes.py`).
+
 ## In progress
 
-- Nothing. Track E is built. Tracks A–D of Phase 1 are next (see "Next step").
+- Nothing. Tracks A and E are built; B, C and D are next (see "Next step").
 
 ## Decisions made
+
+**v2 Phase 1 track A (session 17)**
+- **The unit is a segment ending at `session_end`, not a whole session.** Headless resumed sessions (`--resume`) end once per invocation, and each invocation is a separate piece of work with its own prompt and result.
+- **The option is `session`,** with task type `session` as a condition. A session isn't one decision, and a fixed label keeps consolidation and predictor stats for sessions apart from decisions'.
+- **No test run means no episode.** Without tests there's no ground truth, and track B's outcome judge fills that gap. The skip is recorded so it isn't retried; track B can re-derive from the log.
+- **Written only at lean's `SessionEnd`, never at session start.** Loading the embedder takes about 0.7 s, which is fine at exit but not before the agent's first turn. Missed segments are caught up at the next end.
+- **Not under observe, full or hosted.** Observe stays a pure recorder, and its episodes can be derived later with `episodes-from-log`. Full already writes `record_outcome` episodes. Hosted doesn't forward events.
+- **A new additive table, `session_episodes`, records whether each segment was written or skipped.** The episode schema is unchanged, so no stored data changes.
 
 **v2 Phase 1 track E (session 16)**
 - **observe:** it reuses lean's hook set and matchers, with a handler that returns nothing, so its event log is the same as lean's by construction. It's local only, because hosted installs don't send events yet.
@@ -686,15 +716,16 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 61 | Should Phase 1 start, and with which tracks? | **Owner chose track E first** (session 16); it's built. Tracks A–D next. |
 | 62 | Does F1 really compact a headless session, and what does the stream show? | Needs **one real run** on the owner's subscription (about one short session): `python evals/longhorizon/run.py --scenario compaction --arm observe --out /tmp/lh-f1`. Check that `compactions` is 1 and that the event log has `compaction` plus a `session_start` with source `compact`. Default until then: compactions are counted from any `system` event whose subtype contains "compact". |
 | 63 | Which run seeds `stall`? | Default: a baseline run of `marathon`'s first tickets (normal work on the same codebase), passed as `--seed`. Stall detection itself is Phase 2, so nothing reads the seed yet. |
+| 65 | Should session episodes surface in the next session (lean's session start), or only feed learning until the context composer (track D) decides what to show? | Default: learning only. Nothing is injected, so lean's context and its eval results are unchanged; track D and the eval gate decide. |
+| 66 | Sessions that end without `SessionEnd` (a crash, a killed terminal) never become episodes | Default: accepted for now. An idle-timeout rule (e.g. no event for an hour) can close them once real logs show how often it happens. |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
 **Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
-**v2 (this copy):** the rest of Phase 1 of `PROJECT.md` §0. Track E is built (session 16). The other tracks are independent:
-- A: session episodes into the memrouter from the event log. It's the natural next track, because the `observe` and lean runs now leave the data it needs;
-- B: Jev as outcome judge (needs `TYPESAFE_API_KEY`);
+**v2 (this copy):** the rest of Phase 1 of `PROJECT.md` §0. Tracks E (session 16) and A (session 17) are built. The others are independent:
+- B: Jev as outcome judge (needs `TYPESAFE_API_KEY`). It fills the sessions track A skips for having no tests;
 - C: world model v2 with Jev as the prior;
 - D: the context composer.
 

@@ -405,6 +405,17 @@ def log_events(name: str, payload: dict, events: EventStore, team: str, project:
     return len(new)
 
 
+def write_session_episodes(db, settings: Settings, project: str) -> dict:
+    """Lean memory (v2 Phase 1 track A): every ended session segment of the project becomes an episode,
+    including any an earlier session end missed. Runs after the hook's own work, so it can't change its output."""
+    from horizon.eventlog.episodes import SessionEpisodes, local_memory
+
+    tasks = TaskStore(db)
+    return SessionEpisodes(db).write(settings.team_id, lambda: local_memory(settings, db), project,
+                                     task_for=lambda proj, session: tasks.session_task(settings.team_id, proj,
+                                                                                       session))
+
+
 def pick_handler(name: str, profile: str):
     if profile == "observe":  # log events, say nothing, keep no task state: plain Claude Code plus a recorder
         return lambda payload, backend, project: None
@@ -438,6 +449,12 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                 except Exception as exc:
                     if os.environ.get("HORIZON_DEBUG"):
                         print(f"horizon: event log failed in {name}: {exc!r}", file=sys.stderr)
+                if name == "session-end" and profile == "lean":
+                    try:
+                        write_session_episodes(db, settings, project)
+                    except Exception as exc:
+                        if os.environ.get("HORIZON_DEBUG"):
+                            print(f"horizon: session episodes failed: {exc!r}", file=sys.stderr)
             finally:
                 db.close()
         return json.dumps(result) if result else ""

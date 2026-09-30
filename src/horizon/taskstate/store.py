@@ -134,6 +134,13 @@ class TaskStore:
                                 " ORDER BY updated_at DESC LIMIT %s", (team_id, cwd, limit))
         return [TaskState.model_validate(load_json(r[0])) for r in rows]
 
+    def session_task(self, team_id: str, cwd: str, session_id: str) -> str | None:
+        """The task a session worked on (lean: the one its first message started), if any."""
+        rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s AND cwd = %s ORDER BY created_at DESC"
+                                " LIMIT 50", (team_id, cwd))
+        return next((t["id"] for t in map(lambda r: load_json(r[0]), rows) if t.get("session_id") == session_id),
+                    None)
+
     def team_rules(self, team_id: str) -> list[str]:
         """The team's rules for every project: those of its latest task that set any."""
         # ponytail: scans the latest 50 tasks' JSON; a team_rules table if teams outgrow that window.

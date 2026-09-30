@@ -36,6 +36,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("consolidate", help="Run the memrouter sleep job now (e.g. nightly from cron).")
 
+    p = sub.add_parser("episodes-from-log", help="Write an episode for every ended session in the event log that "
+                                                 "has none yet (lean writes them at each session end).")
+    p.add_argument("--project", help="Only this project directory (default: every project).")
+
     p = sub.add_parser("clear-fear", help="Clear a fear lesson. Human only: it records who cleared it.")
     p.add_argument("lesson_id")
     p.add_argument("--by", required=True, help="Your name, recorded on the lesson.")
@@ -149,6 +153,21 @@ def main(argv: list[str] | None = None) -> int:
         settings = Settings.from_env()
         print(json.dumps(build_memrouter(settings).purge(settings.team_id, args.episode_id, args.reason, args.by),
                          indent=2))
+    elif args.cmd == "episodes-from-log":
+        import os
+
+        from horizon.db import connect
+        from horizon.eventlog.episodes import SessionEpisodes, local_memory
+        from horizon.taskstate.store import TaskStore
+
+        settings = Settings.from_env()
+        db = connect(settings.db_url)
+        tasks = TaskStore(db)
+        project = os.path.realpath(args.project) if args.project else None
+        report = SessionEpisodes(db).write(settings.team_id, lambda: local_memory(settings, db), project,
+                                           task_for=lambda proj, s: tasks.session_task(settings.team_id, proj, s))
+        print(json.dumps({"written": len(report["written"]), "skipped": report["skipped"],
+                          "failed": report["failed"]}))
     elif args.cmd in ("consolidate", "clear-fear"):
         from horizon.server import build_memrouter
 

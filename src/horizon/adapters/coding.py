@@ -227,7 +227,9 @@ class CodingAdapter:
         success = tests["passed"] / tests["total"] if tests and tests["total"] else None
         if runs:
             metrics["first_try"] = float(state["failed_test_runs"] == 0)
-        facts = {"failing": tests["failing"]} if tests and tests.get("failing") else {}
+        facts: dict[str, Any] = {"failing": tests["failing"]} if tests and tests.get("failing") else {}
+        if tests:  # the last run's counts: the episode's test results
+            facts["tests"] = {k: tests[k] for k in ("passed", "failed", "total")}
         return Outcome(success=success, metrics=metrics, facts=facts)
 
     def situation(self, events: list[Event]) -> str | None:

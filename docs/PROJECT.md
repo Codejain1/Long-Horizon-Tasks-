@@ -52,7 +52,7 @@ Benchmark after every phase with `docs/EVALS.md`; cut anything that doesn't move
 
 0. **Foundation (built):** the event schema and store, the adapter interface, the coding adapter (hook payloads to events, coding state, risk rules, session outcome), replay into transitions, each turn's real token usage, the hooks logging every session, and the evaluation specs.
 1. **Parallel tracks:**
-   - A. Session episodes written into the memrouter from the event log;
+   - A. Session episodes written into the memrouter from the event log (**built**: lean's `SessionEnd` hook and `horizon episodes-from-log`; `MEMROUTER.md` v2 note);
    - B. Jev as outcome judge, and more classifier questions;
    - C. world model v2 (Jev as the prior);
    - D. the context composer;

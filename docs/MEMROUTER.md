@@ -6,6 +6,12 @@
 >
 > **v2 (`PROJECT.md` §0):** the memrouter becomes Horizon's core. What changes is where its data comes from, not how it learns. Everything below stays valid, with two changes planned for Phase 1:
 > - **Episodes are written from the event log** (`src/horizon/eventlog/`, built in Phase 0): one per session, from the hooks' ground truth (test runs, edits, token usage), with no `record_outcome` call. The coding adapter already derives each session's outcome and situation from its events.
+>   **As built (Phase 1, track A, `eventlog/episodes.py`):**
+>   - One episode per session **segment**: a segment ends at `session_end`, so a resumed session has one per invocation.
+>   - The fields: situation = the segment's first prompt; chosen = `session`; actual = the last test run's pass rate and counts, the turns' tokens and the duration; conditions `task_type = session` and `host`; scope = the project and the lean task.
+>   - Segments without a prompt or a test run are skipped, and the reason is kept (outcomes without tests are track B's).
+>   - The lean `SessionEnd` hook writes every pending segment of the project. `horizon episodes-from-log` backfills any log, such as an eval's observe arm.
+>   - Surprise uses §5's similar-episodes fallback until Phase 2.
 > - **Surprise gets a baseline without the decision layer:** where no scorer predicted success, the world model's forecast is the prediction, replacing §5's similar-episodes fallback.
 >
 > The event log's step-level transitions are also the world model's training data (§13).
