@@ -38,6 +38,19 @@ claude mcp add -s local horizon -- "$(which python)" -m horizon serve
 
 Check the connection with `claude mcp list`. It should show `horizon: … √ Connected`.
 
+## Lean profile: continuity without tool calls
+
+`horizon install-claude-code --profile lean` installs Horizon for **task continuity** only. That is the part the long-horizon evals show paying off (`evals/longhorizon/RESULTS.md`). The agent makes **no Horizon calls**; the hooks do the work:
+
+| Hook | Lean behaviour |
+|---|---|
+| `UserPromptSubmit` (lean only) | The session's first message becomes its task: the goal, with code removed. Later messages become progress notes. Sentences that set lasting rules become **team rules** ("for every project/service", "future projects", "team rules") or **constraints** for this project ("from now on", "always", "never"). This is a keyword heuristic. |
+| `SessionStart` | Marks the previous session's task done. A resumed or compacted session keeps its own. Then it shows the team's rules and the recent tasks' goals and constraints. |
+| `PostToolUse` | Still captures test counts, but doesn't ask for `record_outcome`. |
+| `Stop` | Never blocks. |
+
+`evaluate_options`, `show_memories` and `explain_decision` stay available when the agent or user wants them. Lean is local-only for now: the installer refuses `--profile lean --hosted`, because a hosted server's profile is server-wide. Re-running `install-claude-code` without `--profile` switches back to the full workflow.
+
 ## Configuration
 
 Everything is set through environment variables (see `src/horizon/config.py`):
