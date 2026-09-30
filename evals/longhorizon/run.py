@@ -13,6 +13,11 @@ world-model data), `lean` (the default install) and `horizon` (the full workflow
 records which checks failed in the agent's own test runs, repeat failures (a check failing again after an earlier
 session saw it fail), regressions (a hidden test that passed after the previous session and doesn't now) and, for
 arms with Horizon installed, the session's events and the context Horizon injected (`docs/EVALS.md`).
+
+A session given as a list of prompts is one Claude Code session over several invocations, each resuming the last
+(`compaction` sends "/compact" between them). Scenarios with `blocked_reasons` record whether each session stopped
+with a `BLOCKED.md` note and whether it gave the right reason (`stall`); `--seed RUN_DIR` first replays another
+run's sessions through the installed hooks, so Horizon has a history of normal work.
 """
 
 from __future__ import annotations
@@ -59,8 +64,10 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
         commit = git(repo, "log", "--format=%H", f"--grep=^after session {first - 1}$").split()[0]
         git(repo, "checkout", "-q", "-B", "main", commit)
     else:
+        if scenario.get("start_from"):  # another scenario's codebase, with this scenario's files laid over it
+            shutil.copytree(HERE / "scenarios" / scenario["start_from"] / "start", repo)
         if start_dir and start_dir.is_dir():  # a scenario that starts from an existing codebase
-            shutil.copytree(start_dir, repo)
+            shutil.copytree(start_dir, repo, dirs_exist_ok=True)
         repo.mkdir(parents=True, exist_ok=True)
         for name, text in scenario.get("start_files", {}).items():
             (repo / name).write_text(text)
@@ -175,6 +182,48 @@ def aborted(result: dict) -> str | None:
     return "usage limit" if any(t in str(result.get("result") or "").lower() for t in LIMIT_TEXT) else None
 
 
+def seed_history(source: Path, repo: Path, env: dict, python: str, profile: str) -> int:
+    """Replay another run's sessions through this arm's installed hooks, as Claude Code would have fired them
+    (start, prompt, every tool call with its result, stop, end), so Horizon's event log starts with a history of
+    normal work to forecast from. Returns the number of hook calls."""
+    meta = json.loads((source / "results.json").read_text())
+    prompts = json.loads((HERE / "scenarios" / meta["scenario"] / "scenario.json").read_text())["sessions"]
+    calls = 0
+
+    def fire(name: str, session: str, **payload) -> None:
+        nonlocal calls
+        body = {"session_id": session, "cwd": str(repo), **payload}
+        subprocess.run([python, "-m", "horizon", "hook", name, "--profile", profile], input=json.dumps(body),
+                       text=True, env=env, check=True, capture_output=True)
+        calls += 1
+
+    for row in meta["sessions"]:
+        i, session = row["session"], f"seed-{meta['scenario']}-{row['session']}"
+        events = read_log(source / f"session{i}.jsonl")
+        prompt = prompts[i - 1] if isinstance(prompts[i - 1], str) else prompts[i - 1][0]
+        uses = {b["id"]: b for b in blocks(events) if b.get("type") == "tool_use"}
+        fire("session-start", session, source="startup")
+        fire("user-prompt", session, prompt=prompt)
+        for b in blocks(events):
+            if b.get("type") == "tool_result" and b.get("tool_use_id") in uses:
+                use = uses[b["tool_use_id"]]
+                fire("post-tool-use", session, tool_name=use.get("name", ""), tool_input=use.get("input") or {},
+                     tool_response={"stdout": text(b.get("content")), "stderr": ""})
+        fire("stop", session, stop_hook_active=False)
+        fire("session-end", session, reason="other")
+    return calls
+
+
+def blocked_note(repo: Path, reason: str | None) -> dict:
+    """Whether the session stopped with a note (`BLOCKED.md` written in it) and, on a ticket that can't be done,
+    whether the note gives the right reason (the scenario's pattern)."""
+    written = "BLOCKED.md" in git(repo, "diff", "--name-only", "HEAD~1", "HEAD").split() \
+        and (repo / "BLOCKED.md").exists()
+    note = (repo / "BLOCKED.md").read_text()[:2000] if written else ""
+    return {"written": written, "right_reason": bool(written and re.search(reason, note, re.I)) if reason else None,
+            "note": note[:300]}
+
+
 def run_session(prompts: str | list[str], repo: Path, *, claude: str, model: str, arm: str, env: dict,
                 log: Path) -> dict:
     """One Claude Code session. A list of prompts is one session driven by several invocations: each after the
@@ -287,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
                                                         "after session --from-session minus 1; Horizon arms are seeded "
                                                         "with that run's test history.")
     ap.add_argument("--from-session", type=int, default=1)
+    ap.add_argument("--seed", metavar="RUN_DIR", help="Before session 1, replay that run's sessions through the "
+                                                      "installed hooks (arms with Horizon), e.g. for `stall`.")
     args = ap.parse_args(argv)
 
     scenario_dir = HERE / "scenarios" / args.scenario
@@ -304,6 +355,9 @@ def main(argv: list[str] | None = None) -> int:
     if resume and args.arm in MCP_ARMS:
         seeded = seed_test_runs(resume[0], range(1, args.from_session), repo, env, python)
         print(f"[{args.scenario}/{args.arm}] seeded {seeded} test runs from {resume[0]}", flush=True)
+    if args.seed and args.arm in PROFILES and not repos:
+        calls = seed_history(Path(args.seed), repo, env, python, PROFILES[args.arm])
+        print(f"[{args.scenario}/{args.arm}] replayed {calls} hook calls from {args.seed}", flush=True)
     # Checks that already failed before this run's first session: every arm of a replay starts with the same history.
     seen = {c for i in range(1, args.from_session) if resume
             for c in failing_checks(read_log(resume[0] / f"session{i}.jsonl"))}
@@ -324,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
         git(repo, "commit", "-qm", f"after session {i}", "--allow-empty")
         row["hidden"] = hidden_tests(scenario_dir, range(i, i + 1) if repos else range(1, i + 1), repo, python)
         row["violations"] = constraints(scenario, repo, python, package)
+        if "blocked_reasons" in scenario:
+            row["blocked"] = blocked_note(repo, scenario["blocked_reasons"].get(str(i)))
         row["repeat_failures"] = sorted(seen & set(row["failed_checks"]))
         seen |= set(row["failed_checks"])
         passed = set(row["hidden"]["passed"])

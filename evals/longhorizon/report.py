@@ -33,6 +33,8 @@ def summary(run: dict) -> dict:
         "regressions": sum(len(r.get("regressions", [])) for r in s),
         "injected_chars": sum((r.get("horizon") or {}).get("injected_chars", 0) for r in s),
         "compactions": sum(r.get("compactions", 0) for r in s),
+        "blocked_notes": sum(bool((r.get("blocked") or {}).get("written")) for r in s),
+        "blocked_right_reason": sum((r.get("blocked") or {}).get("right_reason") is True for r in s),
     }
 
 
