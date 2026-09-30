@@ -227,3 +227,15 @@ def test_hosted_teams_with_the_same_project_path_stay_isolated(settings):
     # A client naming another team's scope gets it re-scoped under its own team.
     assert store.take_checkpoint(hosted_scope(b, "prj_same"), datetime(2000, 1, 1, tzinfo=UTC), "t") is None
     assert store.take_checkpoint(f"{a}/{b}/prj_same", datetime(2000, 1, 1, tzinfo=UTC), "t") is not None
+
+
+def test_failing_test_runs_are_captured_from_post_tool_use_failure(platform, settings, task_store, project_dir):
+    """A test run that exits non-zero fires PostToolUseFailure, with the output in `error` (payload seen live)."""
+    platform.start_task("x")
+    payload = {"session_id": "s1", "cwd": project_dir, "hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+               "tool_input": {"command": "./ci.sh"}, "is_interrupt": False,
+               "error": "Exit code 1\nF..\nFAILED tests/test_x.py::test_y - AssertionError\n1 failed, 2 passed in 0.10s"}
+    out = hook("post-tool-use", payload, settings)
+    assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUseFailure"
+    [cap] = task_store.pending_captures(project_dir)
+    assert (cap.passed, cap.failed, cap.failing) == (2, 1, ["tests/test_x.py::test_y"])

@@ -237,7 +237,8 @@ def parsed_capture(payload: dict) -> dict | None:
     command = (payload.get("tool_input") or {}).get("command", "")
     if not may_run_tests(command):
         return None
-    counts = parse_test_output(_tool_output(payload.get("tool_response")))
+    # PostToolUseFailure (non-zero exit) carries the output in `error`, with no tool_response.
+    counts = parse_test_output(_tool_output(payload.get("tool_response")) or str(payload.get("error") or ""))
     if counts is None:
         return None
     return {"command": command_summary(command), "runner": counts.runner, "passed": counts.passed,
@@ -341,7 +342,10 @@ def session_start(payload: dict, backend, project: str) -> dict | None:
 
 def post_tool_use(payload: dict, backend, project: str) -> dict | None:
     cap = parsed_capture(payload)
-    return backend.capture(project, payload.get("session_id"), cap) if cap else None
+    out = backend.capture(project, payload.get("session_id"), cap) if cap else None
+    if out and payload.get("hook_event_name") == "PostToolUseFailure":  # the reply must name the event it answers
+        out["hookSpecificOutput"]["hookEventName"] = "PostToolUseFailure"
+    return out
 
 
 def pre_tool_use(payload: dict, backend, project: str) -> dict | None:

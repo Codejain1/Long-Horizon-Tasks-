@@ -99,3 +99,14 @@ Both arms start from the no-Horizon run's repo after ticket 3. Lean's memory is 
 **The first result where Horizon is both better and cheaper.** Warned up front, each session updated the changelog as it went, so no CI run failed. Without the warning, fresh sessions kept rediscovering the policy by breaking it: 3 of 5 here, matching the original run's 3 of 5 for tickets 4–8. They paid for the extra test runs and fixes. One run each, from seeded history, so this is a strong signal, not proof.
 
 **Replay 2** (same setup): no Horizon broke the changelog policy in 2 of 5 sessions (tickets 6 and 7), and lean in **0 of 5**, with the warning shown every time. Cost: $0.82 against **$0.67 (−18 %)**, turns 79 against 63. Hidden tests 13/13 for both. A third replay was cut short by the usage limit after ticket 4; it's being re-run.
+
+**Replay 3:** no Horizon broke the policy in 2 of 5 sessions, and lean in **0 of 5** (warning shown every time). Cost $0.76 against $0.77. **Across 3 replays: 7 of 15 sessions against 0 of 15, at 12 % lower cost overall ($2.48 against $2.19).**
+
+## Live backlog 2: the whole backlog from scratch, no seeding (2026-09-30)
+
+| | Sessions breaking the changelog policy | Warning shown | Cost |
+|---|---|---|---|
+| no Horizon | 4 of 8 (tickets 3, 6, 7, 8) | – | $1.14 |
+| lean | 3 of 8 (tickets 1, 3, 4) | **never** | $1.32 |
+
+**The warning never fired, which exposed the most important bug this eval found.** When a Bash command exits non-zero, Claude Code fires `PostToolUseFailure`, not `PostToolUse`, with the output in `error`. Horizon listened only to `PostToolUse`, so it **saw every passing test run and no failing one**. That was true in every profile, including the full workflow's own regression judging whenever the agent didn't report counts itself. A live probe confirmed the payload. Horizon now installs its capture hook on both events and reads `error`. The live run is being repeated with the fix.

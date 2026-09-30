@@ -18,7 +18,7 @@ def test_install_lean_writes_the_lean_snippet_env_and_hooks(tmp_path):
     assert all(g["hooks"][0]["command"].endswith("--profile lean") for groups in hooks.values() for g in groups)
     install(tmp_path, command=["py", "-m", "horizon"], profile="full")  # back to full: replaces, doesn't duplicate
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
-    assert "UserPromptSubmit" not in hooks and [len(groups) for groups in hooks.values()] == [1, 1, 1, 1]
+    assert "UserPromptSubmit" not in hooks and [len(groups) for groups in hooks.values()] == [1, 1, 1, 1, 1]
     assert "--profile" not in json.dumps(hooks) and "env" not in (tmp_path / ".mcp.json").read_text()
 
 
@@ -30,7 +30,7 @@ def test_install_hosted_lean_is_hooks_only(tmp_path):
     assert "horizon" not in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
     commands = [g["hooks"][0]["command"] for groups in hooks.values() for g in groups]
-    assert len(commands) == 5 and all("--remote https://h.example --profile lean" in c for c in commands)
+    assert len(commands) == 6 and all("--remote https://h.example --profile lean" in c for c in commands)
 
 
 def lean(name, payload, settings):

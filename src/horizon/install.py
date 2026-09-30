@@ -23,6 +23,9 @@ HOOK_EVENTS = {
     "SessionStart": (None, "session-start"),
     "PreToolUse": ("mcp__horizon__recall_context|mcp__horizon__record_outcome", "pre-tool-use"),
     "PostToolUse": ("Bash", "post-tool-use"),
+    # A command that exits non-zero (a failing test run) fires this instead of PostToolUse: without it, Horizon
+    # only ever saw passing runs (found live: no pitfall could ever be learned).
+    "PostToolUseFailure": ("Bash", "post-tool-use"),
     "Stop": (None, "stop"),
     "UserPromptSubmit": (None, "user-prompt"),  # lean only: Horizon captures the task from the prompt
 }
