@@ -73,7 +73,7 @@ def test_no_history_never_loads_memory(on, project_dir, log):
 
 
 def test_only_the_first_prompt_of_a_task_gets_it(on, project_dir):
-    work(on, project_dir, "s1", REFUNDS, runs=[(4, 0)])
+    work(on, project_dir, "s1", REFUNDS, runs=[(3, 1), (4, 0)])
     s = Session(on, project_dir, "s2")
     s.hook("session-start", source="startup")
     assert HEADER in s.hook("user-prompt", prompt=REFUNDS)
@@ -92,10 +92,18 @@ def test_it_stays_within_its_budget_however_much_memory_holds(on, project_dir):
 
 def test_sessions_that_went_the_same_way_are_one_line(on, project_dir):
     for i in range(3):
-        work(on, project_dir, f"s{i}", REFUNDS, runs=[(4, 0)])
+        work(on, project_dir, f"s{i}", REFUNDS, runs=[(3, 1), (4, 0)])
     brief = work(on, project_dir, "new", REFUNDS).split("\n\n", 1)[1]
-    assert brief.splitlines()[1:] == [(f'- "{REFUNDS}": ended with 4/4 tests passing on the first test run; changed '
-                                       "shop/orders.py. (3 sessions went this way)")]
+    assert brief.splitlines()[1:] == [(f'- "{REFUNDS}": ended with 4/4 tests passing after 2 test runs (1 failing); '
+                                       "changed shop/orders.py; failed along the way: tests/test_o.py::test_refund. "
+                                       "(3 sessions went this way)")]
+
+
+def test_clean_successes_say_nothing(on, project_dir):
+    """Nothing tripped them up, so there's no trial and error to save; their file lists would only add reading."""
+    for i in range(2):
+        work(on, project_dir, f"s{i}", REFUNDS, runs=[(4, 0)])
+    assert HEADER not in work(on, project_dir, "new", REFUNDS)
 
 
 def test_memory_failing_never_stops_the_task_starting(on, project_dir, monkeypatch):
@@ -109,7 +117,7 @@ def test_memory_failing_never_stops_the_task_starting(on, project_dir, monkeypat
 
 def test_no_code_reaches_the_briefing(on, project_dir):
     code = "```python\ndef leak_marker_fn(order):\n    return order.total * 0.9\n```"
-    work(on, project_dir, "s1", f"{REFUNDS}\n{code}", runs=[(4, 0)])
+    work(on, project_dir, "s1", f"{REFUNDS}\n{code}", runs=[(3, 1), (4, 0)])
     said = work(on, project_dir, "s2", REFUNDS)
     assert HEADER in said and "leak_marker_fn" not in said
 
@@ -117,7 +125,7 @@ def test_no_code_reaches_the_briefing(on, project_dir):
 def test_a_shared_preamble_is_cut_so_each_task_says_what_it_was(on, project_dir):
     """Eval and team prompts often open with the same standing instructions; the label shows the difference."""
     preamble = "You are working through the backlog on your own, so make reasonable choices. "
-    work(on, project_dir, "s1", preamble + "Ticket #1: add partial refunds to orders.", runs=[(4, 0)])
+    work(on, project_dir, "s1", preamble + "Ticket #1: add partial refunds to orders.", runs=[(3, 1), (4, 0)])
     brief = work(on, project_dir, "s2", preamble + "Ticket #2: add refunds to the CSV export.")
     assert '- "…#1: add partial refunds to orders.": ended' in brief  # cut at the first word that differs
     assert briefing.distinct("Short task.", "Short task, again.") == "Short task."  # nothing long shared

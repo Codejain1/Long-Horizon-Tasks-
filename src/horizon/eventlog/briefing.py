@@ -1,7 +1,9 @@
 """What similar past sessions taught (v2 Phase 1, `session_memory`): context for a lean task's first prompt.
 
-The point is less trial and error: an agent that knows where a similar change landed, which tests tripped it up
-and how the last attempt ended can go straight there instead of trying one thing, then another. Everything comes
+The point is less trial and error: an agent that knows which tests tripped up a similar change, where it landed
+and how the last attempt ended can check those first instead of trying one thing, then another. So only past
+sessions that hit trouble (a failing test run on the way, or failures left at the end) are shown; a clean
+success's file list only adds reading. Everything comes
 from observations: memory recalls the similar session episodes (and its lessons and fears), and each episode's
 event-log segment says what happened in it. Paths are project-relative, test ids are ids; never code or output.
 """
@@ -103,8 +105,9 @@ def past_sessions(log: SessionEpisodes, team_id: str, project: str, text: str, m
             lessons.append(f"- {m.outcome}")
         elif m.kind == "episode" and m.chosen == CHOSEN:
             seg = log.segment_of(team_id, m.episode_id)
-            if seg and seg.session_id != session:
-                line = describe(distinct(m.situation, text), trace(log.segment_events(team_id, seg)))
+            t = trace(log.segment_events(team_id, seg)) if seg and seg.session_id != session else None
+            if t and (t.failed_runs or t.still_failing):  # a clean success has no trial and error to save
+                line = describe(distinct(m.situation, text), t)
                 if line in sessions or len(sessions) < MAX_SESSIONS:
                     sessions[line] = sessions.get(line, 0) + 1
     if not (sessions or lessons or fears):

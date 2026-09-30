@@ -283,11 +283,13 @@ def test_the_observe_arm_records_events_silently_and_lean_injection_is_measured(
 
 
 def test_the_candidate_arm_is_lean_with_session_memory_on(tmp_path):
-    """Session 1's test run makes it an episode; in the candidate arm, session 2 starts with what it taught.
+    """Session 1's test runs (one failing first) make it an episode; in the candidate arm, session 2 starts with
+    what it taught.
     Lean (the default) says nothing about it."""
     run = load("run")
-    player = HOOK_PLAYER.replace('fire("Stop"', 'fire("PostToolUse", tool_name="Bash", tool_input={"command": '
-                                 '"pytest -q"}, tool_response={"stdout": "= 3 passed in 0.1s ="})\nfire("Stop"')
+    run_ = 'fire("PostToolUse", tool_name="Bash", tool_input={"command": "pytest -q"}, tool_response={"stdout": %r})\n'
+    player = HOOK_PLAYER.replace('fire("Stop"', run_ % "= 1 failed, 2 passed in 0.1s =" + run_ % "= 3 passed in 0.1s ="
+                                 + 'fire("Stop"')
     for arm in ("lean", "candidate"):
         run.main(["--scenario", "notes", "--arm", arm, "--out", str(tmp_path / "out"), "--claude",
                   scripted(tmp_path, f"player-{arm}", player, "fires the installed hooks"), "--sessions", "2"])

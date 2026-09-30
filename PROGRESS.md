@@ -372,8 +372,16 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - no catch-up at session start;
     - no relevance floor;
     - the note on every prompt.
-  - **Tests:** 612 pass on SQLite and Postgres (561 before, plus 51):
-    - `test_session_briefing.py`: 11;
+  - **First real run (owner-approved, question 67):** marathon tickets 1–8, `lean` against `candidate`. `candidate` hit the usage limit in ticket 7, so tickets 1–6 were compared.
+    - Quality was equal, but `candidate` cost more: +29 % turns, +44 % tokens, +33 % cost.
+    - Every earlier ticket had passed cleanly, so the note held nothing to avoid, only file lists.
+    - Changes made as a result:
+      - the note shows only past sessions that hit trouble;
+      - a past task's label drops the preamble it shares with the new goal (every marathon prompt opens the same way).
+    - `HORIZON_SESSION_MEMORY` stays off.
+  - **Also fixed:** a clock-dependent track E test. From 18:30 to midnight UTC, the "India's days" compaction shortcut is also (rightly) caught by the "today is the UTC date" check. The test now expects that during those hours.
+  - **Tests:** 616 pass on SQLite and Postgres (561 before, plus 55):
+    - `test_session_briefing.py`: 13;
     - `test_outcome_judge.py`: 10;
     - `test_session_episodes.py`: 4 more;
     - `test_longhorizon.py`: 1 more.
@@ -391,6 +399,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Q65: surface past sessions, but behind a setting, and measure it.** The owner wants good context to cut trial and error. Principle 5 (nothing on by default until it beats the gate) is in `PROJECT.md`, so turning it on by default would contradict the docs. Instead it's built fully, and the evals' `candidate` arm runs it against `lean`.
 - **The note shows facts from the log, not advice.** It gives how a similar session ended, the files it changed (where to look), the tests that tripped it (what to check first) and what was still failing (what not to repeat). These are what save the "try this, then that" loop. Wording is "what happened then; check it still holds", so stale history doesn't read as an instruction.
 - **Shown at a task's first message, not at session start.** The goal is only known then; session start has nothing to match on.
+- **Only past sessions that hit trouble are shown (after the first real run).** A clean success holds nothing to avoid, and its file list cost reading (+29 % turns in marathon tickets 1–6).
 - **Relevance floor 0.8 (fastembed), well above recall's 0.2.** Unasked-for context has to be clearly relevant: related tasks score 0.87 or more, unrelated ones about 0.72. Wrong context costs tokens and misleads.
 - **1,200-character cap, at most 3 sessions, identical outcomes merged.** It's about 300 tokens, once per task.
 - **Local only for now.** Hosted memory lives on the server, and hosted doesn't forward events yet (question 60).
@@ -789,12 +798,12 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 63 | Which run seeds `stall`? | Default: a baseline run of `marathon`'s first tickets (normal work on the same codebase), passed as `--seed`. Stall detection itself is Phase 2, so nothing reads the seed yet. |
 | 65 | Should session episodes surface in the next session, or only feed learning until the context composer (track D) decides what to show? | **Owner decided to surface them (session 18).** A new task's first message gets what similar past sessions taught, to cut trial and error. It's built behind `HORIZON_SESSION_MEMORY` and turned on in the evals' `candidate` arm. It becomes the default once `candidate` beats `lean` on `marathon` (principle 5), or earlier if the owner overrides principle 5 for it (question 67). |
 | 66 | Sessions that end without `SessionEnd` (a crash, a killed terminal) never become episodes | **Resolved (session 18):** closed after 2 hours idle (`HORIZON_SESSION_IDLE_MINUTES`), at the next session start or end. |
-| 67 | Turn `HORIZON_SESSION_MEMORY` on by default before a real `candidate` run? | Default: no; off until `candidate` beats `lean` in a real run (principle 5). Running it needs the owner's subscription. A short check: `marathon` tickets 1–8, `lean` and `candidate`, one repeat each. |
+| 67 | Turn `HORIZON_SESSION_MEMORY` on by default? | **Owner approved a short real run (session 18).** Marathon tickets 1–6, one run each: same quality (17/17, 0 violations), but `candidate` cost more (+29 % turns, +44 % tokens, +33 % cost; `evals/longhorizon/RESULTS.md`). Earlier tickets had all passed cleanly, so the note held only file lists. **It stays off.** The note now shows only sessions that hit trouble. Next check: a later stretch of marathon, where the CI policies trip tickets (e.g. `--resume` from a lean run at ticket 9, tickets 9–16, 2 repeats), once the usage limit allows. |
 | 68 | The TypeSafe key was pasted in chat | It's used only as an environment variable and not stored anywhere in the repo. The owner should **rotate it** when convenient. |
 | 69 | Jev judged "No, refunds over the order total must be rejected." as a correction at only 0.26 | Default: that's fine. A new requirement isn't quite a correction, and the correction answers only block contradicted verdicts; they don't set the score. Revisit with real judged sessions. |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
-**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 67 (a real `candidate` against `lean` run), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
+**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 67 (a second `candidate` run on a later marathon stretch), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
@@ -802,7 +811,7 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 - C: world model v2 with Jev as the prior;
 - D: the context composer. It should absorb the past-sessions note as one of its sources, alongside session start, each prompt, after compaction and before risky actions.
 
-**Owner, when convenient:** a short real `candidate` against `lean` run to decide Q67; rotate the TypeSafe key (question 68).
+**Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, a `candidate` against `lean` run on a later marathon stretch (question 67).
 
 **Owner, when convenient:** one real `compaction` run to verify F1 (question 62). Real marathon runs wait until the Phase 1–2 components exist (`docs/EVALS.md` budget).
 

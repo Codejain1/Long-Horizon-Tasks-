@@ -99,3 +99,18 @@ Both arms start from the no-Horizon run's repo after ticket 3. Lean's memory is 
 **The first result where Horizon is both better and cheaper.** Warned up front, each session updated the changelog as it went, so no CI run failed. Without the warning, fresh sessions kept rediscovering the policy by breaking it: 3 of 5 here, matching the original run's 3 of 5 for tickets 4–8. They paid for the extra test runs and fixes. One run each, from seeded history, so this is a strong signal, not proof.
 
 **Replay 2** (same setup): no Horizon broke the changelog policy in 2 of 5 sessions (tickets 6 and 7), and lean in **0 of 5**, with the warning shown every time. Cost: $0.82 against **$0.67 (−18 %)**, turns 79 against 63. Hidden tests 13/13 for both. A third replay was cut short by the usage limit after ticket 4; it's being re-run.
+
+## Past sessions as context: `candidate` against `lean`, marathon tickets 1–6 (2026-09-30, Sonnet, 1 run each, v2 Q65/Q67)
+
+`candidate` is lean plus `HORIZON_SESSION_MEMORY=on`: a new ticket's first message listed similar past sessions (how each ended, the files it changed, the tests that failed on the way). Both arms ran tickets 1–8. `candidate` hit the subscription's usage limit during ticket 7, so the comparison covers tickets 1–6.
+
+| Tickets 1–6 | Hidden tests | Violations | Turns | Test runs (failing) | Tokens | Cost-equivalent | Injected chars |
+|---|---|---|---|---|---|---|---|
+| lean | 17/17 | 0 | 160 | 14 (1) | 5.05 M | $2.23 | 5,324 |
+| candidate | 17/17 | 0 | 206 (**+29 %**) | 17 (2) | 7.29 M (**+44 %**) | $2.97 (**+33 %**) | 8,788 |
+
+**The note cost more and saved nothing.** Every earlier ticket had passed cleanly (lean had one failing test run in six tickets). So the note held nothing to avoid, only file lists (`CHANGELOG.md`, `README.md`, `backup.py`, …), which plausibly invited extra reading. Ticket 4 took 60 turns against lean's 42.
+
+**Caveat:** one run each. Ticket 1 had no note in either arm, yet already differed by 5 turns, so the noise is large.
+
+**Changed as a result:** the note now shows only past sessions that hit trouble (a failing test run on the way, or failures left at the end), so a clean history adds nothing. `HORIZON_SESSION_MEMORY` stays off (question 67).

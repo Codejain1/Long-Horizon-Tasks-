@@ -124,6 +124,15 @@ SHORTCUTS = {
 }
 
 
+def india_is_on_another_date() -> bool:
+    """From 18:30 to midnight UTC, India's date is already tomorrow's."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(timezone.utc)
+    return now.astimezone(ZoneInfo("Asia/Kolkata")).date() != now.date()
+
+
 @pytest.mark.parametrize("shortcut", SHORTCUTS)
 def test_each_shortcut_is_caught_by_its_own_check(shortcut, tmp_path):
     run = load("run")
@@ -137,6 +146,8 @@ def test_each_shortcut_is_caught_by_its_own_check(shortcut, tmp_path):
         text = text.replace(old, new)
     code.write_text(text)
     scenario = json.loads((SCENARIO / "scenario.json").read_text())
+    if shortcut == "India's days (part 6)" and india_is_on_another_date():
+        failing = failing | {"test_part6_today_is_the_utc_date_whatever_the_machine_zone"}  # rightly, then
     assert set(run.hidden_tests(SCENARIO, range(1, 2), repo, sys.executable)["failed"]) == failing
     assert {v.split(":")[0] for v in run.constraints(scenario, repo, sys.executable, "tab")} == kinds
 

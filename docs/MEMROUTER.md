@@ -13,7 +13,7 @@
 >   - Other segments without a prompt or an outcome are skipped, and the reason is kept. `horizon episodes-from-log --rejudge` reconsiders those skipped for no ground truth.
 >   - The lean `SessionEnd` hook writes every pending segment of the project, and lean's `SessionStart` catches up idle ones (it loads the embedder only if one needs writing). `horizon episodes-from-log` backfills any log, such as an eval's observe arm.
 >   - Surprise uses §5's similar-episodes fallback until Phase 2.
->   - **Read back (`eventlog/briefing.py`, behind `HORIZON_SESSION_MEMORY=on` until the eval gate):** a lean task's first message recalls similar session episodes in the project (similarity ≥ `HORIZON_SESSION_MEMORY_MIN_SIMILARITY`, 0.8), plus lessons and fears. It shows, from each episode's segment, how the session ended, how many test runs failed on the way, the files it changed and the tests that tripped it, in at most 1,200 characters.
+>   - **Read back (`eventlog/briefing.py`, behind `HORIZON_SESSION_MEMORY=on` until the eval gate):** a lean task's first message recalls similar session episodes in the project (similarity ≥ `HORIZON_SESSION_MEMORY_MIN_SIMILARITY`, 0.8), plus lessons and fears. For each session that hit trouble (a failing run on the way, or failures left), it shows from the episode's segment how the session ended, how many test runs failed on the way, the tests that tripped it and the files it changed, in at most 1,200 characters. Clean successes aren't shown.
 > - **Surprise gets a baseline without the decision layer:** where no scorer predicted success, the world model's forecast is the prediction, replacing §5's similar-episodes fallback.
 >
 > The event log's step-level transitions are also the world model's training data (§13).
