@@ -46,15 +46,18 @@ Check the connection with `claude mcp list`. It should show `horizon: … √ Co
 |---|---|
 | `UserPromptSubmit` (lean only) | The session's first message becomes its task: the goal, with code removed. Later messages become progress notes. Sentences that set lasting rules become **team rules** or **constraints** for this project. With a scorer (`HORIZON_SCORER=jev`), Jev answers two yes/no questions per sentence in one request (about 1 s). Without one, or if it fails, keywords are used ("for every project", "from now on", "never"). On `evals/rules/labelled.json`, Jev scored 97 % and keywords 62 %. |
 | `SessionStart` | Marks the previous session's task done. A resumed or compacted session keeps its own. Then it shows the team's rules and the recent tasks' goals and constraints. |
-| `PostToolUse` | Still captures test counts, but doesn't ask for `record_outcome`. |
-| `Stop` | Never blocks. |
+| `PostToolUse` (matcher `Bash\|Edit\|Write\|MultiEdit\|NotebookEdit`) | Still captures test counts, but doesn't ask for `record_outcome`. Logs each command and file edit to the event log (below). |
+| `Stop` | Never blocks. Logs the turn's real token usage, summed from the transcript (counts only). |
+| `PreCompact`, `SessionEnd` (lean, local only) | Log that the context is about to be compacted, and how the session ended. |
+
+**The event log** (v2 Phase 0, local installs). Every hook call also appends what it observed to the `events` table: session starts (and whether it's a resume or a compaction), your messages (code removed), each command and file edit with its result, test counts and failing test ids, each turn's token usage, compactions and session ends. It stores a project-relative path or a command's first line with quoted strings elided, never file contents, diffs or output. Risky actions (migrations, destructive commands, dependency and CI changes, publishing) are flagged. Horizon's later layers (memory, the world model) learn from these records; for now nothing reads them back into the session. Logging runs after the hook's own work and apart from it, so it can't change what a hook says or break it. Hosted installs don't send events yet.
 
 In lean, the server leaves out `start_task`, `recall_context` and `record_outcome`: the hooks capture the task, and those tools' "call this every time" descriptions only drew extra calls. It keeps `evaluate_options` (the prompt hook gives the task id), `submit_consequences`, `show_memories`, `explain_decision`, `delete_memory` and `clear_fear`. **Hosted lean** (`install-claude-code --hosted URL --profile lean`) is hooks only:
 - The hooks send the prompt to the team's server, with code removed on your machine first.
 - **Team rules are shared by everyone using the team's API keys,** across machines and projects.
 - It writes no MCP entry, and removes an earlier one. The hosted MCP endpoint serves the full tool list, whose descriptions draw extra calls, so hosted lean has no optional tools yet.
 
-Re-running `install-claude-code` without `--profile` switches back to the full workflow.
+Lean is the default. Re-running `install-claude-code --profile full` switches to the full workflow, and back again without `--profile`.
 
 ## Configuration
 

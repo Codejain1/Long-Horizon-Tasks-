@@ -22,16 +22,18 @@ import json
 import os
 import re
 import sys
-from typing import Any
 
+from horizon.adapters.coding import command_summary, events_from_hook
+from horizon.adapters.coding import tool_output as _tool_output
 from horizon.config import Settings
 from horizon.db import connect
 from horizon.decision.scorers import make_scorer
+from horizon.eventlog.store import EventStore
 from horizon.models import Checkpoint, ProgressEntry, TaskState, TestCapture
 from horizon.redact import CODE_REMOVED, MAX_NOTE, redact
 from horizon.taskstate.checkpoints import capture, restore_steps, same_tree
 from horizon.taskstate.store import TaskStore
-from horizon.taskstate.usage import attempt_usage
+from horizon.taskstate.usage import attempt_usage, turn_usage
 from horizon.testparse import may_run_tests, parse_test_output
 
 WORKFLOW = (
@@ -51,22 +53,6 @@ LEAN_WORKFLOW = (
 
 def project_dir(payload: dict) -> str:
     return os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
-
-
-def _tool_output(response: Any) -> str:
-    if isinstance(response, str):
-        return response
-    if isinstance(response, dict):
-        parts = [response.get(k) for k in ("stdout", "stderr", "output", "content")]
-        return "\n".join(p for p in parts if isinstance(p, str))
-    return ""
-
-
-def command_summary(command: str) -> str:
-    """What's stored about a test command: its first line with quoted strings elided. Inline code lives in
-    quotes (`python -c "..."`) or heredocs (later lines), and no raw code is stored (PROJECT.md §12)."""
-    first = (command or "").strip().splitlines()[0] if (command or "").strip() else ""
-    return redact(re.sub(r"(['\"]).*?(\1|$)", '"…"', first), 200)
 
 
 # --- the shared core: task matching and storage, run locally or by the hosted server ------------------
@@ -382,7 +368,10 @@ def stop(payload: dict, backend, project: str) -> dict | None:
 
 
 HANDLERS = {"session-start": session_start, "pre-tool-use": pre_tool_use, "post-tool-use": post_tool_use,
-            "stop": stop, "user-prompt": lambda payload, backend, project: None}
+            "stop": stop, "user-prompt": lambda payload, backend, project: None,
+            # Observed for the event log only (v2 Phase 0); nothing to say to the host yet.
+            "pre-compact": lambda payload, backend, project: None,
+            "session-end": lambda payload, backend, project: None}
 LEAN_HANDLERS = {
     "session-start": lambda p, b, project: b.lean_session_start(project, p.get("session_id")),
     "user-prompt": lambda p, b, project: b.user_prompt(project, p.get("session_id"), str(p.get("prompt") or "")),
@@ -392,12 +381,24 @@ LEAN_HANDLERS = {
 }
 
 
+def log_events(name: str, payload: dict, events: EventStore, team: str, project: str) -> int:
+    """Append what this hook call observed to the event log (v2 Phase 0). Returns the number of events."""
+    usage = turn_usage(payload.get("transcript_path")) if name == "stop" else None
+    new = events_from_hook(name, payload, team_id=team, project=project, project_dir=project,
+                           source=os.environ.get("HORIZON_HOST", "claude-code"), usage=usage)
+    for event in new:
+        events.append(event)
+    return len(new)
+
+
 def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: str | None = None,
              profile: str = "full") -> str:
     """Run a hook and return what it should print. Swallows all errors.
 
     Local mode writes to the shared database. With `remote` (the hosted server's URL), it sends parsed facts
     to the server with the key in HORIZON_API_KEY, and the project is identified by its hashed key.
+    Local mode also appends the call's events to the event log, after the handler and apart from it, so
+    logging can neither change what the hook says nor break it. Hosted mode doesn't forward events yet.
     """
     try:
         payload = json.loads(stdin or "{}")
@@ -410,7 +411,13 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
             db = connect(settings.db_url)
             try:
                 scorer = lambda: make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)  # noqa: E731
-                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer), project_dir(payload))
+                project = project_dir(payload)
+                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer), project)
+                try:
+                    log_events(name, payload, EventStore(db), settings.team_id, project)
+                except Exception as exc:
+                    if os.environ.get("HORIZON_DEBUG"):
+                        print(f"horizon: event log failed in {name}: {exc!r}", file=sys.stderr)
             finally:
                 db.close()
         return json.dumps(result) if result else ""

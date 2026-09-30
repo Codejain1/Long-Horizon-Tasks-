@@ -3,6 +3,12 @@
 > **Status: DESIGN.** Companion to `PROJECT.md`, which is the source of truth and wins on any conflict. Memrouter is the shared, outcome-learning memory layer of the long-horizon agent system.
 >
 > **One line:** memory that learns like a brain, engineered like a database.
+>
+> **v2 (`PROJECT.md` §0):** the memrouter becomes Horizon's core. What changes is where its data comes from, not how it learns. Everything below stays valid, with two changes planned for Phase 1:
+> - **Episodes are written from the event log** (`src/horizon/eventlog/`, built in Phase 0): one per session, from the hooks' ground truth (test runs, edits, token usage), with no `record_outcome` call. The coding adapter already derives each session's outcome and situation from its events.
+> - **Surprise gets a baseline without the decision layer:** where no scorer predicted success, the world model's forecast is the prediction, replacing §5's similar-episodes fallback.
+>
+> The event log's step-level transitions are also the world model's training data (§13).
 
 ---
 
@@ -261,7 +267,7 @@ Inspection is served by `show_memories` (with each memory's provenance and weigh
 - **Instead of simulations:** returns past spike results when a similar tie was already tested.
 - **During execution:** routes only relevant, proven context to the working LLM.
 - **After testing:** learns from outcomes and predictor accuracy.
-- **For the world model:** episodes, archived ones included, are the training data. The first learned model (`kernel-v1`, `PROJECT.md` §6) reads them directly. A Dreamer-style latent model can replace it behind the same interface once it beats the stand-ins.
+- **For the world model:** episodes, archived ones included, are the training data. The first learned model (`kernel-v1`, `PROJECT.md` §6) reads them directly. A Dreamer-style latent model can replace it behind the same interface once it beats the stand-ins. It will learn from the event log's step-level transitions (state, action and result, next state), which v2 records from Phase 0 on, rather than from one episode per session.
 
 ## 14. Default parameters (starting points, tune with data)
 

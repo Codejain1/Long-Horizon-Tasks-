@@ -57,3 +57,29 @@ def test_no_code_is_stored_anywhere(settings, task_store, memrouter, project_dir
     # The flow really stored things: code was replaced, not silently dropped, and the rest is there.
     assert dump.count("[code removed]") > 10 and "stdlib csv" in dump and "tests/test_a.py::test_x" in dump
     assert "&& pytest -q" in dump  # the test command, with its quoted inline code elided
+
+
+def test_no_code_reaches_the_event_log(settings, task_store, project_dir, tmp_path):
+    """v2 Phase 0: the lean hooks log every session to the event log. Code goes into each payload field they
+    read (prompt, file contents, diffs, commands, output, compaction instructions, end reason)."""
+    def hook(name, **payload):
+        run_hook(name, json.dumps({"session_id": "s", "cwd": project_dir, **payload}), settings, profile="lean")
+
+    hook("session-start", source=CODE)
+    hook("user-prompt", prompt=f"Add CSV export. {CODE}")
+    hook("post-tool-use", tool_name="Write", tool_input={"file_path": f"{project_dir}/shop.py", "content": CODE},
+         tool_response={"type": "create", "filePath": f"{project_dir}/shop.py", "content": CODE})
+    hook("post-tool-use", tool_name="Edit", tool_input={"file_path": f"{project_dir}/shop.py", "old_string": LINE,
+                                                        "new_string": CODE}, tool_response={"structuredPatch": CODE})
+    hook("post-tool-use", tool_name="Bash", tool_input={"command": f'python -c "{LINE}"'},
+         tool_response={"stdout": LINE, "stderr": CODE})
+    hook("post-tool-use", tool_name="Bash", tool_input={"command": f'python -c "{LINE}" && pytest -q'},
+         tool_response={"stdout": f"FAILED tests/test_a.py::test_x - {LINE}\n==== 1 failed, 2 passed in 0.1s ===="})
+    hook("pre-compact", trigger="auto", custom_instructions=CODE)
+    hook("session-end", reason=CODE)
+
+    dump = all_text(settings.db_url)
+    assert "leak_marker_fn" not in dump and "os.system" not in dump and "rm -rf" not in dump
+    events = [json.loads(r[0]) if isinstance(r[0], str) else r[0]
+              for r in connect(settings.db_url).fetchall("SELECT data FROM events")]
+    assert len(events) == 8 and "shop.py" in dump and "tests/test_a.py::test_x" in dump

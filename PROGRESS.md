@@ -1,6 +1,6 @@
 # Progress
 
-Updated at the end of every session. See `CLAUDE.md` for the working rules and `docs/PROJECT.md` §13 for the build order.
+Updated at the end of every session. See `CLAUDE.md` for the working rules and `docs/PROJECT.md` §0 for the build order (v2; §13 is the v1 order).
 
 ## Completed
 
@@ -231,9 +231,34 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Hosted lean** (`--hosted URL --profile lean`, hooks only): team rules stated by one person reach teammates' sessions on other machines and projects. Tested over real HTTP with two keys on one team, and a second team that never sees them.
   - **Gap found and fixed:** every Horizon session finished its own task, so session 1's constraints never reached later sessions. SessionStart now lists the project's recently completed tasks and their constraints.
 
+- **Session 15 — v2 Phase 0: foundation** (copy `~/Desktop/Long-Horizon-Tasks-v2`, branch `v2/experience-architecture`; the owner asked for v2 work to happen in a copy, leaving the original folder untouched).
+  - **Direction:** `PROJECT.md` §0 now holds the v2 architecture (the experience layer: principles, layers, build order phases 0–5). `MEMROUTER.md` carries a v2 note, and §13 is marked as the v1 record.
+  - **Built:**
+    - `src/horizon/eventlog/`: a generic, versioned `Event` schema (`kind`, `text`, `action`, `result`, `usage`, `data`; nothing coding-specific), and an `EventStore` (new `events` table, SQLite and Postgres) that redacts every field again on append;
+    - `eventlog/transitions.py`: a pure `replay(events, adapter)` giving the state after every event, plus a (before, action, result, after) transition per step, the world model's future training data;
+    - `src/horizon/adapters/`: the `DomainAdapter` interface (state, reduce, risk classification, outcome, situation) and `CodingAdapter`. It turns Claude Code hook payloads into events (test runs with real counts, bash, edits, writes, MCP and other tools; reads are skipped), with rules for risky commands and paths, and each session's outcome from its test runs;
+    - `taskstate/usage.turn_usage`: each turn's real tokens and latency from the transcript (streamed turns counted once, sidechains skipped). `attempt_usage` is unchanged;
+    - lean hooks log every session locally: PostToolUse now also covers edits (lean only), and two new lean-only local hooks, `PreCompact` and `SessionEnd`. Logging can't change a hook's output or break it;
+    - `docs/EVALS.md`: the evaluation gate rules and specs for `marathon`, `compaction` and `stall`, plus the proposed `observe` profile.
+  - **Acceptance criteria**, all met:
+    1. the generic, versioned schema round-trips on both backends;
+    2. the privacy sweep covers the event log (code in every hook field, none stored);
+    3. all six hook types map to events; irrelevant or malformed payloads are safe;
+    4. replay is deterministic and pure, and gives correct state;
+    5. the risk classifier is 100 % on the labelled set;
+    6. the session outcome is derived from events;
+    7. logging doesn't change hook output, and a failing log never breaks a hook;
+    8. the installer adds the new hooks only for local lean (full and hosted are unchanged);
+    9. turn usage dedupes streamed turns and skips sidechains;
+    10. the evaluation specs are written;
+    11. the full suite passes on both backends;
+    12. hook latency stays at 0.21–0.22 s warm, the same as before (0.16 s of it is imports).
+  - **Mutation checks:** injected bugs in the coding state reducer (failed runs not counted), a risk rule (`npm publish` missed) and redaction (store-side `sanitise` disabled) were each caught by a test.
+  - **Tests:** 492 pass on SQLite and Postgres 16 + pgvector (471 before, plus 21 new ones in `tests/test_eventlog.py` and `tests/test_privacy.py`).
+
 ## In progress
 
-- Nothing. Phases 1–8 are built. What remains needs the owner: real benchmark runs, the go-ahead to publish, hosting and pricing.
+- Nothing. v2 Phase 0 is done; Phase 1 waits for the owner's go-ahead (see "Next step").
 
 ## Decisions made
 
@@ -519,6 +544,20 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Attempt usage** = the sum of the transcript's model turns (input, output, cache write and cache read tokens; streamed turns counted once; subagent sidechains excluded) from the last `recall_context` to the `record_outcome` about to run, plus the elapsed time. The host's own values win when given. Cost isn't derived (it needs per-model prices).
 - **Hook matcher** `mcp__horizon__recall_context|mcp__horizon__record_outcome` (a regex). Re-running the installer updates existing projects.
 
+**v2 Phase 0 decisions (session 15, defaults under the decision rule)**
+- **Events are observations, and state is derived.** How to represent state is the open research question, so the log keeps raw, redacted observations. Adapters derive state, and a better representation can be re-derived later from the same history.
+- **The schema has no domain fields.** Coding details live in `action.name`, `result.metrics`, `result.facts` and `data`, so a browser or SDK adapter needs no schema change.
+- **Reads aren't logged.** They change nothing and would multiply the log; they can be added later with a matcher change.
+- **Edits are captured in lean only.** Full keeps its Bash-only PostToolUse matcher because the reliability demo pins full and measures its hook traffic.
+- **Hosted mode doesn't forward events yet**, and `PreCompact`/`SessionEnd` are installed only for local lean. Hosted forwarding needs a server endpoint and a privacy review; `sanitise` is already reusable for it.
+- **Risk is judged on the raw command, before redaction**, and only the flag and category are stored. The stored target is redacted, so a secret in a command never lands in the log.
+- **`git push` counts as risky (publish); `pip install -r`, `-e`, `.` and a bare `npm install` don't** (they install what's already declared). Changing a manifest or lockfile is risky.
+- **A non-test bash command's `ok` is unknown (None)** unless it was interrupted: hooks don't get the exit code, and guessing from output would be a self-report.
+- **`turn_end` is skipped when `stop_hook_active`**, so a Stop hook that continues the turn doesn't count it twice.
+- **The host name comes from `HORIZON_HOST`** (default `claude-code`). Codex's `apply_patch` is recorded as a generic `tool` for now.
+- **Test data is duplicated for now:** `TestCapture` still drives pitfalls, and the event log records the same runs. Pitfalls can later be derived from events, which removes the duplicate.
+- **An event-log failure is swallowed separately** from the hook handler, so the hook's output is identical whether logging works or not.
+
 **My interpretations while editing the docs (please confirm)**
 - **`MEMROUTER.md` §12 tool mapping:**
   - `recall` → `recall_context`; `record` → `record_outcome`.
@@ -577,10 +616,24 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 55 | When to build the Dreamer-style model | Default: once there are a few thousand real episodes with outcomes (after the benchmark runs), trained on the exports, and plugged in through `HORIZON_WORLD_MODEL_CLASS` behind the same gate. |
 
 | 56 | Make `--profile lean` the default install? | **Done, owner-approved (2026-09-30):** lean is the default for Claude Code; `--profile full` keeps the whole workflow. Codex stays full until its `UserPromptSubmit` support is checked. See PROJECT.md §0. |
+| 57 | How to tell Codex sessions from Claude Code in the event log | Default: the `HORIZON_HOST` environment variable (default `claude-code`); Codex's installer can set it once Codex gets the lean profile. |
+| 58 | Should Horizon ship an `observe` profile (log events, inject nothing) to collect baseline data from plain sessions? | Default: build it in Phase 1 track E for the evals only; whether users get it is the owner's call (`docs/EVALS.md`). |
+| 59 | How the `compaction` eval forces a compaction | Default: `/compact` on a resumed headless session (`--resume`), with a long-transcript fallback if that doesn't work headless (`docs/EVALS.md`). |
+| 60 | Forward events in hosted mode? | Default: not yet. It needs a server endpoint and a privacy review; Phase 4's team sharing is the first place it's needed. |
+| 61 | Should Phase 1 start, and with which tracks? | Default: wait for the owner. All five tracks can run in parallel; track E (the harnesses) first if only one, since it gates the rest. |
 
 **Needs the owner** (credentials, money or an irreversible decision): 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
+
+**v2 (this copy):** Phase 1 of `PROJECT.md` §0, after the owner's go-ahead (question 61). Its tracks are independent:
+- A: session episodes into the memrouter from the event log;
+- B: Jev as outcome judge;
+- C: world model v2 with Jev as the prior;
+- D: the context composer;
+- E: the `marathon`, `compaction` and `stall` harnesses, plus the `observe` profile.
+
+**Carried over from v1:**
 
 1. **Owner:** the "Needs the owner" line above. The launch waits on making the repo public, benchmark credits, a hosting provider and pricing (`docs/LAUNCH.md`).
 2. Merge the review-pass PR (it includes Phase 8; PR #9 is superseded).

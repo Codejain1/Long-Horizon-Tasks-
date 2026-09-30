@@ -5,14 +5,62 @@
 >
 > Status: design complete for the core; several component specs still to write (see §15).
 
-## 0. Direction after the evals (2026-09-30, owner-approved)
+## 0. Horizon v2: the experience layer (2026-09-30, owner-approved)
 
-The long-horizon A/B evals (`evals/longhorizon/RESULTS.md`) tested this design against plain Claude Code:
-- **Continuity paid off.** Team rules carried to new projects: 24/24 against 15/24 over 3 repeats. Pitfall warnings from real test history: 0/5 repeat CI failures against 3/5, at 17 % lower cost. Both reach the next session through hooks.
-- **The decision layer (§5–6) didn't.** It never changed an outcome, and it cost the most. An advisor that sees a summary can't out-decide the agent that has read the code. Horizon helps when it holds information the agent can't get any other way: the past, real outcomes, and other people's rules.
+> This section is the current direction and build order, and it wins over the rest of this file where they differ. §1–§18 remain the design and as-built record of the v1 components, which v2 keeps and re-arranges.
+
+### Why v2
+
+The long-horizon A/B evals (`evals/longhorizon/RESULTS.md`) tested the v1 design against plain Claude Code:
+- **Continuity paid off.** Team rules carried to new projects: 24/24 against 15/24 over 3 repeats. Pitfall warnings from real test history: 0/5 repeat CI failures against 3/5 and 2/5 in two replays, at 17–18 % lower cost. Both reach the next session through hooks.
+- **The decision layer (§5–6) didn't.** It never changed an outcome, and it cost the most. An advisor that sees a summary can't out-decide the agent that has read the code.
 - **In interactive solo work the human is the memory,** so the gain is for unattended agents and teams.
 
-Therefore **the default install is the lean profile**: hooks capture the task, rules (picked out by Jev, §5's model in a better-suited role) and test history, and the agent makes no Horizon calls. The full workflow below stays available as `--profile full`. Its components stay in the code and keep logging, off by default until an eval shows they move success rate or cost (§13: "cut anything that doesn't").
+So the default install became the lean profile (hooks capture the task, the rules and the test history; the agent makes no Horizon calls), and v2 rebuilds the architecture around what worked.
+
+### What Horizon is
+
+**The experience layer for AI agents.** It records what actually happened, learns what matters, predicts what will happen, and gives the right knowledge back to the agent, its teammates and other agents at the right moment. It's general across domains; coding is the first.
+
+**Principles**
+1. **Hold information the agent can't get:** the past, real outcomes, other people's rules, the environment's quirks. Never try to out-think the agent.
+2. **No calls from the agent by default.** Hooks capture everything; tools are optional.
+3. **Ground truth over self-reports:** tests, rollbacks and final state, not the model's summary.
+4. **Heavy tools only when triggered:** simulations and decision scoring run for risky or uncertain moments only.
+5. **The evaluation gate decides** (`docs/EVALS.md`): nothing is on by default until it beats plain Claude Code and the current default.
+
+### The layers
+
+| Layer | Core idea | Status |
+|---|---|---|
+| **Adapters** | One general core; each domain supplies state, actions, outcomes and risky actions (`src/horizon/adapters/`) | Interface and coding adapter built (Phase 0) |
+| **Capture** | Hooks record every observation as an event, redacted on the user's machine (`src/horizon/eventlog/`) | Event log built for local lean (Phase 0); hosted forwarding later |
+| **Understanding** | Jev as a fast, calibrated judge: classifier (rule? correction? relevant?), outcome judge where there are no tests, and decider only with evidence | Rule classifier built; the rest in Phase 1 |
+| **Memory** | The memrouter (§7, `MEMROUTER.md`): episodes from real outcomes become lessons, fears and strategies; learning from surprise | Built; fed by the hooks from Phase 1 |
+| **World model** | Predicts what happens next from the state and an action. It gives memory its surprise baseline and drives what to show, when to simulate and stall detection | `kernel-v1` built (§6); Jev prior next; Dreamer-style model once step-level data exists |
+| **Foresight** | Look before risky leaps: a trigger fires, then imagined rollouts, a sandbox spike and finally Jev scoring with evidence | Consequence chain built (§6); triggers in Phase 4 |
+| **Context sharing** | The right knowledge at the right moment within a token budget: session start, each prompt, after compaction, before a risky action; local, team and cross-agent | Session-start context and hosted team rules built; composer in Phase 1 |
+| **Safety net** | Checkpoints, rollback, retry limits, approvals, escalation, and stall detection against the forecast | Built (§8–§10); stall detection in Phase 2 |
+| **Platform** | Storage, hosting, accounts, privacy, inspection tools | Built |
+| **Evaluation gate** | A/B suites, long unattended runs, replay gates | Built for v1 scenarios; new specs in `docs/EVALS.md` |
+
+**Log observations, derive state.** How to represent state (repo, tests, progress; or a browser page; or a booking) is the open research question. The event log therefore stores raw, redacted observations. Each adapter derives state and transitions from them (`eventlog/transitions.py`), so a better representation can be re-derived later from the same history. Each `step` is one transition (state before, action and result, state after): the world model's training data from day one (§6).
+
+### v2 build order
+
+Benchmark after every phase with `docs/EVALS.md`; cut anything that doesn't move its metric.
+
+0. **Foundation (built):** the event schema and store, the adapter interface, the coding adapter (hook payloads to events, coding state, risk rules, session outcome), replay into transitions, each turn's real token usage, the hooks logging every session, and the evaluation specs.
+1. **Parallel tracks:**
+   - A. Session episodes written into the memrouter from the event log;
+   - B. Jev as outcome judge, and more classifier questions;
+   - C. world model v2 (Jev as the prior);
+   - D. the context composer;
+   - E. the `marathon`, `compaction` and `stall` harnesses, plus an `observe` profile for baseline data.
+2. **Joining:** surprise measured against the world model's forecast; stall detection; re-anchoring after compaction.
+3. **The gate:** the `marathon` evaluation against plain Claude Code and lean.
+4. **Only if the gate passes:** risky-action foresight with the weaker-model test; hosted team and cross-agent sharing; new adapters (browser, SDK).
+5. **When the data allows:** a learned, Dreamer-style world model over the transitions; a shared cross-domain model only if the data supports it.
 
 ---
 
@@ -210,6 +258,8 @@ Full spec in `MEMROUTER.md`. Summary of decisions:
 - Clear public data policy; essential for selling to companies.
 
 ## 13. Build order
+
+> This is the v1 build order, kept as the record of how the components were built. The current order is v2's, in §0.
 
 Benchmark after every phase; cut anything that doesn't move success rate or cost.
 

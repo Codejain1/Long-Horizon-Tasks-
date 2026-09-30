@@ -25,7 +25,13 @@ HOOK_EVENTS = {
     "PostToolUse": ("Bash", "post-tool-use"),
     "Stop": (None, "stop"),
     "UserPromptSubmit": (None, "user-prompt"),  # lean only: Horizon captures the task from the prompt
+    "PreCompact": (None, "pre-compact"),  # lean only: the event log sees compactions
+    "SessionEnd": (None, "session-end"),  # lean only: the event log sees how a session ended
 }
+LEAN_ONLY = {"UserPromptSubmit", "PreCompact", "SessionEnd"}
+EVENT_LOG_ONLY = {"PreCompact", "SessionEnd"}  # hosted hooks don't forward events yet: skip them there
+# Lean records file edits too (the event log's steps); full keeps Bash only (the reliability demo pins full).
+LEAN_MATCHERS = {"PostToolUse": "Bash|Edit|Write|MultiEdit|NotebookEdit"}
 
 
 def default_command() -> list[str]:
@@ -80,10 +86,12 @@ def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profi
             group["hooks"] = [h for h in group.get("hooks", [])
                               if not re.search(rf"horizon hook {name}( |$)", h.get("command", ""))]
         groups[:] = [g for g in groups if g.get("hooks")]
-        if event == "UserPromptSubmit" and profile != "lean":
+        if (event in LEAN_ONLY and profile != "lean") or (event in EVENT_LOG_ONLY and hosted):
             if not groups:
                 del hooks[event]
             continue
+        if profile == "lean":
+            matcher = LEAN_MATCHERS.get(event, matcher)
         # 30 s: hooks take well under a second, but a loaded machine once pushed one past a 10 s limit.
         group = {"hooks": [{"type": "command", "command": cmd, "timeout": 30}]}
         if matcher:
