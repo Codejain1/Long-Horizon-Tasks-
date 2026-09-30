@@ -6,6 +6,7 @@ import json
 import pytest
 from test_session_episodes import TEAM, Session, pytest_output
 
+from horizon.eventlog import briefing
 from horizon.eventlog.briefing import HEADER, MAX_CHARS, describe, past_sessions, trace
 from horizon.hooks import injected_chars
 
@@ -111,6 +112,16 @@ def test_no_code_reaches_the_briefing(on, project_dir):
     work(on, project_dir, "s1", f"{REFUNDS}\n{code}", runs=[(4, 0)])
     said = work(on, project_dir, "s2", REFUNDS)
     assert HEADER in said and "leak_marker_fn" not in said
+
+
+def test_a_shared_preamble_is_cut_so_each_task_says_what_it_was(on, project_dir):
+    """Eval and team prompts often open with the same standing instructions; the label shows the difference."""
+    preamble = "You are working through the backlog on your own, so make reasonable choices. "
+    work(on, project_dir, "s1", preamble + "Ticket #1: add partial refunds to orders.", runs=[(4, 0)])
+    brief = work(on, project_dir, "s2", preamble + "Ticket #2: add refunds to the CSV export.")
+    assert '- "…#1: add partial refunds to orders.": ended' in brief  # cut at the first word that differs
+    assert briefing.distinct("Short task.", "Short task, again.") == "Short task."  # nothing long shared
+    assert briefing.distinct(preamble + "x", preamble + "y").startswith("…")
 
 
 def test_trace_and_describe_are_pure_summaries_of_the_log(on, project_dir, log):

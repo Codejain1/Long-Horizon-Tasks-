@@ -8,6 +8,7 @@ event-log segment says what happened in it. Paths are project-relative, test ids
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -54,6 +55,14 @@ def trace(events: list[Event]) -> Trace:
     return t
 
 
+def distinct(task: str, goal: str, shared: int = 40) -> str:
+    """A past task without the opening it shares with the new goal (a standing preamble), so its label says
+    what that task was about."""
+    n = len(os.path.commonprefix([task, goal]))
+    n = task.rfind(" ", 0, n + 1) if n < len(task) else n  # back to a word boundary
+    return "…" + task[n:].lstrip() if n >= shared and task[n:].strip() else task
+
+
 def _clip(items: list[str], most: int) -> str:
     return ", ".join(items[:most]) + (f" (+{len(items) - most} more)" if len(items) > most else "")
 
@@ -95,7 +104,7 @@ def past_sessions(log: SessionEpisodes, team_id: str, project: str, text: str, m
         elif m.kind == "episode" and m.chosen == CHOSEN:
             seg = log.segment_of(team_id, m.episode_id)
             if seg and seg.session_id != session:
-                line = describe(m.situation, trace(log.segment_events(team_id, seg)))
+                line = describe(distinct(m.situation, text), trace(log.segment_events(team_id, seg)))
                 if line in sessions or len(sessions) < MAX_SESSIONS:
                     sessions[line] = sessions.get(line, 0) + 1
     if not (sessions or lessons or fears):
