@@ -283,8 +283,8 @@ def test_the_observe_arm_records_events_silently_and_lean_injection_is_measured(
 
 
 def test_the_candidate_arm_is_lean_with_session_memory_on(tmp_path):
-    """Session 1's test runs (one failing first) make it an episode; in the candidate arm, session 2 starts with
-    what it taught.
+    """Session 1's test runs (one failing first) make it an episode; in the candidate arm (with the composer, whose
+    forecast expects that trouble again), session 2 starts with what it taught.
     Lean (the default) says nothing about it."""
     run = load("run")
     run_ = 'fire("PostToolUse", tool_name="Bash", tool_input={"command": "pytest -q"}, tool_response={"stdout": %r})\n'
@@ -299,6 +299,24 @@ def test_the_candidate_arm_is_lean_with_session_memory_on(tmp_path):
     rows = json.loads((tmp_path / "out" / "notes-candidate" / "results.json").read_text())["sessions"]
     lean = json.loads((tmp_path / "out" / "notes-lean" / "results.json").read_text())["sessions"]
     assert rows[1]["horizon"]["injected_chars"] > lean[1]["horizon"]["injected_chars"]
+    settings = {arm: json.loads((tmp_path / "out" / f"notes-{arm}" / "results.json").read_text())["settings"]
+                for arm in ("lean", "candidate")}
+    assert settings == {"lean": {}, "candidate": {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "composer"}}
+
+
+def test_set_adds_a_setting_to_an_arm_for_ablations(tmp_path):
+    run = load("run")
+    run.main(["--scenario", "notes", "--arm", "candidate", "--out", str(tmp_path / "out"), "--claude",
+              scripted(tmp_path, "player", HOOK_PLAYER, "fires the installed hooks"), "--sessions", "1",
+              "--set", "HORIZON_CONTEXT=classic"])
+    results = json.loads((tmp_path / "out" / "notes-candidate" / "results.json").read_text())
+    assert results["settings"] == {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "classic"}
+    said = json.loads((tmp_path / "player.1.json").read_text())[0]
+    assert "Earlier tasks in this project" not in said and "Recent tasks" not in said  # nothing earlier yet
+    assert run.EXTRA_ENV == {"HORIZON_CONTEXT": "classic"}
+    run.main(["--scenario", "notes", "--arm", "lean", "--out", str(tmp_path / "out2"), "--claude",
+              scripted(tmp_path, "player2", HOOK_PLAYER, "fires the installed hooks"), "--sessions", "1"])
+    assert run.EXTRA_ENV == {}  # a later run doesn't inherit it
 
 
 def test_resume_from_another_run_and_seed_its_test_history(tmp_path, monkeypatch):

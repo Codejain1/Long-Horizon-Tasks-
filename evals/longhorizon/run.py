@@ -46,7 +46,8 @@ HORIZON_TOOLS = ["mcp__horizon__start_task", "mcp__horizon__recall_context", "mc
 LIMIT_TEXT = ("session limit", "usage limit", "rate limit")
 PROFILES = {"horizon": "full", "lean": "lean", "observe": "observe", "candidate": "lean"}  # arm -> install profile
 # The candidate arm is lean with the features still behind the evaluation gate turned on (docs/EVALS.md).
-ARM_ENV = {"candidate": {"HORIZON_SESSION_MEMORY": "on"}}
+ARM_ENV = {"candidate": {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "composer"}}
+EXTRA_ENV: dict[str, str] = {}  # --set KEY=VALUE, for ablations (e.g. the candidate without one feature)
 MCP_ARMS = ("horizon", "lean", "candidate")  # arms whose agent gets Horizon's MCP tools
 TEST_COMMAND = re.compile(r"pytest(?! --version)|ci\.sh")
 
@@ -81,6 +82,7 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
     env["PATH"] = f"{Path(python).parent}:{env.get('PATH', '')}"
     env.update(ARM_ENV.get(arm, {}))
+    env.update(EXTRA_ENV)
     if arm in PROFILES:
         env["HORIZON_DB_URL"] = f"sqlite:///{work / 'horizon.db'}"
         subprocess.run([python, "-m", "horizon", "install-claude-code", "--dir", str(repo),
@@ -341,7 +343,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--from-session", type=int, default=1)
     ap.add_argument("--seed", metavar="RUN_DIR", help="Before session 1, replay that run's sessions through the "
                                                       "installed hooks (arms with Horizon), e.g. for `stall`.")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="An extra environment setting for the arm, e.g. HORIZON_CONTEXT=classic (repeatable).")
     args = ap.parse_args(argv)
+    EXTRA_ENV.clear()
+    EXTRA_ENV.update(kv.split("=", 1) for kv in args.set)
 
     scenario_dir = HERE / "scenarios" / args.scenario
     scenario = json.loads((scenario_dir / "scenario.json").read_text())
@@ -393,7 +399,9 @@ def main(argv: list[str] | None = None) -> int:
                                                        | {row["session_id"]}))
         rows.append(row)
         (work / "results.json").write_text(json.dumps({"scenario": args.scenario, "arm": args.arm,
-                                                       "model": args.model, "sessions": rows}, indent=2))
+                                                       "model": args.model,
+                                                       "settings": {**ARM_ENV.get(args.arm, {}), **EXTRA_ENV},
+                                                       "sessions": rows}, indent=2))
         print(f"   hidden {len(row['hidden']['passed'])} passed / {len(row['hidden']['failed'])} failed, "
               f"violations {len(row['violations'])}, turns {row['turns']}, tools {row['tool_calls']}"
               + (f", ABORTED ({row['aborted']})" if row["aborted"] else ""), flush=True)

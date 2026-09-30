@@ -134,6 +134,13 @@ class TaskStore:
                                 " ORDER BY updated_at DESC LIMIT %s", (team_id, cwd, limit))
         return [TaskState.model_validate(load_json(r[0])) for r in rows]
 
+    def project_constraints(self, team_id: str, cwd: str, window: int = 200) -> list[str]:
+        """Every constraint set by a task in the project, newest first, each once: a rule given in the first
+        task still holds in the fiftieth."""
+        rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s AND cwd = %s ORDER BY created_at DESC"
+                                " LIMIT %s", (team_id, cwd, window))
+        return list(dict.fromkeys(c for r in rows for c in load_json(r[0]).get("constraints") or []))
+
     def session_task(self, team_id: str, cwd: str, session_id: str) -> str | None:
         """The task a session worked on (lean: the one its first message started), if any."""
         rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s AND cwd = %s ORDER BY created_at DESC"

@@ -54,6 +54,15 @@ Check the connection with `claude mcp list`. It should show `horizon: … √ Co
 
 **Past sessions as context** (`HORIZON_SESSION_MEMORY=on`, local lean; off by default until it passes the evaluation gate). A new task's first message gets a short note on similar past sessions in the same project that hit trouble (a failing test run on the way, or failures left at the end): how each ended, which tests tripped it up and which files it changed, plus memory's lessons and warnings. Clean successes aren't shown, since they hold nothing to avoid. The note is at most 1,200 characters, and only sessions at least 0.8 similar are included (`HORIZON_SESSION_MEMORY_MIN_SIMILARITY`). The aim is less trial and error: the agent starts where the last similar change landed. It adds about 0.5 s to that first message, and nothing when the project has no session history.
 
+**The context composer** (`HORIZON_CONTEXT=composer`, lean, local and hosted; `classic` by default until it passes the evaluation gate). It chooses what lean's session start shows, within `HORIZON_CONTEXT_BUDGET_CHARS` (4,000 characters). In order of what is kept first:
+1. the task being resumed;
+2. team rules;
+3. every constraint this project's tasks set, not only the last three tasks' (classic lean dropped a rule stated in the first task by the fifth);
+4. checks that keep failing here;
+5. the last three tasks, labelled without the preamble all goals share.
+
+Each line shows once, and a tight budget drops whole lines, least essential first. With `HORIZON_SESSION_MEMORY=on`, the past-sessions note shows only when the session forecast expects at least `HORIZON_CONTEXT_MIN_FAILED_RUNS` (0.5) failing test runs on the new task. On the Q67 marathon logs, ticket 9's block is 918 characters against classic's 993, it still carries ticket 1's backlog rule (classic had lost it), and the note stays out, since every similar session was clean. Composing takes under 1 ms; the forecast adds about 150 ms to a first message that already loads the embedder for the note.
+
 In lean, the server leaves out `start_task`, `recall_context` and `record_outcome`: the hooks capture the task, and those tools' "call this every time" descriptions only drew extra calls. It keeps `evaluate_options` (the prompt hook gives the task id), `submit_consequences`, `show_memories`, `explain_decision`, `delete_memory` and `clear_fear`. **Hosted lean** (`install-claude-code --hosted URL --profile lean`) is hooks only:
 - The hooks send the prompt to the team's server, with code removed on your machine first.
 - **Team rules are shared by everyone using the team's API keys,** across machines and projects.

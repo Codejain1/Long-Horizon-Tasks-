@@ -101,6 +101,12 @@ class Settings:
     # Unasked-for context must be clearly relevant: fastembed puts related tasks at 0.87+, unrelated ones at
     # ~0.72 (the hash embedder's scale is lower: 0.56+ against ~0.39).
     session_memory_min_similarity: float = 0.8
+    # "composer": lean's context is chosen by the context composer (v2 Phase 1 track D) instead of the classic
+    # blocks. Classic until it passes the evaluation gate; the evals' candidate arm turns it on.
+    context: str = "classic"
+    context_budget_chars: int = 4000  # the session-start block's ceiling, about 1,000 tokens
+    # The past-sessions note shows only when the session forecast expects at least this many failing runs.
+    context_min_failed_runs: float = 0.5
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -143,6 +149,9 @@ class Settings:
             session_memory=get("SESSION_MEMORY", base.session_memory),
             session_memory_min_similarity=get("SESSION_MEMORY_MIN_SIMILARITY", base.session_memory_min_similarity,
                                               float),
+            context=get("CONTEXT", base.context),
+            context_budget_chars=get("CONTEXT_BUDGET_CHARS", base.context_budget_chars, int),
+            context_min_failed_runs=get("CONTEXT_MIN_FAILED_RUNS", base.context_min_failed_runs, float),
             scorer=get("SCORER", base.scorer),
             jev_model=get("JEV_MODEL", base.jev_model),
             llm_scorer_model=get("LLM_SCORER_MODEL", base.llm_scorer_model),

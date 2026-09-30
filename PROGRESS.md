@@ -419,12 +419,61 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - This exposed a flaw, which is now fixed. Jev alone reads a task as risky: Brier 0.28, predicting 2+ failing runs for tickets that passed first time. At a fixed weight of 2, it dragged the model to 0.12. With the project blend, the model's Brier score is 0.023.
   - **Latency:** about 20 ms per forecast over the real logs, once the embedder is loaded. The first load of one script hung once and never again (question 71).
   - **Tests:** 636 pass on SQLite and Postgres (616 before, plus 20). Ruff is clean on the changed files.
+- **Session 20: track D, the context composer** (`src/horizon/composer.py`, behind `HORIZON_CONTEXT=composer`; classic by default).
+  - **What the real run showed first.** Lean injects about 300 tokens per session against 0.5–1.9M spent, so the composer's job is value, not trimming. Classic's block also had two defects on the Q67 marathon data:
+    - every recent-task line was mostly the shared backlog preamble, cut at 200 characters;
+    - constraints travelled only with the last three tasks, so ticket 1's backlog rule (integer cents, `uuid4().hex` ids) was gone from ticket 5 on. That rule is exactly what marathon's drift check measures.
+  - **Session start**, composed within `HORIZON_CONTEXT_BUDGET_CHARS` (4,000), kept in this order:
+    1. the task being resumed (its goal up to 400 characters, preamble cut);
+    2. team rules;
+    3. every constraint the project's tasks set (`TaskStore.project_constraints`, newest first, deduplicated);
+    4. recurring failing checks;
+    5. the last three tasks, labelled without the preamble all recent goals share (cut at its last sentence), at most 120 characters.
+    - Each line appears once, in its most essential section. A line that doesn't fit is dropped whole, and so is everything in less essential sections.
+  - **First prompt:** with session memory on, the past-sessions note is shown only when track C's forecast expects at least `HORIZON_CONTEXT_MIN_FAILED_RUNS` (0.5) failing runs. One embedder load serves both the forecast and the note, and a failing forecast never stops the task starting.
+  - **Wiring:**
+    - local lean (`run_hook`) and hosted lean (`create_web_app(context_budget=…)` from `http_app`);
+    - the evals' `candidate` arm now sets `HORIZON_CONTEXT=composer` as well as session memory;
+    - `run.py --set KEY=VALUE` for ablations;
+    - `results.json` records each arm's settings;
+    - `distinct` moved to the composer, which the briefing imports.
+  - **Acceptance criteria**, all met and tested (`tests/test_composer.py`, 13 tests; 2 more in `test_longhorizon.py`):
+    1. `classic` is the default, and classic output is unchanged (every earlier test passes as it was).
+    2. Ticket 1's rule reaches ticket 11 with the composer, and doesn't with classic.
+    3. Labels cut only what every goal shares.
+    4. Each line appears once.
+    5. A tight budget drops the least essential kinds first, whole lines only, with no empty headings and never over budget.
+    6. The budget setting bounds the block.
+    7. A resumed session sees its task first.
+    8. One troubled session among clean ones is treated as a fluke (no note), and repeated trouble is shown.
+    9. One embedder load serves the forecast and the note.
+    10. A failing forecast never stops the task starting.
+    11. Hosted lean follows the server's setting.
+    12. The candidate arm's settings are recorded, and `--set` works without leaking into later runs.
+  - **Real data** (the Q67 lean log, ticket 9's session start):
+    - 918 characters against classic's 993 (8 % fewer);
+    - carries ticket 1's rule, which classic had lost;
+    - each recent line names its ticket's feature;
+    - built in 0.7 ms.
+    - The forecast gate would have kept the past-sessions note out (every similar session was clean). That note was behind the Q67 candidate's +44 % tokens. The forecast adds about 150 ms.
+  - **Tests:** 660 pass on SQLite and Postgres (636 before, plus 24). Ruff's one finding, in `web.py`, predates this change.
 
 ## In progress
 
-- Nothing. Tracks A, B, C and E are built; D is next (see "Next step").
+- Nothing. Phase 1's tracks A–E are all built. The composer and session memory wait for the eval gate (question 72).
 
 ## Decisions made
+
+**v2 Phase 1 track D (session 20)**
+- **Pick by value, not size.** Horizon's injection is about 300 tokens against 0.5–1.9M a session spends, so saving characters barely moves cost. What moves it is what the context makes the agent do (Q67). The composer therefore fixes what is missing (older constraints) and what misleads (preamble-only labels, the note on clean histories), and it also comes out shorter.
+- **Behind `HORIZON_CONTEXT`, classic by default.** Principle 5 applies even though the constraint window is arguably a bug. The candidate arm runs it, and `--set HORIZON_CONTEXT=classic` separates it from session memory.
+- **Keep order: active task, team rules, constraints, pitfalls, recent tasks.** Rules and constraints are information the agent can't get any other way (principle 1). Pitfalls are backed by test history. Recent tasks are visible in the code.
+- **Strict priority when over budget.** Once a line is dropped for space, less essential sections are skipped, so a short recent-task label can't take the place of a dropped pitfall.
+- **The preamble is the prefix shared by the project's recent goals (the last 10), cut at its last sentence.** A pairwise shortest cut stripped "Ticket #" as well.
+- **Recent-task labels are at most 120 characters.** That still names the feature, and on the real data it makes the block shorter than classic.
+- **The forecast gate uses the base-rate prior, not Jev,** because a Jev call would add about 0.5 s to the first prompt. The threshold is 0.5 expected failing runs: at least every other similar session hit trouble.
+- **Every constraint of the project, up to 20, newest first,** with the budget as the ceiling. A later task that changes a rule shows above the old one, and the heading says constraints hold "unless the user changes them".
+- **Hosted lean gets the composer too** (server setting), so both installs behave the same once it passes.
 
 **v2 Phase 1 track C (session 19)**
 - **C before D.** Stall detection and the composer's "when to show" need a forecast, and C can be evaluated offline for free. D is also easier to judge once "how risky is this task" exists.
@@ -846,16 +895,22 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 69 | Jev judged "No, refunds over the order total must be rejected." as a correction at only 0.26 | Default: that's fine. A new requirement isn't quite a correction, and the correction answers only block contradicted verdicts; they don't set the score. Revisit with real judged sessions. |
 | 70 | When the session forecast beats the fallback on replay, should Phase 2 switch surprise to it by itself (like `HORIZON_WORLD_MODEL=auto`)? | Default: yes, behind the same gate as `kernel-v1`: at least 30 paired sessions and a one-sided paired test at 95 %, re-checked periodically. It can be decided when Phase 2 wires it. |
 | 71 | One latency script hung before its first forecast and couldn't be reproduced (the same script then ran at 12–20 ms per forecast) | Default: most likely the first fastembed model load waiting on its cache lock, not the forecast code. Watch hook latency in the next real run. |
+| 72 | The gate run for Phase 1's context: `candidate` (session memory plus the composer) against `lean` on `marathon` | **Owner** (subscription). Suggested: tickets 1–12, 1 repeat each arm, then `--set HORIZON_CONTEXT=classic` for an ablation if it shows a signal. Replaces question 67's second run, since the candidate changed. Default until then: both stay off. |
+| 73 | Should classic lean's constraint window (the last three tasks) be fixed even if the composer as a whole doesn't pass? | Default: no, not separately. The composer carries the fix; if the gate fails on cost only, the constraint part can be split out and tested alone. |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
-**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 67 (a second `candidate` run on a later marathon stretch), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
+**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 72 (the `candidate` gate run on `marathon`, which replaces 67's second run), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
-**v2 (this copy):** the last track of Phase 1 of `PROJECT.md` §0. Tracks E (session 16), A (session 17), B (session 18) and C (session 19) are built, and so is Q65's past-sessions context (behind its setting). Next:
-- D: the context composer. It decides what to show and when, within a budget. It should absorb the session-start context and the past-sessions note, alongside each prompt, after compaction and before risky actions. It can use track C's forecast to show more on tasks forecast as risky and stay quiet on easy ones. Its gate: the same quality with fewer context tokens on `team` and `marathon`.
+**v2 (this copy):** Phase 1 of `PROJECT.md` §0 is built: tracks E (session 16), A (17), B (18), C (19) and D (20). Next:
+- **The gate run for Phase 1 (owner, question 72):** `candidate` against `lean` on `marathon`, then `team` for the composer's "same quality with fewer tokens".
+- **Phase 2 (joining):**
+  - surprise measured against the session forecast (wired only if `horizon eval-forecast` passes);
+  - stall detection (the forecast's `so_far` question against the `stall` scenario);
+  - re-anchoring after compaction (the composer's session start already re-sends the active task and constraints on a `compact` start; Phase 2 measures it with the `compaction` scenario).
 
-**Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, a `candidate` against `lean` run on a later marathon stretch (question 67).
+**Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, the `candidate` against `lean` gate run on `marathon` (question 72).
 
 **Owner, when convenient:** one real `compaction` run to verify F1 (question 62). Real marathon runs wait until the Phase 1–2 components exist (`docs/EVALS.md` budget).
 

@@ -89,7 +89,8 @@ def _table(rows: list[dict], cols: list[tuple[str, str]], empty: str) -> str:
     return f"<table><tr>{head}</tr>{body}</table>"
 
 
-def create_web_app(accounts: Accounts, tasks: TaskStore, lifespan=None, scorer_factory=lambda: None) -> FastAPI:
+def create_web_app(accounts: Accounts, tasks: TaskStore, lifespan=None, scorer_factory=lambda: None,
+                   context_budget: int | None = None) -> FastAPI:
     app = FastAPI(title="Horizon account", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     def session_team(request: Request) -> str | None:
@@ -213,7 +214,7 @@ Tokens saved are counted only where past spikes reported their token cost.</p>
 
         team = api_team(authorization)
         body = await request.json()
-        local = Local(tasks, team)
+        local = Local(tasks, team, context_budget=context_budget)
         project = hosted_scope(team, str(body.get("project") or ""))
         session = str(body.get("session_id") or "")[:100] or None
         if op == "session-start":

@@ -10,10 +10,10 @@ event-log segment says what happened in it. Paths are project-relative, test ids
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from horizon.composer import distinct
 from horizon.eventlog.episodes import CHOSEN, TASK_TYPE, SessionEpisodes
 from horizon.eventlog.schema import Event
 from horizon.models import Condition
@@ -55,14 +55,6 @@ def trace(events: list[Event]) -> Trace:
             seen += [f for f in failing or [] if f not in seen]
     t.tripped = [f for f in seen if f not in t.still_failing]
     return t
-
-
-def distinct(task: str, goal: str, shared: int = 40) -> str:
-    """A past task without the opening it shares with the new goal (a standing preamble), so its label says
-    what that task was about."""
-    n = len(os.path.commonprefix([task, goal]))
-    n = task.rfind(" ", 0, n + 1) if n < len(task) else n  # back to a word boundary
-    return "…" + task[n:].lstrip() if n >= shared and task[n:].strip() else task
 
 
 def _clip(items: list[str], most: int) -> str:

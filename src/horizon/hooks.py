@@ -25,6 +25,7 @@ import sys
 
 from horizon.adapters.coding import command_summary, events_from_hook
 from horizon.adapters.coding import tool_output as _tool_output
+from horizon.composer import MAX_RULE
 from horizon.config import Settings
 from horizon.db import connect
 from horizon.decision.scorers import make_scorer
@@ -126,7 +127,6 @@ def core_stop(store: TaskStore, team: str, project: str, session: str | None) ->
 
 # --- lean: Horizon captures the task itself, so the agent makes no Horizon calls ----------------------
 
-MAX_RULE = 500
 MAX_GOAL = 4000
 _TEAM_RULE = re.compile(r"\b(all (of )?(our|my|the team'?s?) (projects|services|repos)|every (project|service|repo)"
                         r"|future projects|team'?s? rules?|rules? for (all|every))\b", re.I)
@@ -175,13 +175,20 @@ def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
     return team, project
 
 
-def lean_session_start(store: TaskStore, team: str, project: str, session: str | None) -> dict:
+def lean_session_start(store: TaskStore, team: str, project: str, session: str | None,
+                       budget: int | None = None) -> dict:
     """A new session: the previous sessions' tasks are done, so their goals and constraints show as earlier
-    tasks. A resumed or compacted session keeps its session id, and its task stays active."""
+    tasks. A resumed or compacted session keeps its session id, and its task stays active. With a `budget`, the
+    context composer chooses what to show (`HORIZON_CONTEXT=composer`)."""
     for task in store.active(team, cwd=project):
         if task.status == "active" and task.session_id and task.session_id != session:
             task.status = "completed"
             store.save(task)
+    if budget is not None:
+        from horizon import composer
+
+        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext":
+                                       composer.session_start(store, team, project, LEAN_WORKFLOW, budget)}}
     out = core_session_start(store, team, project)
     ctx = out["hookSpecificOutput"]
     ctx["additionalContext"] = ctx["additionalContext"].replace(WORKFLOW, LEAN_WORKFLOW)
@@ -255,15 +262,17 @@ def deny_unrestored(checks: list[dict], snapshot: str | None, cwd: str) -> dict 
 class Local:
     """Local mode: the hooks share the MCP server's database."""
 
-    def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None, briefing=None):
+    def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None, briefing=None,
+                 context_budget: int | None = None):
         self.store, self.team, self.scorer_factory = store, team, scorer_factory
         self.briefing = briefing  # (project, session, goal) -> context from similar past sessions
+        self.context_budget = context_budget  # set: the context composer chooses lean's session-start context
 
     def session_start(self, project):
         return core_session_start(self.store, self.team, project)
 
     def lean_session_start(self, project, session):
-        return lean_session_start(self.store, self.team, project, session)
+        return lean_session_start(self.store, self.team, project, session, self.context_budget)
 
     def user_prompt(self, project, session, prompt):
         brief = self.briefing
@@ -434,13 +443,22 @@ def past_sessions_briefing(db, settings: Settings):
     """Lean's context from similar past sessions (v2 Phase 1), when `session_memory` is on."""
     if settings.session_memory != "on":
         return None
+    from functools import cache
+
+    from horizon.composer import expects_trouble
     from horizon.eventlog.briefing import past_sessions
     from horizon.eventlog.episodes import SessionEpisodes, local_memory
 
-    return lambda project, session, goal: past_sessions(SessionEpisodes(db, settings.session_idle_minutes),
-                                                        settings.team_id, project, goal,
-                                                        lambda: local_memory(settings, db), session,
-                                                        settings.session_memory_min_similarity)
+    log, memory = SessionEpisodes(db, settings.session_idle_minutes), cache(lambda: local_memory(settings, db))
+
+    def brief(project, session, goal):
+        if settings.context == "composer" and not expects_trouble(log, lambda: memory().embedder, settings,
+                                                                  settings.team_id, project, goal):
+            return None
+        return past_sessions(log, settings.team_id, project, goal, memory, session,
+                             settings.session_memory_min_similarity)
+
+    return brief
 
 
 def _episodes_quietly(db, settings: Settings, project: str) -> None:
@@ -479,7 +497,8 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                 scorer = lambda: make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)  # noqa: E731
                 project = project_dir(payload)
                 brief = past_sessions_briefing(db, settings) if profile == "lean" else None
-                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief), project)
+                budget = settings.context_budget_chars if settings.context == "composer" else None
+                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief, budget), project)
                 if name == "session-start" and profile == "lean":
                     # before this start is logged, so a resumed session's idle part still reads as idle
                     _episodes_quietly(db, settings, project)
