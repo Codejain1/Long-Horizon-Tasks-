@@ -64,6 +64,23 @@ def no_floats(package: Path) -> list[str]:
     return bad
 
 
+def utc_only(package: Path) -> list[str]:
+    """Times stay timezone-aware UTC: no local or naive clocks (now() without a zone, utcnow(), today(),
+    localtime(), mktime()), no fromtimestamp() without a zone, no astimezone() to the local zone, no ZoneInfo."""
+    bad = []
+    for f in _files(package):
+        for node in ast.walk(ast.parse(f.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", getattr(node.func, "id", None))
+            bare = not node.args and not node.keywords
+            if name in ("utcnow", "today", "utcfromtimestamp", "localtime", "mktime", "ZoneInfo") \
+                    or (name in ("now", "astimezone") and bare) \
+                    or (name == "fromtimestamp" and len(node.args) < 2 and not node.keywords):
+                bad.append(f"{f.name}:{node.lineno}: {name}()")
+    return bad
+
+
 def uuid_hex_ids(package: Path) -> list[str]:
     """Ids come from `uuid.uuid4().hex`: every uuid4() call is read through `.hex`, never str() or the UUID."""
     bad = []

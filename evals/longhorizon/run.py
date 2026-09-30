@@ -68,7 +68,7 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
                 (repo / name).chmod(0o755)
         git(repo, "init", "-q")
         git(repo, "add", "-A")
-        git(repo, "commit", "-qm", "start")
+        git(repo, "commit", "-qm", "start", "--allow-empty")
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
     env["PATH"] = f"{Path(python).parent}:{env.get('PATH', '')}"
     if arm in PROFILES:
@@ -112,23 +112,21 @@ def failing_checks(events: list[dict]) -> list[str]:
 
 
 def read_log(path: Path) -> list[dict]:
-    events = []
-    for line in path.read_text().splitlines() if path.exists() else []:
-        try:
-            events.append(json.loads(line))
-        except ValueError:
-            continue
-    return events
+    lines = path.read_text().splitlines() if path.exists() else []
+    return [e for e in map(_json_or_none, lines) if e is not None]
 
 
-def horizon_view(work: Path, session_id: str | None) -> dict:
-    """What Horizon's event log holds for one session: events by kind, and the characters it gave the agent."""
+def horizon_view(work: Path, session_ids: list[str]) -> dict:
+    """What Horizon's event log holds for one session (every id its invocations had): events by kind, and the
+    characters it gave the agent."""
     db = work / "horizon.db"
-    if not session_id or not db.exists():
+    session_ids = [s for s in session_ids if s]
+    if not session_ids or not db.exists():
         return {"events": {}, "injected_chars": 0}
     with sqlite3.connect(db) as conn:
         try:
-            rows = conn.execute("SELECT kind, data FROM events WHERE session_id = ? ORDER BY n", (session_id,)).fetchall()
+            rows = conn.execute(f"SELECT kind, data FROM events WHERE session_id IN ({','.join('?' * len(session_ids))})"
+                                " ORDER BY n", session_ids).fetchall()
         except sqlite3.OperationalError:  # no hook has run yet, so no events table
             rows = []
     kinds: dict[str, int] = {}
@@ -171,39 +169,72 @@ def seed_test_runs(source: Path, sessions: range, repo: Path, env: dict, python:
     return n
 
 
-def run_session(prompt: str, repo: Path, *, claude: str, model: str, arm: str, env: dict, log: Path) -> dict:
-    cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
-           "--model", model, "--setting-sources", "project,local", "--strict-mcp-config", "--allowedTools",
-           *AGENT_TOOLS, *(HORIZON_TOOLS if arm in MCP_ARMS else [])]
-    if arm in MCP_ARMS:
-        cmd += ["--mcp-config", ".mcp.json"]
-    if arm in PROFILES:
-        cmd += ["--include-hook-events"]
+def aborted(result: dict) -> str | None:
+    if not result:
+        return "no result"
+    return "usage limit" if any(t in str(result.get("result") or "").lower() for t in LIMIT_TEXT) else None
+
+
+def run_session(prompts: str | list[str], repo: Path, *, claude: str, model: str, arm: str, env: dict,
+                log: Path) -> dict:
+    """One Claude Code session. A list of prompts is one session driven by several invocations: each after the
+    first resumes the previous one's session (`--resume`), so e.g. "/compact" compacts the context mid-job."""
+    prompts = [prompts] if isinstance(prompts, str) else list(prompts)
     start = time.monotonic()
-    proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=45 * 60,
-                          stdin=subprocess.DEVNULL)
-    log.write_text(proc.stdout)
+    streams, results, invocations, session_id = [], [], [], None
+    for prompt in prompts:
+        cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+               "--model", model, "--setting-sources", "project,local", "--strict-mcp-config", "--allowedTools",
+               *AGENT_TOOLS, *(HORIZON_TOOLS if arm in MCP_ARMS else [])]
+        if session_id:
+            cmd += ["--resume", session_id]
+        if arm in MCP_ARMS:
+            cmd += ["--mcp-config", ".mcp.json"]
+        if arm in PROFILES:
+            cmd += ["--include-hook-events"]
+        proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=45 * 60,
+                              stdin=subprocess.DEVNULL)
+        streams.append(proc.stdout if proc.stdout.endswith("\n") or not proc.stdout else proc.stdout + "\n")
+        events = [e for e in map(_json_or_none, proc.stdout.splitlines()) if e is not None]
+        result = next((e for e in reversed(events) if e.get("type") == "result"), {}) or {}
+        results.append(result)
+        session_id = result.get("session_id") or session_id
+        invocations.append({"prompt": prompt[:60], "session_id": result.get("session_id"),
+                            "turns": int(result.get("num_turns") or 0),
+                            "cost_usd": round(float(result.get("total_cost_usd") or 0), 4)})
+        if aborted(result):
+            break
+    log.write_text("".join(streams))
     events = read_log(log)
-    result = next((e for e in reversed(events) if e.get("type") == "result"), {}) or {}
     tools = [b.get("name", "") for b in blocks(events) if b.get("type") == "tool_use"]
     test_runs, failed_runs = test_run_counts(events)
-    usage = result.get("usage") or {}
-    text = str(result.get("result") or "").lower()
-    return {
-        "aborted": "usage limit" if any(t in text for t in LIMIT_TEXT) else (None if result else "no result"),
-        "session_id": result.get("session_id"),
-        "turns": int(result.get("num_turns") or 0),
+    row = {
+        "aborted": next((a for a in map(aborted, results) if a), None),
+        "session_id": session_id,
+        "turns": sum(int(r.get("num_turns") or 0) for r in results),
         "tool_calls": len(tools),
         "test_runs": test_runs,
         "failed_test_runs": failed_runs,
         "failed_checks": failing_checks(events),
         "horizon_calls": {t.removeprefix("mcp__horizon__"): tools.count(t) for t in sorted(set(tools))
                           if t.startswith("mcp__horizon__")},
-        "cost_usd": round(float(result.get("total_cost_usd") or 0), 4),
-        "tokens": sum(int(usage.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens",
-                                                       "cache_read_input_tokens")),
+        "cost_usd": round(sum(float(r.get("total_cost_usd") or 0) for r in results), 4),
+        "tokens": sum(int((r.get("usage") or {}).get(k) or 0) for r in results
+                      for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")),
         "wall_s": round(time.monotonic() - start, 1),
     }
+    if len(prompts) > 1:
+        row["invocations"] = invocations
+        row["compactions"] = sum(e.get("type") == "system" and "compact" in str(e.get("subtype", "")) for e in events)
+    return row
+
+
+def _json_or_none(line: str) -> dict | None:
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def hidden_tests(scenario_dir: Path, sessions: range, repo: Path, python: str) -> dict:
@@ -224,7 +255,7 @@ def hidden_tests(scenario_dir: Path, sessions: range, repo: Path, python: str) -
 
 def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[str]:
     """Session 1's constraints, checked in a separate process (a fresh import of the agent's package):
-    stdlib only, Python 3.9 syntax, integer cents (no floats), uuid4().hex ids and unchanged public names."""
+    stdlib only, Python 3.9 syntax, integer cents (no floats), uuid4().hex ids, UTC only and unchanged public names."""
     pkg = repo / package
     if not pkg.is_dir():
         return [f"package {package}/ missing"]
@@ -234,6 +265,7 @@ def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[s
             "if c.get('python39'): v += ['py39: ' + x for x in checks.python39(p)]\n"
             "if c.get('no_floats'): v += ['cents: ' + x for x in checks.no_floats(p)]\n"
             "if c.get('uuid_hex'): v += ['ids: ' + x for x in checks.uuid_hex_ids(p)]\n"
+            "if c.get('utc_only'): v += ['utc: ' + x for x in checks.utc_only(p)]\n"
             "v += ['names: ' + x for x in checks.public_names(p, c.get('public_names', {}))]\n"
             "print(json.dumps(v))")
     proc = subprocess.run([python, "-c", code], capture_output=True, text=True, timeout=120)
@@ -298,7 +330,8 @@ def main(argv: list[str] | None = None) -> int:
         row["regressions"] = [] if repos else sorted(passed_before - passed)  # separate repos can't regress
         passed_before = passed
         if args.arm in PROFILES:
-            row["horizon"] = horizon_view(work, row["session_id"])
+            row["horizon"] = horizon_view(work, sorted({i["session_id"] for i in row.get("invocations", [])}
+                                                       | {row["session_id"]}))
         rows.append(row)
         (work / "results.json").write_text(json.dumps({"scenario": args.scenario, "arm": args.arm,
                                                        "model": args.model, "sessions": rows}, indent=2))

@@ -32,6 +32,7 @@ def summary(run: dict) -> dict:
         "repeat_failures": sum(len(r.get("repeat_failures", [])) for r in s),
         "regressions": sum(len(r.get("regressions", [])) for r in s),
         "injected_chars": sum((r.get("horizon") or {}).get("injected_chars", 0) for r in s),
+        "compactions": sum(r.get("compactions", 0) for r in s),
     }
 
 
