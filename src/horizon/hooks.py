@@ -26,8 +26,8 @@ from typing import Any
 
 from horizon.config import Settings
 from horizon.db import connect
-from horizon.models import Checkpoint, TestCapture
-from horizon.redact import redact
+from horizon.models import Checkpoint, ProgressEntry, TaskState, TestCapture
+from horizon.redact import CODE_REMOVED, MAX_NOTE, redact
 from horizon.taskstate.checkpoints import capture, restore_steps, same_tree
 from horizon.taskstate.store import TaskStore
 from horizon.taskstate.usage import attempt_usage
@@ -43,9 +43,8 @@ WORKFLOW = (
 )
 
 LEAN_WORKFLOW = (
-    "This project uses the Horizon MCP server for task continuity. For any coding task: call start_task first "
-    "with the user's request verbatim, its constraints and the team rules below; after your final test run, "
-    "call record_outcome once with the real test counts and task_complete: true."
+    "Horizon records this task from the user's messages and carries its rules to later sessions and projects; "
+    "you don't need to call it. Follow the team rules and earlier constraints below."
 )
 
 
@@ -83,7 +82,7 @@ def core_session_start(store: TaskStore, team: str, project: str) -> dict:
     if rules:
         lines.append("Team rules for every project (apply them here too; pass the full list as start_task's"
                      " team_rules, with any the user adds or changes):")
-        lines += [f"- {r[:200]}" for r in rules[:20]]
+        lines += [f"- {r[:MAX_RULE]}" for r in rules[:20]]
     done = store.recent_completed(team, project)
     if done:
         # Multi-session work: each session tends to finish its own task, so earlier sessions' goals and
@@ -92,7 +91,7 @@ def core_session_start(store: TaskStore, team: str, project: str) -> dict:
                      " copy them into start_task's constraints):")
         for t in done:
             lines.append(f"- {t.goal[:200]}")
-            lines += [f"  - constraint: {c[:200]}" for c in t.constraints[:10]]
+            lines += [f"  - constraint: {c[:MAX_RULE]}" for c in t.constraints[:10]]
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}}
 
 
@@ -131,6 +130,61 @@ def core_stop(store: TaskStore, team: str, project: str, session: str | None) ->
                 "reason": (f"Unrecorded outcome for task {task.id} (tests: {latest.passed} passed, "
                            f"{latest.failed} failed). Call record_outcome, then finish."),
             }
+    return None
+
+
+# --- lean: Horizon captures the task itself, so the agent makes no Horizon calls ----------------------
+
+MAX_RULE = 500
+MAX_GOAL = 4000
+_TEAM_RULE = re.compile(r"\b(all (of )?(our|my|the team'?s?) (projects|services|repos)|every (project|service|repo)"
+                        r"|future projects|team'?s? rules?|rules? for (all|every))\b", re.I)
+_PROJECT_RULE = re.compile(r"\b(from now on|constraints?|must (always|never)|always|never)\b", re.I)
+
+
+def split_rules(text: str) -> tuple[list[str], list[str]]:
+    """The sentences of a request that set lasting rules: for every project (team rules) or for this one."""
+    # ponytail: a keyword heuristic; a Jev yes/no question per sentence if it misses real rules.
+    team, project = [], []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if _TEAM_RULE.search(sentence):
+            team.append(sentence[:MAX_RULE])
+        elif _PROJECT_RULE.search(sentence):
+            project.append(sentence[:MAX_RULE])
+    return team, project
+
+
+def lean_session_start(store: TaskStore, team: str, project: str, session: str | None) -> dict:
+    """A new session: the previous sessions' tasks are done, so their goals and constraints show as earlier
+    tasks. A resumed or compacted session keeps its session id, and its task stays active."""
+    for task in store.active(team, cwd=project):
+        if task.status == "active" and task.session_id and task.session_id != session:
+            task.status = "completed"
+            store.save(task)
+    out = core_session_start(store, team, project)
+    ctx = out["hookSpecificOutput"]
+    ctx["additionalContext"] = ctx["additionalContext"].replace(WORKFLOW, LEAN_WORKFLOW)
+    return out
+
+
+def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | None, prompt: str) -> None:
+    """The session's first message starts its task (the goal, code removed); later ones are progress notes.
+    Sentences that set lasting rules become the task's constraints or the team's rules."""
+    text = redact(prompt, MAX_GOAL)
+    if text == CODE_REMOVED:
+        return None
+    team_rules, constraints = split_rules(text)
+    task = next((t for t in store.active(team, cwd=project) if t.session_id == session), None)
+    if task is None:
+        task = store.create(TaskState(team_id=team, goal=text, cwd=project, session_id=session, baseline="missing",
+                                      constraints=constraints))
+    else:
+        task.progress.append(ProgressEntry(note=redact(prompt, MAX_NOTE)))
+        task.constraints += [c for c in constraints if c not in task.constraints]
+    if team_rules:  # the latest task that sets team rules holds the current set
+        current = store.team_rules(team)
+        task.team_rules = current + [r for r in team_rules if r not in current]
+    store.save(task)
     return None
 
 
@@ -275,7 +329,15 @@ def stop(payload: dict, backend, project: str) -> dict | None:
 
 
 HANDLERS = {"session-start": session_start, "pre-tool-use": pre_tool_use, "post-tool-use": post_tool_use,
-            "stop": stop}
+            "stop": stop, "user-prompt": lambda payload, backend, project: None}
+LEAN_HANDLERS = {  # local only (the installer refuses lean with --hosted)
+    "session-start": lambda p, b, project: lean_session_start(b.store, b.team, project, p.get("session_id")),
+    "user-prompt": lambda p, b, project: lean_user_prompt(b.store, b.team, project, p.get("session_id"),
+                                                          str(p.get("prompt") or "")),
+    # Test runs are still captured; lean asks for no outcome per run and never blocks the stop.
+    "post-tool-use": lambda p, b, project: post_tool_use(p, b, project) and None,
+    "stop": lambda p, b, project: None,
+}
 
 
 def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: str | None = None,
@@ -294,15 +356,10 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
             settings = settings or Settings.from_env()
             db = connect(settings.db_url)
             try:
-                result = HANDLERS[name](payload, Local(TaskStore(db), settings.team_id), project_dir(payload))
+                handler = LEAN_HANDLERS.get(name, HANDLERS[name]) if profile == "lean" else HANDLERS[name]
+                result = handler(payload, Local(TaskStore(db), settings.team_id), project_dir(payload))
             finally:
                 db.close()
-        if profile == "lean" and result:
-            if name == "post-tool-use":
-                return ""  # the capture is stored; lean records one outcome at the end, not one per run
-            if name == "session-start":
-                ctx = result["hookSpecificOutput"]
-                ctx["additionalContext"] = ctx["additionalContext"].replace(WORKFLOW, LEAN_WORKFLOW)
         return json.dumps(result) if result else ""
     except Exception as exc:  # a hook must never break the host session
         if os.environ.get("HORIZON_DEBUG"):

@@ -24,6 +24,7 @@ HOOK_EVENTS = {
     "PreToolUse": ("mcp__horizon__recall_context|mcp__horizon__record_outcome", "pre-tool-use"),
     "PostToolUse": ("Bash", "post-tool-use"),
     "Stop": (None, "stop"),
+    "UserPromptSubmit": (None, "user-prompt"),  # lean only: Horizon captures the task from the prompt
 }
 
 
@@ -72,6 +73,10 @@ def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profi
             group["hooks"] = [h for h in group.get("hooks", [])
                               if not re.search(rf"horizon hook {name}( |$)", h.get("command", ""))]
         groups[:] = [g for g in groups if g.get("hooks")]
+        if event == "UserPromptSubmit" and profile != "lean":
+            if not groups:
+                del hooks[event]
+            continue
         # 30 s: hooks take well under a second, but a loaded machine once pushed one past a 10 s limit.
         group = {"hooks": [{"type": "command", "command": cmd, "timeout": 30}]}
         if matcher:
