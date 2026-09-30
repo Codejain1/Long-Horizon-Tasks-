@@ -49,7 +49,7 @@ Check the connection with `claude mcp list`. It should show `horizon: … √ Co
 | `PostToolUse` | Still captures test counts, but doesn't ask for `record_outcome`. |
 | `Stop` | Never blocks. |
 
-`evaluate_options`, `show_memories` and `explain_decision` stay available when the agent or user wants them. Lean is local-only for now: the installer refuses `--profile lean --hosted`, because a hosted server's profile is server-wide. Re-running `install-claude-code` without `--profile` switches back to the full workflow.
+In lean, the server leaves out `start_task`, `recall_context` and `record_outcome`: the hooks capture the task, and those tools' "call this every time" descriptions only drew extra calls. It keeps `evaluate_options` (the prompt hook gives the task id), `submit_consequences`, `show_memories`, `explain_decision`, `delete_memory` and `clear_fear`. Lean is local-only for now: the installer refuses `--profile lean --hosted`, because a hosted server's profile is server-wide. Re-running `install-claude-code` without `--profile` switches back to the full workflow.
 
 ## Configuration
 

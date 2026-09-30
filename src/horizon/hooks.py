@@ -171,7 +171,7 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
     return out
 
 
-def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | None, prompt: str) -> None:
+def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | None, prompt: str) -> dict | None:
     """The session's first message starts its task (the goal, code removed); later ones are progress notes.
     Sentences that set lasting rules become the task's constraints or the team's rules."""
     text = redact(prompt, MAX_GOAL)
@@ -179,7 +179,8 @@ def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | N
         return None
     team_rules, constraints = split_rules(text)
     task = next((t for t in store.active(team, cwd=project) if t.session_id == session), None)
-    if task is None:
+    created = task is None
+    if created:
         task = store.create(TaskState(team_id=team, goal=text, cwd=project, session_id=session, baseline="missing",
                                       constraints=constraints))
     else:
@@ -189,6 +190,9 @@ def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | N
         current = store.team_rules(team)
         task.team_rules = current + [r for r in team_rules if r not in current]
     store.save(task)
+    if created:
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext":
+                f"Horizon task id: {task.id} (only needed if you call evaluate_options)."}}
     return None
 
 

@@ -1,6 +1,5 @@
 """The lean profile: task continuity only (goals, constraints, team rules), one outcome per task."""
 
-import dataclasses
 import json
 from pathlib import Path
 
@@ -8,7 +7,6 @@ import pytest
 
 from horizon.hooks import LEAN_WORKFLOW, WORKFLOW, run_hook
 from horizon.install import install
-from horizon.service import Platform
 
 
 def test_install_lean_writes_the_lean_snippet_env_and_hooks(tmp_path):
@@ -26,16 +24,6 @@ def test_install_lean_writes_the_lean_snippet_env_and_hooks(tmp_path):
         install(tmp_path, hosted="https://h.example", profile="lean")
 
 
-def test_lean_task_records_its_one_outcome(settings, task_store, memrouter, project_dir):
-    """No baseline run: the first record_outcome is the task's outcome, not swallowed as a baseline."""
-    lean = Platform(dataclasses.replace(settings, profile="lean"), task_store, lambda: memrouter, cwd=project_dir)
-    started = lean.start_task("Build payouts", team_rules=["ids are uuid4 hex"])
-    assert "record_outcome once" in started["next"] and started["team_rules"] == ["ids are uuid4 hex"]
-    out = lean.record_outcome(started["task_id"], "implemented payouts", "stdlib package",
-                              tests_passed=5, tests_failed=0, task_complete=True)
-    assert out["task_status"] == "completed" and out["actual_success"] == 1
-
-
 def lean(name, payload, settings):
     out = run_hook(name, json.dumps(payload), settings, profile="lean")
     return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else None
@@ -51,9 +39,11 @@ def test_lean_captures_the_task_and_rules_without_tool_calls(settings, task_stor
     rules or constraints, and the next session, here or in another project, is shown them."""
     ctx = lean("session-start", {"cwd": project_dir, "session_id": "s1"}, settings)
     assert LEAN_WORKFLOW in ctx and WORKFLOW not in ctx
-    assert lean("user-prompt", {"cwd": project_dir, "session_id": "s1", "prompt": TEAM_PROMPT}, settings) is None
-    lean("user-prompt", {"cwd": project_dir, "session_id": "s1", "prompt": "Also add a due date."}, settings)
+    ctx = lean("user-prompt", {"cwd": project_dir, "session_id": "s1", "prompt": TEAM_PROMPT}, settings)
+    assert lean("user-prompt", {"cwd": project_dir, "session_id": "s1", "prompt": "Also add a due date."},
+                settings) is None  # the task id is given once
     [task] = task_store.active(settings.team_id, cwd=project_dir)
+    assert f"Horizon task id: {task.id}" in ctx
     assert task.goal.startswith("New project") and "SECRET" not in task.goal
     assert task.constraints == ["Money must never be a float."]
     assert task.team_rules[0].startswith("Our team's rules") and "uuid4().hex" in task.team_rules[0]
@@ -93,3 +83,14 @@ def test_recurring_failures_warn_the_next_session(settings, task_store, project_
     run_hook("post-tool-use", json.dumps({**bash, "session_id": "s3", "tool_response": {"stdout": once}}), settings)
     ctx = lean("session-start", {"cwd": project_dir, "session_id": "s4"}, settings)
     assert "tests/test_policy.py::test_never_prints (failed in 2 sessions)" in ctx and "test_restock" not in ctx
+
+
+def test_lean_server_offers_only_the_optional_tools(platform):
+    import asyncio
+
+    from horizon.server import create_server
+
+    names = lambda server: {t.name for t in asyncio.run(server.list_tools())}  # noqa: E731
+    full, lean_tools = names(create_server(platform, lean=False)), names(create_server(platform, lean=True))
+    assert {"start_task", "recall_context", "record_outcome"} <= full
+    assert full - lean_tools == {"start_task", "recall_context", "record_outcome"}
