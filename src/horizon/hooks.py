@@ -78,6 +78,10 @@ def core_session_start(store: TaskStore, team: str, project: str) -> dict:
         lines.append("Active tasks in this project (continue with recall_context; do not start_task again):")
         lines += [f"- {t.id}: {t.goal[:200]}" + (" [escalated: ask the user how to proceed]"
                                                   if t.status == "escalated" else "") for t in active[:3]]
+    pitfalls = store.recurring_failures(project)
+    if pitfalls:
+        lines.append("Checks that failed in several earlier sessions here (get them right the first time):")
+        lines += [f"- {test[:200]} (failed in {n} sessions)" for test, n in pitfalls]
     rules = store.team_rules(team)
     if rules:
         lines.append("Team rules for every project (apply them here too; pass the full list as start_task's"

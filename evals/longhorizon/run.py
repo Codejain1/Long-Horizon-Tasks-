@@ -39,10 +39,13 @@ def git(repo: Path, *args: str) -> str:
                           check=True, capture_output=True, text=True).stdout
 
 
-def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo") -> tuple[Path, dict]:
+def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
+          start_dir: Path | None = None) -> tuple[Path, dict]:
     repo = work / name
-    repo.mkdir(parents=True)
-    for name, text in scenario["start_files"].items():
+    if start_dir and start_dir.is_dir():  # a scenario that starts from an existing codebase
+        shutil.copytree(start_dir, repo)
+    repo.mkdir(parents=True, exist_ok=True)
+    for name, text in scenario.get("start_files", {}).items():
         (repo / name).write_text(text)
         if name.endswith(".sh"):
             (repo / name).chmod(0o755)
@@ -59,6 +62,20 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo")
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", "install horizon")
     return repo, env
+
+
+def blocks(events: list[dict]) -> list[dict]:
+    return [b for e in events if e.get("type") in ("assistant", "user") and isinstance(e.get("message"), dict)
+            for b in e["message"].get("content") or [] if isinstance(b, dict)]
+
+
+def test_run_counts(events: list[dict]) -> tuple[int, int]:
+    """Test runs in a session, and how many failed: the cost of (re)discovering a project's rules by breaking them."""
+    ids = {b["id"] for b in blocks(events) if b.get("type") == "tool_use" and b.get("name") == "Bash"
+           and re.search(r"pytest(?! --version)|ci\.sh", str((b.get("input") or {}).get("command", "")))}
+    results = [json.dumps(b.get("content")) for b in blocks(events)
+               if b.get("type") == "tool_result" and b.get("tool_use_id") in ids]
+    return len(results), sum(bool(re.search(r"\b\d+ (failed|errors?)\b", r)) for r in results)
 
 
 def run_session(prompt: str, repo: Path, *, claude: str, model: str, arm: str, env: dict, log: Path) -> dict:
@@ -78,14 +95,16 @@ def run_session(prompt: str, repo: Path, *, claude: str, model: str, arm: str, e
         except ValueError:
             continue
     result = next((e for e in reversed(events) if e.get("type") == "result"), {}) or {}
-    tools = [b.get("name", "") for e in events if e.get("type") == "assistant"
-             for b in (e.get("message") or {}).get("content") or [] if isinstance(b, dict) and b.get("type") == "tool_use"]
+    tools = [b.get("name", "") for b in blocks(events) if b.get("type") == "tool_use"]
+    test_runs, failed_runs = test_run_counts(events)
     usage = result.get("usage") or {}
     text = str(result.get("result") or "").lower()
     return {
         "aborted": "usage limit" if any(t in text for t in LIMIT_TEXT) else (None if result else "no result"),
         "turns": int(result.get("num_turns") or 0),
         "tool_calls": len(tools),
+        "test_runs": test_runs,
+        "failed_test_runs": failed_runs,
         "horizon_calls": {t.removeprefix("mcp__horizon__"): tools.count(t) for t in sorted(set(tools))
                           if t.startswith("mcp__horizon__")},
         "cost_usd": round(float(result.get("total_cost_usd") or 0), 4),
@@ -102,6 +121,8 @@ def hidden_tests(scenario_dir: Path, sessions: range, repo: Path, python: str) -
             shutil.copy(scenario_dir / "hidden" / f"test_s{i}.py", tmp)
         for helper in (scenario_dir / "hidden").glob("[!t]*.py"):  # shared checks, e.g. team conventions
             shutil.copy(helper, tmp)
+        for always in (scenario_dir / "hidden").glob("test_always_*.py"):  # checked after every session
+            shutil.copy(always, tmp)
         proc = subprocess.run([python, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "--tb=no", tmp],
                               env={**os.environ, "PYTHONPATH": str(repo)}, capture_output=True, text=True, timeout=600)
     passed = re.findall(r"^PASSED \S+::(\S+)", proc.stdout, re.M)
@@ -147,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     # Then each session's hidden tests run on its own repo; otherwise they accumulate on the one repo.
     repos = scenario.get("repos")
     if not repos:
-        repo, env = setup(scenario, args.arm, work, python)
+        repo, env = setup(scenario, args.arm, work, python, start_dir=scenario_dir / "start")
     rows = []
     for i, prompt in enumerate(scenario["sessions"][: args.sessions], start=1):
         print(f"[{args.scenario}/{args.arm}] session {i}", flush=True)

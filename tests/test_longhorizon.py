@@ -125,3 +125,30 @@ def from_json(t): return json.loads(t)
     [row] = json.loads((tmp_path / "bad" / "team-baseline" / "results.json").read_text())["sessions"]
     assert set(row["hidden"]["failed"]) == {"test_invoice_follows_the_team_rules", "test_overdue_compares_real_instants",
                                             "test_bad_amount_raises_value_error"}
+
+
+def test_backlog_starts_from_a_codebase_and_checks_policy_every_session(tmp_path):
+    """The backlog scenario copies its starting codebase in; the reference passes every ticket and the policy,
+    and a session that breaks the policy (no changelog entry, a float) is caught."""
+    run = load("run")
+    ref = EVAL / "reference" / "backlog"
+    good = fake(tmp_path, "good", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)", "writes the reference")
+    run.main(["--scenario", "backlog", "--arm", "baseline", "--out", str(tmp_path / "ok"), "--claude", good])
+    rows = json.loads((tmp_path / "ok" / "backlog-baseline" / "results.json").read_text())["sessions"]
+    assert len(rows) == 8 and all(r["hidden"]["failed"] == [] for r in rows)
+    assert len(rows[-1]["hidden"]["passed"]) == 8 + 5  # 8 tickets and 5 policy checks
+
+    body = '''(repo / "shop" / "inventory.py").write_text((repo / "shop" / "inventory.py").read_text() + """
+def remove_item(name, qty):
+    \\"\\"\\"Remove units.\\"\\"\\"
+    if qty <= 0 or _STOCK.get(name, 0) < qty * 1.0:
+        raise ValueError(name)
+    _STOCK[name] -= qty
+""")
+(repo / "shop" / "__init__.py").write_text((repo / "shop" / "__init__.py").read_text() + "from shop.inventory import remove_item\\n")'''
+    drift = fake(tmp_path, "drift", body, "does ticket 1 but breaks the policy")
+    run.main(["--scenario", "backlog", "--arm", "baseline", "--out", str(tmp_path / "bad"), "--claude", drift,
+              "--sessions", "1"])
+    [row] = json.loads((tmp_path / "bad" / "backlog-baseline" / "results.json").read_text())["sessions"]
+    assert set(row["hidden"]["failed"]) == {"test_every_public_function_is_in_the_changelog", "test_money_is_never_a_float"}
+    assert row["test_runs"] == 0 and row["failed_test_runs"] == 0

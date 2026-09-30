@@ -80,3 +80,16 @@ def test_lean_resumed_session_keeps_its_task_and_never_blocks(settings, task_sto
     assert len(task_store.pending_captures(project_dir)) == 1  # still captured
     assert run_hook("stop", json.dumps({"cwd": project_dir, "session_id": "s1"}), settings, profile="lean") == ""
     assert run_hook("stop", json.dumps({"cwd": project_dir, "session_id": "s1"}), settings) != ""  # full blocks
+
+
+def test_recurring_failures_warn_the_next_session(settings, task_store, project_dir):
+    """A check that failed in two earlier sessions is a pitfall; one that failed once is test-first work."""
+    out = "FAILED tests/test_policy.py::test_never_prints - assert\n==== 1 failed, 2 passed in 0.1s ===="
+    for session in ("s1", "s2"):
+        bash = {"session_id": session, "cwd": project_dir, "tool_name": "Bash", "tool_input": {"command": "pytest"},
+                "tool_response": {"stdout": out, "stderr": ""}}
+        run_hook("post-tool-use", json.dumps(bash), settings, profile="lean")
+    once = out.replace("test_policy.py::test_never_prints", "test_new.py::test_restock")
+    run_hook("post-tool-use", json.dumps({**bash, "session_id": "s3", "tool_response": {"stdout": once}}), settings)
+    ctx = lean("session-start", {"cwd": project_dir, "session_id": "s4"}, settings)
+    assert "tests/test_policy.py::test_never_prints (failed in 2 sessions)" in ctx and "test_restock" not in ctx

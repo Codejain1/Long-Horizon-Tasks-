@@ -27,6 +27,8 @@ def summary(run: dict) -> dict:
         "horizon_calls": sum(sum(r["horizon_calls"].values()) for r in s),
         "cost_usd": round(sum(r["cost_usd"] for r in s), 3),
         "tokens": sum(r["tokens"] for r in s),
+        "test_runs": sum(r.get("test_runs", 0) for r in s),
+        "failed_test_runs": sum(r.get("failed_test_runs", 0) for r in s),
     }
 
 
@@ -34,11 +36,11 @@ def main(argv: list[str]) -> int:
     runs = load(Path(argv[1]))
     for run in runs:
         print(f"\n== {run['scenario']} / {run['arm']} ({run['model']})")
-        print("  session  hidden(pass/fail)  violations  turns  tools  horizon  cost$")
+        print("  session  hidden(pass/fail)  violations  turns  tools  horizon  cost$  failed/test runs")
         for r in run["sessions"]:
             print(f"  {r['session']:>7}  {len(r['hidden']['passed']):>6}/{len(r['hidden']['failed']):<10}"
                   f"{len(r['violations']):>10}  {r['turns']:>5}  {r['tool_calls']:>5}  "
-                  f"{sum(r['horizon_calls'].values()):>7}  {r['cost_usd']:>5}" + ("  ABORTED" if r["aborted"] else ""))
+                  f"{sum(r['horizon_calls'].values()):>7}  {r['cost_usd']:>5}  {r.get('failed_test_runs', 0)}/{r.get('test_runs', 0)}" + ("  ABORTED" if r["aborted"] else ""))
             for v in r["violations"]:
                 print(f"           ! {v}")
     table = {f"{r['scenario']}/{r['arm']}": summary(r) for r in runs}
