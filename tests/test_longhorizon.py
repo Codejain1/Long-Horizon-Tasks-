@@ -171,6 +171,117 @@ def test_failed_test_runs_are_counted_from_the_transcript():
     assert run.test_run_counts(events) == (2, 1)
 
 
+def test_failing_checks_come_from_the_agents_own_test_runs():
+    run = load("run")
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "./ci.sh"}},
+            {"type": "tool_use", "id": "b", "name": "Bash", "input": {"command": "cat notes.txt"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "a", "content":
+                "F.E\n=== short test summary info ===\n"
+                "FAILED tests/test_policy.py::test_no_local_time - AssertionError: ['a.py:3: now()']\n"
+                "ERROR tests/test_db.py::test_writers[8] - OSError\n1 failed, 1 error, 1 passed in 0.1s"},
+            {"type": "tool_result", "tool_use_id": "b", "content": "FAILED tests/test_x.py::test_not_a_run"}]}},
+    ]
+    assert run.failing_checks(events) == ["tests/test_db.py::test_writers[8]",
+                                          "tests/test_policy.py::test_no_local_time"]
+
+
+SCRIPTED = '''#!{python}
+"""A fake `claude -p` that plays a scripted session per call: {what}."""
+import json, pathlib, shutil
+repo = pathlib.Path.cwd()
+counter = pathlib.Path(__file__).with_suffix(".n")
+n = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(n))
+{body}
+def ci(output):
+    print(json.dumps({{"type": "assistant", "message": {{"content": [
+        {{"type": "tool_use", "id": f"t{{n}}", "name": "Bash", "input": {{"command": "./ci.sh"}}}}]}}}}))
+    print(json.dumps({{"type": "user", "message": {{"content": [
+        {{"type": "tool_result", "tool_use_id": f"t{{n}}", "content": output}}]}}}}))
+ci(OUTPUT)
+print(json.dumps({{"type": "result", "subtype": "success", "result": "done", "num_turns": 3, "session_id": f"sess-{{n}}",
+                  "total_cost_usd": 0.01, "usage": {{"input_tokens": 10, "output_tokens": 5}}}}))
+'''
+
+
+def scripted(tmp_path, name, body, what):
+    path = tmp_path / name
+    path.write_text(SCRIPTED.format(python=sys.executable, body=body, what=what))
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return str(path)
+
+
+def test_repeat_failures_and_regressions_are_counted_across_sessions(tmp_path):
+    """Session 1 writes the reference; CI shows the changelog check failing in sessions 1 and 3 (one repeat) and
+    session 2 breaks ticket 1 (one regression), all measured from ground truth, not the agent's summary."""
+    run, report = load("run"), load("report")
+    ref = EVAL / "reference" / "backlog"
+    changelog = "FAILED tests/test_policy.py::test_every_public_function_is_in_the_changelog - AssertionError"
+    body = f'''if n == 1:
+    shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)
+if n == 2:
+    inv = repo / "shop" / "inventory.py"
+    inv.write_text(inv.read_text().replace("_STOCK[name] -= qty", "_STOCK[name] -= qty * 2"))
+OUTPUT = {{1: {changelog!r} + "\\n1 failed, 4 passed", 2: "5 passed", 3: {changelog!r} + "\\n1 failed"}}[n]'''
+    agent = scripted(tmp_path, "agent", body, "one repeat failure and one regression")
+    run.main(["--scenario", "backlog", "--arm", "baseline", "--out", str(tmp_path / "out"), "--claude", agent,
+              "--sessions", "3"])
+    rows = json.loads((tmp_path / "out" / "backlog-baseline" / "results.json").read_text())["sessions"]
+    check = "tests/test_policy.py::test_every_public_function_is_in_the_changelog"
+    assert [r["failed_checks"] for r in rows] == [[check], [], [check]]
+    assert [r["repeat_failures"] for r in rows] == [[], [], [check]]
+    assert [r["regressions"] for r in rows] == [[], ["test_remove_item"], []]
+    assert [r["session_id"] for r in rows] == ["sess-1", "sess-2", "sess-3"]
+    assert "horizon" not in rows[0]  # baseline has no Horizon to look into
+    report.main(["report", str(tmp_path / "out")])
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text())["backlog/baseline"]
+    assert (summary["repeat_failures"], summary["regressions"], summary["injected_chars"]) == (1, 1, 0)
+
+
+HOOK_PLAYER = '''
+settings = json.loads((repo / ".claude" / "settings.json").read_text())
+import subprocess
+outs = []
+def fire(event, **extra):
+    for group in settings["hooks"].get(event, []):
+        for hook in group["hooks"]:
+            payload = {"session_id": f"sess-{n}", "cwd": str(repo), "hook_event_name": event, **extra}
+            outs.append(subprocess.run(hook["command"], shell=True, input=json.dumps(payload), text=True,
+                                       capture_output=True).stdout.strip())
+fire("SessionStart", source="startup")
+fire("UserPromptSubmit", prompt="Add a notes module. Always keep it stdlib only.")
+fire("Stop", stop_hook_active=False)
+fire("SessionEnd", reason="other")
+pathlib.Path(__file__).with_suffix(f".{n}.json").write_text(json.dumps(outs))
+OUTPUT = "1 passed"
+'''
+
+
+def test_the_observe_arm_records_events_silently_and_lean_injection_is_measured(tmp_path):
+    """The fake agent fires the installed hooks the way Claude Code does. Observe's hooks print nothing yet log
+    every session; lean's context is counted; the run's event log is exported for the world model."""
+    run = load("run")
+    for arm in ("observe", "lean"):
+        player = scripted(tmp_path, f"player-{arm}", HOOK_PLAYER, "fires the installed hooks")
+        run.main(["--scenario", "notes", "--arm", arm, "--out", str(tmp_path / "out"), "--claude", player,
+                  "--sessions", "2"])
+    work = tmp_path / "out" / "notes-observe"
+    rows = json.loads((work / "results.json").read_text())["sessions"]
+    assert [json.loads((tmp_path / f"player-observe.{n}.json").read_text()) for n in (1, 2)] == [[""] * 4] * 2
+    session = {"session_start": 1, "prompt": 1, "turn_end": 1, "session_end": 1}
+    assert [r["horizon"] for r in rows] == [{"events": session, "injected_chars": 0}] * 2
+    exported = [json.loads(line) for line in (work / "events.jsonl").read_text().splitlines()]
+    assert [e["session_id"] for e in exported] == ["sess-1"] * 4 + ["sess-2"] * 4
+    assert not (work / "repo" / "CLAUDE.md").exists() and not (work / "repo" / ".mcp.json").exists()
+
+    lean = json.loads((tmp_path / "out" / "notes-lean" / "results.json").read_text())["sessions"]
+    assert all(r["horizon"]["events"] == session and r["horizon"]["injected_chars"] > 0 for r in lean)
+    assert any(json.loads((tmp_path / "player-lean.1.json").read_text()))
+
+
 def test_resume_from_another_run_and_seed_its_test_history(tmp_path, monkeypatch):
     """Replay: a lean run starts from a baseline run's repo after session 2, with Horizon's memory seeded from
     that run's real test runs, so a check that failed in both sessions is already a known pitfall."""

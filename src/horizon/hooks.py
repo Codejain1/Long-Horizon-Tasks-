@@ -381,14 +381,34 @@ LEAN_HANDLERS = {
 }
 
 
-def log_events(name: str, payload: dict, events: EventStore, team: str, project: str) -> int:
-    """Append what this hook call observed to the event log (v2 Phase 0). Returns the number of events."""
+MODEL_VISIBLE = ("additionalContext", "reason", "permissionDecisionReason")
+
+
+def injected_chars(result: dict | None) -> int:
+    """Characters of a hook's output that the model reads: added context, a blocked stop's or a denial's reason."""
+    if not result:
+        return 0
+    inner = result.get("hookSpecificOutput") or {}
+    return sum(len(str(d.get(k) or "")) for d in (result, inner) for k in MODEL_VISIBLE)
+
+
+def log_events(name: str, payload: dict, events: EventStore, team: str, project: str, injected: int = 0) -> int:
+    """Append what this hook call observed to the event log (v2 Phase 0). Returns the number of events.
+    `injected` (what the hook gave the model) goes on the call's first event, so a session's context cost sums."""
     usage = turn_usage(payload.get("transcript_path")) if name == "stop" else None
     new = events_from_hook(name, payload, team_id=team, project=project, project_dir=project,
                            source=os.environ.get("HORIZON_HOST", "claude-code"), usage=usage)
+    if new and injected:
+        new[0].data["injected_chars"] = injected
     for event in new:
         events.append(event)
     return len(new)
+
+
+def pick_handler(name: str, profile: str):
+    if profile == "observe":  # log events, say nothing, keep no task state: plain Claude Code plus a recorder
+        return lambda payload, backend, project: None
+    return LEAN_HANDLERS.get(name, HANDLERS[name]) if profile == "lean" else HANDLERS[name]
 
 
 def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: str | None = None,
@@ -402,7 +422,7 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
     """
     try:
         payload = json.loads(stdin or "{}")
-        handler = LEAN_HANDLERS.get(name, HANDLERS[name]) if profile == "lean" else HANDLERS[name]
+        handler = pick_handler(name, profile)
         if remote:
             backend = Remote(remote, os.environ.get("HORIZON_API_KEY", ""))
             result = handler(payload, backend, project_key(project_dir(payload)))
@@ -414,7 +434,7 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                 project = project_dir(payload)
                 result = handler(payload, Local(TaskStore(db), settings.team_id, scorer), project)
                 try:
-                    log_events(name, payload, EventStore(db), settings.team_id, project)
+                    log_events(name, payload, EventStore(db), settings.team_id, project, injected_chars(result))
                 except Exception as exc:
                     if os.environ.get("HORIZON_DEBUG"):
                         print(f"horizon: event log failed in {name}: {exc!r}", file=sys.stderr)

@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name", choices=["session-start", "pre-tool-use", "post-tool-use", "stop", "user-prompt",
                                     "pre-compact", "session-end"])
     p.add_argument("--remote", help="Hosted server URL: send parsed facts there (key in HORIZON_API_KEY).")
-    p.add_argument("--profile", choices=["full", "lean"], default="full")
+    p.add_argument("--profile", choices=["full", "lean", "observe"], default="full")
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
@@ -65,10 +65,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
     p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
-    p.add_argument("--profile", choices=["full", "lean"], default="lean",
+    p.add_argument("--profile", choices=["full", "lean", "observe"], default="lean",
                    help="lean (default): continuity through hooks (goals, constraints, team rules, recurring "
                         "pitfalls), no agent calls. full: the whole workflow (decision scoring, recall per step, "
-                        "outcomes per test run, rollback).")
+                        "outcomes per test run, rollback). observe: hooks only record the event log, and the agent "
+                        "gets nothing (evaluation baselines; local only).")
 
     args = parser.parse_args(argv)
     from horizon.config import Settings
@@ -182,8 +183,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "install-claude-code":
         from horizon.install import install
 
-        changed = install(Path(args.dir), claude_md=not args.no_claude_md, hosted=args.hosted,
-                          profile=args.profile)
+        try:
+            changed = install(Path(args.dir), claude_md=not args.no_claude_md, hosted=args.hosted,
+                              profile=args.profile)
+        except ValueError as exc:
+            raise SystemExit(f"horizon: {exc}") from None
         print("Updated: " + ", ".join(changed))
     return 0
 

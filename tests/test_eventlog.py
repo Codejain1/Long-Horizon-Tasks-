@@ -10,7 +10,7 @@ from horizon.adapters.coding import classify_command, classify_path, events_from
 from horizon.db import connect
 from horizon.eventlog import Action, Event, EventStore, Result
 from horizon.eventlog.transitions import replay
-from horizon.hooks import run_hook
+from horizon.hooks import injected_chars, run_hook
 from horizon.install import install
 from horizon.taskstate.usage import turn_usage
 
@@ -286,3 +286,83 @@ def test_the_installer_adds_the_event_hooks_for_local_lean_only(tmp_path):
     assert full["PostToolUse"][0]["matcher"] == "Bash"
     hosted = hooks(hosted="https://h.example")
     assert "PreCompact" not in hosted and "SessionEnd" not in hosted and "UserPromptSubmit" in hosted
+
+
+# --- the observe profile: a recorder the agent can't notice (evaluation baselines) -----------------------------
+
+LEAN_SESSION = ["session_start", "prompt", "step", "step", "turn_end", "compaction", "session_end"]
+TASK_STATE_TABLES = ("tasks", "test_captures", "tool_calls", "checkpoints", "approvals", "attempt_usage")
+
+
+def task_state_rows(db) -> dict:
+    return {t: sorted(map(repr, db.fetchall(f"SELECT * FROM {t}"))) for t in TASK_STATE_TABLES}
+
+
+def test_observe_logs_what_lean_logs_but_says_nothing_and_keeps_no_state(settings, events, task_store, project_dir,
+                                                                        tmp_path):
+    def hook(profile, session, name, **payload):
+        return run_hook(name, json.dumps({"session_id": session, "cwd": project_dir, **payload}), settings,
+                        profile=profile)
+
+    def a_session(profile, session):
+        outs = [hook(profile, session, "session-start", source="startup"),
+                hook(profile, session, "user-prompt", prompt="Add refunds. Always keep money in integer cents."),
+                hook(profile, session, "post-tool-use", tool_name="Edit",
+                     tool_input={"file_path": f"{project_dir}/shop.py"}, tool_response={}),
+                hook(profile, session, "post-tool-use", tool_name="Bash", tool_input={"command": "pytest"},
+                     tool_response={"stdout": "==== 1 failed, 2 passed in 0.1s ===="}),
+                hook(profile, session, "stop", transcript_path=transcript(tmp_path), stop_hook_active=False),
+                hook(profile, session, "pre-compact", trigger="manual"),
+                hook(profile, session, "session-end", reason="other")]
+        return outs, events.session(settings.team_id, project_dir, session)
+
+    lean_outs, lean = a_session("lean", "s-lean")
+    assert lean_outs[1] and [e.kind for e in lean] == LEAN_SESSION
+    assert hook("lean", "s-next", "session-start", source="startup")  # lean would say something here
+    before = task_state_rows(task_store.db)
+    assert before["tasks"] and before["test_captures"]
+
+    observe_outs, observed = a_session("observe", "s-observe")
+    assert observe_outs == [""] * 7
+    assert [e.kind for e in observed] == LEAN_SESSION
+    assert [(e.action, e.result) for e in observed] == [(e.action, e.result) for e in lean]
+    assert task_state_rows(task_store.db) == before  # no task, test capture or usage written or changed
+    assert not any("injected_chars" in e.data for e in observed)
+    prompt_event = lean[1]
+    assert prompt_event.data["injected_chars"] == len(json.loads(lean_outs[1])["hookSpecificOutput"]["additionalContext"])
+
+
+def test_injected_chars_counts_only_what_the_model_reads():
+    assert injected_chars(None) == 0 and injected_chars({}) == 0
+    assert injected_chars({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "abcd"}}) == 4
+    assert injected_chars({"decision": "block", "reason": "record it"}) == 9
+    assert injected_chars({"hookSpecificOutput": {"permissionDecision": "deny",
+                                                  "permissionDecisionReason": "restore first"}}) == 13
+    assert injected_chars({"systemMessage": "shown to the user only", "suppressOutput": True}) == 0
+
+
+def test_the_observe_install_is_hooks_only_and_undoes_a_lean_install(tmp_path, capsys):
+    from horizon.cli import main
+
+    (tmp_path / "CLAUDE.md").write_text("# My project\n\nUse tabs.\n")
+    install(tmp_path, command=["py", "-m", "horizon"])  # lean first, then switch
+    assert install(tmp_path, command=["py", "-m", "horizon"], profile="observe") == [".claude/settings.json"]
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    hooks = settings["hooks"]
+    assert set(hooks) == {"SessionStart", "PreToolUse", "PostToolUse", "Stop", "UserPromptSubmit", "PreCompact",
+                          "SessionEnd"}
+    assert all(g["hooks"][0]["command"].endswith("--profile observe") for groups in hooks.values() for g in groups)
+    assert all(len(groups) == 1 for groups in hooks.values())  # lean's entries were replaced, not duplicated
+    assert hooks["PostToolUse"][0]["matcher"] == "Bash|Edit|Write|MultiEdit|NotebookEdit"
+    assert "enabledMcpjsonServers" not in settings
+    assert "horizon" not in json.loads((tmp_path / ".mcp.json").read_text()).get("mcpServers", {})
+    assert (tmp_path / "CLAUDE.md").read_text() == "# My project\n\nUse tabs.\n"
+
+    with pytest.raises(ValueError, match="locally"):
+        install(tmp_path, command=["py", "-m", "horizon"], profile="observe", hosted="https://h.example")
+    with pytest.raises(SystemExit, match="locally"):
+        main(["install-claude-code", "--dir", str(tmp_path), "--profile", "observe", "--hosted", "https://h.example"])
+
+    install(tmp_path, command=["py", "-m", "horizon"])  # and back to lean
+    assert "horizon" in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
+    assert "horizon:start" in (tmp_path / "CLAUDE.md").read_text()

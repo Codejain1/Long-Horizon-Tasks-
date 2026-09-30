@@ -32,6 +32,8 @@ LEAN_ONLY = {"UserPromptSubmit", "PreCompact", "SessionEnd"}
 EVENT_LOG_ONLY = {"PreCompact", "SessionEnd"}  # hosted hooks don't forward events yet: skip them there
 # Lean records file edits too (the event log's steps); full keeps Bash only (the reliability demo pins full).
 LEAN_MATCHERS = {"PostToolUse": "Bash|Edit|Write|MultiEdit|NotebookEdit"}
+# `observe` installs lean's hooks and nothing else: they log events and print nothing (evaluation baselines).
+LEAN_HOOKS = {"lean", "observe"}
 
 
 def default_command() -> list[str]:
@@ -86,11 +88,11 @@ def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profi
             group["hooks"] = [h for h in group.get("hooks", [])
                               if not re.search(rf"horizon hook {name}( |$)", h.get("command", ""))]
         groups[:] = [g for g in groups if g.get("hooks")]
-        if (event in LEAN_ONLY and profile != "lean") or (event in EVENT_LOG_ONLY and hosted):
+        if (event in LEAN_ONLY and profile not in LEAN_HOOKS) or (event in EVENT_LOG_ONLY and hosted):
             if not groups:
                 del hooks[event]
             continue
-        if profile == "lean":
+        if profile in LEAN_HOOKS:
             matcher = LEAN_MATCHERS.get(event, matcher)
         # 30 s: hooks take well under a second, but a loaded machine once pushed one past a 10 s limit.
         group = {"hooks": [{"type": "command", "command": cmd, "timeout": 30}]}
@@ -104,9 +106,27 @@ def install_settings(project: Path, command: list[str], hosted: str | None = Non
     path = project / ".claude" / "settings.json"
     data = merge_hooks(_load(path), command, hosted, profile)
     enabled = data.setdefault("enabledMcpjsonServers", [])
-    if "horizon" not in enabled:
+    if profile == "observe":
+        enabled[:] = [s for s in enabled if s != "horizon"]
+        if not enabled:
+            del data["enabledMcpjsonServers"]
+    elif "horizon" not in enabled:
         enabled.append("horizon")
     _dump(path, data)
+
+
+def remove_claude_md(project: Path, filename: str = "CLAUDE.md") -> None:
+    path = project / filename
+    if not path.exists():
+        return
+    text = path.read_text()
+    kept = re.sub(re.escape(MARK_START) + r".*?" + re.escape(MARK_END), "", text, flags=re.S).strip()
+    if kept == text.strip():
+        return
+    if kept:
+        path.write_text(kept + "\n")
+    else:
+        path.unlink()
 
 
 def install_claude_md(project: Path, filename: str = "CLAUDE.md", profile: str = "full") -> None:
@@ -191,6 +211,15 @@ def install(project: Path, command: list[str] | None = None, claude_md: bool = T
             hosted: str | None = None, profile: str = "lean") -> list[str]:
     command = command or default_command()
     project = project.resolve()
+    if profile == "observe":
+        # A recorder the agent can't notice: no tools, no instructions, hooks that print nothing.
+        if hosted:
+            raise ValueError("the observe profile logs events locally; hosted hooks don't forward events yet")
+        remove_mcp_entry(project)
+        install_settings(project, command, None, profile)
+        if claude_md:
+            remove_claude_md(project)
+        return [".claude/settings.json"]
     if hosted and profile == "lean":
         # Lean's value is in the hooks. The hosted MCP endpoint serves every team the full tool list, whose
         # "call this every time" descriptions only draw extra calls.

@@ -7,6 +7,12 @@ sessions (a day boundary). After every session the hidden checks run outside the
 of every session so far, and the constraints from session 1 (stdlib only, Python 3.9, unchanged public names).
 Both arms get the same model, prompts, permissions and isolation (only the project's own settings, only the
 MCP servers passed here); the only difference is whether Horizon is installed.
+
+Arms: `baseline` (plain Claude Code), `observe` (plain Claude Code plus Horizon's silent event recorder, for
+world-model data), `lean` (the default install) and `horizon` (the full workflow). Per session the harness also
+records which checks failed in the agent's own test runs, repeat failures (a check failing again after an earlier
+session saw it fail), regressions (a hidden test that passed after the previous session and doesn't now) and, for
+arms with Horizon installed, the session's events and the context Horizon injected (`docs/EVALS.md`).
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -32,6 +39,9 @@ HORIZON_TOOLS = ["mcp__horizon__start_task", "mcp__horizon__recall_context", "mc
                  "mcp__horizon__submit_consequences", "mcp__horizon__record_outcome", "mcp__horizon__explain_decision",
                  "mcp__horizon__show_memories"]
 LIMIT_TEXT = ("session limit", "usage limit", "rate limit")
+PROFILES = {"horizon": "full", "lean": "lean", "observe": "observe"}  # arm -> install profile
+MCP_ARMS = ("horizon", "lean")  # arms whose agent gets Horizon's MCP tools
+TEST_COMMAND = re.compile(r"pytest(?! --version)|ci\.sh")
 
 
 def git(repo: Path, *args: str) -> str:
@@ -61,11 +71,10 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
         git(repo, "commit", "-qm", "start")
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
     env["PATH"] = f"{Path(python).parent}:{env.get('PATH', '')}"
-    if arm in ("horizon", "lean"):
+    if arm in PROFILES:
         env["HORIZON_DB_URL"] = f"sqlite:///{work / 'horizon.db'}"
         subprocess.run([python, "-m", "horizon", "install-claude-code", "--dir", str(repo),
-                        "--profile", "lean" if arm == "lean" else "full"], check=True, env=env,
-                       capture_output=True)
+                        "--profile", PROFILES[arm]], check=True, env=env, capture_output=True)
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", "install horizon")
     return repo, env
@@ -83,13 +92,64 @@ def text(content) -> str:
     return str(content or "")
 
 
+def test_run_outputs(events: list[dict]) -> list[str]:
+    ids = {b["id"] for b in blocks(events) if b.get("type") == "tool_use" and b.get("name") == "Bash"
+           and TEST_COMMAND.search(str((b.get("input") or {}).get("command", "")))}
+    return [text(b.get("content")) for b in blocks(events)
+            if b.get("type") == "tool_result" and b.get("tool_use_id") in ids]
+
+
 def test_run_counts(events: list[dict]) -> tuple[int, int]:
     """Test runs in a session, and how many failed: the cost of (re)discovering a project's rules by breaking them."""
-    ids = {b["id"] for b in blocks(events) if b.get("type") == "tool_use" and b.get("name") == "Bash"
-           and re.search(r"pytest(?! --version)|ci\.sh", str((b.get("input") or {}).get("command", "")))}
-    results = [text(b.get("content")) for b in blocks(events)
-               if b.get("type") == "tool_result" and b.get("tool_use_id") in ids]
+    results = test_run_outputs(events)
     return len(results), sum(bool(re.search(r"\b\d+ (failed|errors?)\b", r)) for r in results)
+
+
+def failing_checks(events: list[dict]) -> list[str]:
+    """The checks that failed in the session's own test runs (pytest's FAILED/ERROR summary lines)."""
+    return sorted({m for r in test_run_outputs(events)
+                   for m in re.findall(r"^(?:FAILED|ERROR) (\S+::\S+)", r, re.M)})
+
+
+def read_log(path: Path) -> list[dict]:
+    events = []
+    for line in path.read_text().splitlines() if path.exists() else []:
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            continue
+    return events
+
+
+def horizon_view(work: Path, session_id: str | None) -> dict:
+    """What Horizon's event log holds for one session: events by kind, and the characters it gave the agent."""
+    db = work / "horizon.db"
+    if not session_id or not db.exists():
+        return {"events": {}, "injected_chars": 0}
+    with sqlite3.connect(db) as conn:
+        try:
+            rows = conn.execute("SELECT kind, data FROM events WHERE session_id = ? ORDER BY n", (session_id,)).fetchall()
+        except sqlite3.OperationalError:  # no hook has run yet, so no events table
+            rows = []
+    kinds: dict[str, int] = {}
+    for kind, _ in rows:
+        kinds[kind] = kinds.get(kind, 0) + 1
+    injected = sum(int((json.loads(data).get("data") or {}).get("injected_chars") or 0) for _, data in rows)
+    return {"events": kinds, "injected_chars": injected}
+
+
+def export_events(work: Path) -> int:
+    """The run's whole event log as JSON Lines (world-model training data), in write order."""
+    db = work / "horizon.db"
+    if not db.exists():
+        return 0
+    with sqlite3.connect(db) as conn:
+        try:
+            rows = conn.execute("SELECT data FROM events ORDER BY n").fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+    (work / "events.jsonl").write_text("".join(json.dumps(json.loads(r[0])) + "\n" for r in rows))
+    return len(rows)
 
 
 def seed_test_runs(source: Path, sessions: range, repo: Path, env: dict, python: str) -> int:
@@ -114,19 +174,16 @@ def seed_test_runs(source: Path, sessions: range, repo: Path, env: dict, python:
 def run_session(prompt: str, repo: Path, *, claude: str, model: str, arm: str, env: dict, log: Path) -> dict:
     cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
            "--model", model, "--setting-sources", "project,local", "--strict-mcp-config", "--allowedTools",
-           *AGENT_TOOLS, *(HORIZON_TOOLS if arm != "baseline" else [])]
-    if arm != "baseline":
-        cmd += ["--mcp-config", ".mcp.json", "--include-hook-events"]
+           *AGENT_TOOLS, *(HORIZON_TOOLS if arm in MCP_ARMS else [])]
+    if arm in MCP_ARMS:
+        cmd += ["--mcp-config", ".mcp.json"]
+    if arm in PROFILES:
+        cmd += ["--include-hook-events"]
     start = time.monotonic()
     proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=45 * 60,
                           stdin=subprocess.DEVNULL)
     log.write_text(proc.stdout)
-    events = []
-    for line in proc.stdout.splitlines():
-        try:
-            events.append(json.loads(line))
-        except ValueError:
-            continue
+    events = read_log(log)
     result = next((e for e in reversed(events) if e.get("type") == "result"), {}) or {}
     tools = [b.get("name", "") for b in blocks(events) if b.get("type") == "tool_use"]
     test_runs, failed_runs = test_run_counts(events)
@@ -134,10 +191,12 @@ def run_session(prompt: str, repo: Path, *, claude: str, model: str, arm: str, e
     text = str(result.get("result") or "").lower()
     return {
         "aborted": "usage limit" if any(t in text for t in LIMIT_TEXT) else (None if result else "no result"),
+        "session_id": result.get("session_id"),
         "turns": int(result.get("num_turns") or 0),
         "tool_calls": len(tools),
         "test_runs": test_runs,
         "failed_test_runs": failed_runs,
+        "failed_checks": failing_checks(events),
         "horizon_calls": {t.removeprefix("mcp__horizon__"): tools.count(t) for t in sorted(set(tools))
                           if t.startswith("mcp__horizon__")},
         "cost_usd": round(float(result.get("total_cost_usd") or 0), 4),
@@ -184,7 +243,7 @@ def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[s
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", required=True)
-    ap.add_argument("--arm", choices=["baseline", "horizon", "lean"], required=True)
+    ap.add_argument("--arm", choices=["baseline", "observe", "lean", "horizon"], required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--sessions", type=int, default=None, help="Stop after this many sessions.")
@@ -207,9 +266,15 @@ def main(argv: list[str] | None = None) -> int:
     resume = (Path(args.resume), args.from_session) if args.resume else None
     if not repos:
         repo, env = setup(scenario, args.arm, work, python, start_dir=scenario_dir / "start", resume=resume)
-    if resume and args.arm != "baseline":
+    if resume and args.arm in MCP_ARMS:
         seeded = seed_test_runs(resume[0], range(1, args.from_session), repo, env, python)
         print(f"[{args.scenario}/{args.arm}] seeded {seeded} test runs from {resume[0]}", flush=True)
+    # Checks that already failed before this run's first session: every arm of a replay starts with the same history.
+    seen = {c for i in range(1, args.from_session) if resume
+            for c in failing_checks(read_log(resume[0] / f"session{i}.jsonl"))}
+    source_rows = json.loads((resume[0] / "results.json").read_text())["sessions"] \
+        if resume and (resume[0] / "results.json").exists() else []
+    passed_before = {t for r in source_rows if r["session"] == args.from_session - 1 for t in r["hidden"]["passed"]}
     rows = []
     for i, prompt in enumerate(scenario["sessions"][: args.sessions], start=1):
         if i < args.from_session:
@@ -224,6 +289,13 @@ def main(argv: list[str] | None = None) -> int:
         git(repo, "commit", "-qm", f"after session {i}", "--allow-empty")
         row["hidden"] = hidden_tests(scenario_dir, range(i, i + 1) if repos else range(1, i + 1), repo, python)
         row["violations"] = constraints(scenario, repo, python, package)
+        row["repeat_failures"] = sorted(seen & set(row["failed_checks"]))
+        seen |= set(row["failed_checks"])
+        passed = set(row["hidden"]["passed"])
+        row["regressions"] = [] if repos else sorted(passed_before - passed)  # separate repos can't regress
+        passed_before = passed
+        if args.arm in PROFILES:
+            row["horizon"] = horizon_view(work, row["session_id"])
         rows.append(row)
         (work / "results.json").write_text(json.dumps({"scenario": args.scenario, "arm": args.arm,
                                                        "model": args.model, "sessions": rows}, indent=2))
@@ -232,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
               + (f", ABORTED ({row['aborted']})" if row["aborted"] else ""), flush=True)
         if row["aborted"]:
             break
+    if args.arm in PROFILES:
+        print(f"[{args.scenario}/{args.arm}] exported {export_events(work)} events", flush=True)
     return 0
 
 
