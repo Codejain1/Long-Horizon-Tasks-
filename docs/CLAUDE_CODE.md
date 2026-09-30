@@ -44,7 +44,7 @@ Check the connection with `claude mcp list`. It should show `horizon: … √ Co
 
 | Hook | Lean behaviour |
 |---|---|
-| `UserPromptSubmit` (lean only) | The session's first message becomes its task: the goal, with code removed. Later messages become progress notes. Sentences that set lasting rules become **team rules** ("for every project/service", "future projects", "team rules") or **constraints** for this project ("from now on", "always", "never"). This is a keyword heuristic. |
+| `UserPromptSubmit` (lean only) | The session's first message becomes its task: the goal, with code removed. Later messages become progress notes. Sentences that set lasting rules become **team rules** or **constraints** for this project. With a scorer (`HORIZON_SCORER=jev`), Jev answers two yes/no questions per sentence in one request (about 1 s). Without one, or if it fails, keywords are used ("for every project", "from now on", "never"). On `evals/rules/labelled.json`, Jev scored 97 % and keywords 62 %. |
 | `SessionStart` | Marks the previous session's task done. A resumed or compacted session keeps its own. Then it shows the team's rules and the recent tasks' goals and constraints. |
 | `PostToolUse` | Still captures test counts, but doesn't ask for `record_outcome`. |
 | `Stop` | Never blocks. |

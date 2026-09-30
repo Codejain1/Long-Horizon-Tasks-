@@ -605,7 +605,8 @@ def http_app(settings: Settings, cwd: str | None = None):
         return platforms[team]
 
     mcp_app = create_server(Gateway(platform_for, accounts, settings.dev_api_key)).streamable_http_app()
-    web = create_web_app(accounts, base.tasks, lifespan=lambda app: mcp_app.router.lifespan_context(mcp_app))
+    web = create_web_app(accounts, base.tasks, lifespan=lambda app: mcp_app.router.lifespan_context(mcp_app),
+                         scorer_factory=base._scorer_factory)
     web.mount("/", APIKeyMiddleware(mcp_app, settings.dev_api_key, accounts, prefix="/mcp"))
     return web
 

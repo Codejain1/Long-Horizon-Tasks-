@@ -152,3 +152,43 @@ def test_team_rules_reach_a_teammate_on_another_machine(settings, free_tcp_port,
         assert "uuid4" not in hook("session-start", other_key, "/bob/payouts", "o1")
     finally:
         server.should_exit = True
+
+
+class RuleScorer:
+    """A stand-in for Jev: says yes to the questions about the sentences listed."""
+
+    def __init__(self, team=(), project=(), fail=False):
+        self.team, self.project, self.fail, self.calls = set(team), set(project), fail, 0
+
+    def ask(self, state, questions):
+        from horizon.decision.scorers import Answer
+
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("scorer down")
+        out = {}
+        for qid, q in questions.items():
+            kind, i = qid.rsplit("_", 1)
+            assert f"sentences[{i}]" in q["instructions"]
+            hit = state["sentences"][int(i)] in (self.team if kind == "team" else self.project)
+            out[qid] = Answer(0.9 if hit else 0.1)
+        return out
+
+
+def test_rules_are_picked_by_the_scorer_in_one_request():
+    from horizon.hooks import split_rules
+
+    text = "Always remember I prefer short commit messages, everywhere. Never mind that. Write tests."
+    scorer = RuleScorer(team={"Always remember I prefer short commit messages, everywhere."})
+    assert split_rules(text, scorer) == (["Always remember I prefer short commit messages, everywhere."], [])
+    assert scorer.calls == 1
+    # Keywords alone get both wrong: a team rule filed as a project rule, and "Never mind" as a rule.
+    assert split_rules(text) == ([], ["Always remember I prefer short commit messages, everywhere.", "Never mind that."])
+
+
+def test_a_failing_scorer_falls_back_to_keywords(settings, task_store, project_dir):
+    from horizon.hooks import lean_user_prompt, split_rules
+
+    assert split_rules(TEAM_PROMPT, RuleScorer(fail=True))[0][0].startswith("Our team's rules")
+    lean_user_prompt(task_store, settings.team_id, project_dir, "s1", TEAM_PROMPT, scorer=RuleScorer(fail=True))
+    assert task_store.team_rules(settings.team_id)[0].startswith("Our team's rules")

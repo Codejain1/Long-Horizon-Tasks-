@@ -73,3 +73,14 @@ Lean now captures the task and rules from the `UserPromptSubmit` hook. Reps 1–
 - **Lean broke it far less, but not because of the pitfall warning.** The warning needs failures in 2 earlier sessions, and lean failed only once before ticket 8, so it never fired. Lean's session start did list the earlier tickets. Whether that prompted more care, or this is chance, one run can't tell.
 - **Both arms ended with every ticket and policy passing,** so quality is equal. Lean cost 13 % more. The warning mechanism itself is untested: it needs a run where the pitfall recurs under Horizon, or a replay that seeds a history of failures.
 - The failed-run counter was fixed before these numbers: JSON-escaping newlines had hidden "1 failed". The counts were recomputed from the saved transcripts.
+
+## Picking out rules: keywords against Jev (`evals/rules/`, 2026-09-30)
+
+Each sentence of a prompt is classified as a team rule (all projects), a project constraint, or neither. On 32 labelled sentences:
+
+| | Accuracy | Misses |
+|---|---|---|
+| keywords | **62 %** | Rules without trigger words ("For any code you write for me, use type hints", "This package must keep supporting Python 3.9"). "Never mind…" and "Always a pleasure…" taken as rules. |
+| Jev (two yes/no questions per sentence, one request, about 1 s) | **97 %** | "Let's never do a release on Friday again" filed as a team rule (arguably right). |
+
+Jev is used whenever `HORIZON_SCORER=jev`, with keywords as the fallback. The labelled set is small and written by us, so this is a first measurement.

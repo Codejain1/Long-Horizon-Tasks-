@@ -26,6 +26,7 @@ from typing import Any
 
 from horizon.config import Settings
 from horizon.db import connect
+from horizon.decision.scorers import make_scorer
 from horizon.models import Checkpoint, ProgressEntry, TaskState, TestCapture
 from horizon.redact import CODE_REMOVED, MAX_NOTE, redact
 from horizon.taskstate.checkpoints import capture, restore_steps, same_tree
@@ -146,11 +147,41 @@ _TEAM_RULE = re.compile(r"\b(all (of )?(our|my|the team'?s?) (projects|services|
 _PROJECT_RULE = re.compile(r"\b(from now on|constraints?|must (always|never)|always|never)\b", re.I)
 
 
-def split_rules(text: str) -> tuple[list[str], list[str]]:
-    """The sentences of a request that set lasting rules: for every project (team rules) or for this one."""
-    # ponytail: a keyword heuristic; a Jev yes/no question per sentence if it misses real rules.
+MAX_SENTENCES = 30
+
+
+def rule_questions(n: int) -> dict[str, dict]:
+    from horizon.decision.scorers import noul
+
+    qs = {}
+    for i in range(n):
+        qs[f"team_{i}"] = noul(f"Does `sentences[{i}]` set a lasting rule the user wants followed in all of their or "
+                               "their team's projects, including future ones, not only in the current project or task?")
+        qs[f"project_{i}"] = noul(f"Does `sentences[{i}]` set a lasting constraint that later work on the current "
+                                  "project must keep following, rather than an instruction only for the current task?")
+    return qs
+
+
+def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
+    """The sentences of a request that set lasting rules: for every project (team rules) or for this one.
+
+    With a scorer (Jev), two yes/no questions per sentence in one request: 10/10 on a probe set where the
+    keyword fallback got 8/10 ("Never mind…" isn't a rule; "Always… everywhere" is a team rule)."""
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()][:MAX_SENTENCES]
     team, project = [], []
-    for sentence in re.split(r"(?<=[.!?])\s+", text):
+    if scorer is not None and sentences:
+        try:
+            a = scorer.ask({"sentences": sentences}, rule_questions(len(sentences)))
+            for i, sentence in enumerate(sentences):
+                if a[f"team_{i}"].value > 0.5:
+                    team.append(sentence[:MAX_RULE])
+                elif a[f"project_{i}"].value > 0.5:
+                    project.append(sentence[:MAX_RULE])
+            return team, project
+        except Exception as exc:  # the scorer is down or unconfigured: fall back to keywords
+            if os.environ.get("HORIZON_DEBUG"):
+                print(f"horizon: rule scorer failed, using keywords: {exc!r}", file=sys.stderr)
+    for sentence in sentences:
         if _TEAM_RULE.search(sentence):
             team.append(sentence[:MAX_RULE])
         elif _PROJECT_RULE.search(sentence):
@@ -172,13 +203,13 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
 
 
 def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | None, prompt: str,
-                     tools: bool = True) -> dict | None:
+                     tools: bool = True, scorer=None) -> dict | None:
     """The session's first message starts its task (the goal, code removed); later ones are progress notes.
     Sentences that set lasting rules become the task's constraints or the team's rules."""
     text = redact(prompt, MAX_GOAL)
     if text == CODE_REMOVED:
         return None
-    team_rules, constraints = split_rules(text)
+    team_rules, constraints = split_rules(text, scorer)
     task = next((t for t in store.active(team, cwd=project) if t.session_id == session), None)
     created = task is None
     if created:
@@ -229,8 +260,8 @@ def deny_unrestored(checks: list[dict], snapshot: str | None, cwd: str) -> dict 
 class Local:
     """Local mode: the hooks share the MCP server's database."""
 
-    def __init__(self, store: TaskStore, team: str):
-        self.store, self.team = store, team
+    def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None):
+        self.store, self.team, self.scorer_factory = store, team, scorer_factory
 
     def session_start(self, project):
         return core_session_start(self.store, self.team, project)
@@ -239,7 +270,7 @@ class Local:
         return lean_session_start(self.store, self.team, project, session)
 
     def user_prompt(self, project, session, prompt):
-        return lean_user_prompt(self.store, self.team, project, session, prompt)
+        return lean_user_prompt(self.store, self.team, project, session, prompt, scorer=self.scorer_factory())
 
     def capture(self, project, session, cap):
         return core_capture(self.store, self.team, project, session, cap)
@@ -378,7 +409,8 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
             settings = settings or Settings.from_env()
             db = connect(settings.db_url)
             try:
-                result = handler(payload, Local(TaskStore(db), settings.team_id), project_dir(payload))
+                scorer = lambda: make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)  # noqa: E731
+                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer), project_dir(payload))
             finally:
                 db.close()
         return json.dumps(result) if result else ""

@@ -89,7 +89,7 @@ def _table(rows: list[dict], cols: list[tuple[str, str]], empty: str) -> str:
     return f"<table><tr>{head}</tr>{body}</table>"
 
 
-def create_web_app(accounts: Accounts, tasks: TaskStore, lifespan=None) -> FastAPI:
+def create_web_app(accounts: Accounts, tasks: TaskStore, lifespan=None, scorer_factory=lambda: None) -> FastAPI:
     app = FastAPI(title="Horizon account", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
     def session_team(request: Request) -> str | None:
@@ -224,7 +224,7 @@ Tokens saved are counted only where past spikes reported their token cost.</p>
             from horizon.hooks import MAX_GOAL, lean_user_prompt
 
             return lean_user_prompt(tasks, team, project, session, str(body.get("prompt") or "")[:MAX_GOAL * 2],
-                                    tools=False)
+                                    tools=False, scorer=scorer_factory())
         if op == "capture":
             cap = body["capture"]
             cap = {"command": str(cap["command"])[:200], "runner": str(cap["runner"])[:20],

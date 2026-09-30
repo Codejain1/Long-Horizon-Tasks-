@@ -33,7 +33,7 @@ This page lists exactly what is stored, where, and who else sees it. It's served
 ## Who else sees it
 
 - **Nobody, by default.** `HORIZON_SCORER=none` and the default local embedder (`BAAI/bge-small-en-v1.5`, running on your machine) send nothing out.
-- **With `HORIZON_SCORER=jev`**, each decision's scoring request goes to **TypeSafe** (`api.typesafe.ai`). It contains the goal, constraints, situation, option labels and descriptions, and recalled past outcomes (all redacted, apart from the goal). The same applies to the memory attention filter (situation plus memory summaries).
+- **With `HORIZON_SCORER=jev`**, each decision's scoring request goes to **TypeSafe** (`api.typesafe.ai`). It contains the goal, constraints, situation, option labels and descriptions, and recalled past outcomes (all redacted, apart from the goal). The same applies to the memory attention filter (situation plus memory summaries). With the lean profile, the sentences of each message, with code removed, go there too, to pick out rules.
 - **With `HORIZON_SCORER=llm`**, the same questions go to **Anthropic's Claude API**.
 - **The colony layer** (sharing anonymous lesson strengths across teams) doesn't exist yet. It will be opt-in and share only anonymous, generic trail strengths (§7, MEMROUTER §10).
 

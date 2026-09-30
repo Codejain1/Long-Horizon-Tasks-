@@ -1,0 +1,130 @@
+[
+ {
+  "sentence": "Our team's rules for every service we build, now and in future projects: ids are uuid4 hex; money is integer cents.",
+  "label": "team"
+ },
+ {
+  "sentence": "Please always use pnpm instead of npm in all my repos.",
+  "label": "team"
+ },
+ {
+  "sentence": "Always remember that I prefer short commit messages, everywhere.",
+  "label": "team"
+ },
+ {
+  "sentence": "Across all our projects, timestamps are stored in UTC.",
+  "label": "team"
+ },
+ {
+  "sentence": "For any code you write for me, use type hints.",
+  "label": "team"
+ },
+ {
+  "sentence": "Whatever repo we're in, never push to main without a PR.",
+  "label": "team"
+ },
+ {
+  "sentence": "Company policy: no third-party analytics SDKs in any of our apps.",
+  "label": "team"
+ },
+ {
+  "sentence": "I want British spelling in all user-facing text we ship, in every product.",
+  "label": "team"
+ },
+ {
+  "sentence": "Going forward, in every project, prefer composition over inheritance.",
+  "label": "team"
+ },
+ {
+  "sentence": "As a general rule for all my work: tests go next to the code they test.",
+  "label": "team"
+ },
+ {
+  "sentence": "Hard constraints that apply to this project from now on: standard library only, and public function names must never change.",
+  "label": "project"
+ },
+ {
+  "sentence": "In this codebase we never commit directly to main.",
+  "label": "project"
+ },
+ {
+  "sentence": "From now on, every API response in this service must include a request id.",
+  "label": "project"
+ },
+ {
+  "sentence": "This package must keep supporting Python 3.9.",
+  "label": "project"
+ },
+ {
+  "sentence": "The ledger must always store money as integer cents.",
+  "label": "project"
+ },
+ {
+  "sentence": "For this repo, keep the public API backwards compatible.",
+  "label": "project"
+ },
+ {
+  "sentence": "Here we use tabs, not spaces, and that won't change.",
+  "label": "project"
+ },
+ {
+  "sentence": "This service must never log personal data.",
+  "label": "project"
+ },
+ {
+  "sentence": "All migrations in this project must be reversible.",
+  "label": "project"
+ },
+ {
+  "sentence": "Don't ever add dependencies to this library.",
+  "label": "project"
+ },
+ {
+  "sentence": "Implement `create_invoice(customer, amount_cents, due)` returning a dict.",
+  "label": "none"
+ },
+ {
+  "sentence": "Write tests.",
+  "label": "none"
+ },
+ {
+  "sentence": "Never mind the previous approach, let's try a different library.",
+  "label": "none"
+ },
+ {
+  "sentence": "Only fix the failing test for now.",
+  "label": "none"
+ },
+ {
+  "sentence": "Can you check why the build is failing?",
+  "label": "none"
+ },
+ {
+  "sentence": "Always a pleasure working with you!",
+  "label": "none"
+ },
+ {
+  "sentence": "Add a CSV export to the reports page.",
+  "label": "none"
+ },
+ {
+  "sentence": "Run ./ci.sh before you finish.",
+  "label": "none"
+ },
+ {
+  "sentence": "Don't touch the README in this change.",
+  "label": "none"
+ },
+ {
+  "sentence": "For this ticket, skip the docs update.",
+  "label": "none"
+ },
+ {
+  "sentence": "Let's never do a release on Friday again, that was painful.",
+  "label": "project"
+ },
+ {
+  "sentence": "Rename the function to fetch_orders.",
+  "label": "none"
+ }
+]
