@@ -152,3 +152,20 @@ def remove_item(name, qty):
     [row] = json.loads((tmp_path / "bad" / "backlog-baseline" / "results.json").read_text())["sessions"]
     assert set(row["hidden"]["failed"]) == {"test_every_public_function_is_in_the_changelog", "test_money_is_never_a_float"}
     assert row["test_runs"] == 0 and row["failed_test_runs"] == 0
+
+
+def test_failed_test_runs_are_counted_from_the_transcript():
+    run = load("run")
+    events = [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "./ci.sh"}},
+            {"type": "tool_use", "id": "b", "name": "Bash", "input": {"command": "python -m pytest -q"}},
+            {"type": "tool_use", "id": "c", "name": "Bash", "input": {"command": "python -m pytest --version"}},
+            {"type": "tool_use", "id": "d", "name": "Bash", "input": {"command": "ls"}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "a", "content": "Exit code 1\nF..\n1 failed, 14 passed in 0.04s"},
+            {"type": "tool_result", "tool_use_id": "b", "content": [{"type": "text", "text": "15 passed in 0.1s"}]},
+            {"type": "tool_result", "tool_use_id": "c", "content": "pytest 9.0"},
+            {"type": "tool_result", "tool_use_id": "d", "content": "3 failed attempts.txt"}]}},
+    ]
+    assert run.test_run_counts(events) == (2, 1)

@@ -69,11 +69,18 @@ def blocks(events: list[dict]) -> list[dict]:
             for b in e["message"].get("content") or [] if isinstance(b, dict)]
 
 
+def text(content) -> str:
+    """A tool result's text, newlines intact (JSON-escaping them broke word boundaries: "\\n1 failed")."""
+    if isinstance(content, list):
+        return "\n".join(str(c.get("text", "")) for c in content if isinstance(c, dict))
+    return str(content or "")
+
+
 def test_run_counts(events: list[dict]) -> tuple[int, int]:
     """Test runs in a session, and how many failed: the cost of (re)discovering a project's rules by breaking them."""
     ids = {b["id"] for b in blocks(events) if b.get("type") == "tool_use" and b.get("name") == "Bash"
            and re.search(r"pytest(?! --version)|ci\.sh", str((b.get("input") or {}).get("command", "")))}
-    results = [json.dumps(b.get("content")) for b in blocks(events)
+    results = [text(b.get("content")) for b in blocks(events)
                if b.get("type") == "tool_result" and b.get("tool_use_id") in ids]
     return len(results), sum(bool(re.search(r"\b\d+ (failed|errors?)\b", r)) for r in results)
 
