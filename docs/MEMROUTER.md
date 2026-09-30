@@ -7,11 +7,13 @@
 > **v2 (`PROJECT.md` §0):** the memrouter becomes Horizon's core. What changes is where its data comes from, not how it learns. Everything below stays valid, with two changes planned for Phase 1:
 > - **Episodes are written from the event log** (`src/horizon/eventlog/`, built in Phase 0): one per session, from the hooks' ground truth (test runs, edits, token usage), with no `record_outcome` call. The coding adapter already derives each session's outcome and situation from its events.
 >   **As built (Phase 1, track A, `eventlog/episodes.py`):**
->   - One episode per session **segment**: a segment ends at `session_end`, so a resumed session has one per invocation.
+>   - One episode per session **segment**: a segment ends at `session_end` (a resumed session has one per invocation), or at its last event once the session has been idle for `HORIZON_SESSION_IDLE_MINUTES` (default 120), since a crash sends no end. If it carries on later, the rest is a new segment.
 >   - The fields: situation = the segment's first prompt; chosen = `session`; actual = the last test run's pass rate and counts, the turns' tokens and the duration; conditions `task_type = session` and `host`; scope = the project and the lean task.
->   - Segments without a prompt or a test run are skipped, and the reason is kept (outcomes without tests are track B's).
->   - The lean `SessionEnd` hook writes every pending segment of the project. `horizon episodes-from-log` backfills any log, such as an eval's observe arm.
+>   - **Track B (`eventlog/judge.py`):** with a scorer configured (`HORIZON_SCORER=jev`), a segment with no test run but some evidence (an edit or a follow-up message) is judged. Jev places it on five ordered levels, from "the user says it failed" to "the user confirmed it", reading the redacted prompts and activity counts. It also asks, per follow-up, whether the message pushes back. `actual.success` is the level's position, with `signalType: "implicit"` (weight 0.4, below a test run's 0.7). A confidence below 0.5, or "done" contradicted by a last message that pushes back, gives no episode.
+>   - Other segments without a prompt or an outcome are skipped, and the reason is kept. `horizon episodes-from-log --rejudge` reconsiders those skipped for no ground truth.
+>   - The lean `SessionEnd` hook writes every pending segment of the project, and lean's `SessionStart` catches up idle ones (it loads the embedder only if one needs writing). `horizon episodes-from-log` backfills any log, such as an eval's observe arm.
 >   - Surprise uses §5's similar-episodes fallback until Phase 2.
+>   - **Read back (`eventlog/briefing.py`, behind `HORIZON_SESSION_MEMORY=on` until the eval gate):** a lean task's first message recalls similar session episodes in the project (similarity ≥ `HORIZON_SESSION_MEMORY_MIN_SIMILARITY`, 0.8), plus lessons and fears. It shows, from each episode's segment, how the session ended, how many test runs failed on the way, the files it changed and the tests that tripped it, in at most 1,200 characters.
 > - **Surprise gets a baseline without the decision layer:** where no scorer predicted success, the world model's forecast is the prediction, replacing §5's similar-episodes fallback.
 >
 > The event log's step-level transitions are also the world model's training data (§13).

@@ -39,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("episodes-from-log", help="Write an episode for every ended session in the event log that "
                                                  "has none yet (lean writes them at each session end).")
     p.add_argument("--project", help="Only this project directory (default: every project).")
+    p.add_argument("--rejudge", action="store_true", help="Reconsider segments skipped for having no ground truth "
+                                                          "(e.g. after configuring HORIZON_SCORER=jev).")
 
     p = sub.add_parser("clear-fear", help="Clear a fear lesson. Human only: it records who cleared it.")
     p.add_argument("lesson_id")
@@ -157,15 +159,23 @@ def main(argv: list[str] | None = None) -> int:
         import os
 
         from horizon.db import connect
-        from horizon.eventlog.episodes import SessionEpisodes, local_memory
+        from horizon.eventlog.episodes import (
+            SessionEpisodes,
+            configured_scorer,
+            local_memory,
+        )
         from horizon.taskstate.store import TaskStore
 
         settings = Settings.from_env()
         db = connect(settings.db_url)
         tasks = TaskStore(db)
         project = os.path.realpath(args.project) if args.project else None
-        report = SessionEpisodes(db).write(settings.team_id, lambda: local_memory(settings, db), project,
-                                           task_for=lambda proj, s: tasks.session_task(settings.team_id, proj, s))
+        log = SessionEpisodes(db, settings.session_idle_minutes)
+        if args.rejudge:
+            log.unskip(settings.team_id, project)
+        report = log.write(settings.team_id, lambda: local_memory(settings, db), project,
+                           task_for=lambda proj, s: tasks.session_task(settings.team_id, proj, s),
+                           judge=configured_scorer(settings))
         print(json.dumps({"written": len(report["written"]), "skipped": report["skipped"],
                           "failed": report["failed"]}))
     elif args.cmd in ("consolidate", "clear-fear"):

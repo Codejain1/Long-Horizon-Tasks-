@@ -189,9 +189,10 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
 
 
 def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | None, prompt: str,
-                     tools: bool = True, scorer=None) -> dict | None:
+                     tools: bool = True, scorer=None, briefing=None) -> dict | None:
     """The session's first message starts its task (the goal, code removed); later ones are progress notes.
-    Sentences that set lasting rules become the task's constraints or the team's rules."""
+    Sentences that set lasting rules become the task's constraints or the team's rules. `briefing(goal)`, when
+    given, is what similar past sessions taught, shown as the task starts."""
     text = redact(prompt, MAX_GOAL)
     if text == CODE_REMOVED:
         return None
@@ -208,9 +209,17 @@ def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | N
         current = store.team_rules(team)
         task.team_rules = current + [r for r in team_rules if r not in current]
     store.save(task)
-    if created and tools:  # hosted lean has no MCP tools to pass the id to
-        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext":
-                f"Horizon task id: {task.id} (only needed if you call evaluate_options)."}}
+    if not created:
+        return None
+    lines = [f"Horizon task id: {task.id} (only needed if you call evaluate_options)."] if tools else []
+    if briefing is not None:
+        try:
+            lines += [b for b in [briefing(text)] if b]
+        except Exception as exc:  # memory is down: the task still starts
+            if os.environ.get("HORIZON_DEBUG"):
+                print(f"horizon: past sessions unavailable: {exc!r}", file=sys.stderr)
+    if lines:  # hosted lean has no MCP tools to pass the id to
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "\n\n".join(lines)}}
     return None
 
 
@@ -246,8 +255,9 @@ def deny_unrestored(checks: list[dict], snapshot: str | None, cwd: str) -> dict 
 class Local:
     """Local mode: the hooks share the MCP server's database."""
 
-    def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None):
+    def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None, briefing=None):
         self.store, self.team, self.scorer_factory = store, team, scorer_factory
+        self.briefing = briefing  # (project, session, goal) -> context from similar past sessions
 
     def session_start(self, project):
         return core_session_start(self.store, self.team, project)
@@ -256,7 +266,9 @@ class Local:
         return lean_session_start(self.store, self.team, project, session)
 
     def user_prompt(self, project, session, prompt):
-        return lean_user_prompt(self.store, self.team, project, session, prompt, scorer=self.scorer_factory())
+        brief = self.briefing
+        return lean_user_prompt(self.store, self.team, project, session, prompt, scorer=self.scorer_factory(),
+                                briefing=(lambda goal: brief(project, session, goal)) if brief else None)
 
     def capture(self, project, session, cap):
         return core_capture(self.store, self.team, project, session, cap)
@@ -406,14 +418,37 @@ def log_events(name: str, payload: dict, events: EventStore, team: str, project:
 
 
 def write_session_episodes(db, settings: Settings, project: str) -> dict:
-    """Lean memory (v2 Phase 1 track A): every ended session segment of the project becomes an episode,
-    including any an earlier session end missed. Runs after the hook's own work, so it can't change its output."""
-    from horizon.eventlog.episodes import SessionEpisodes, local_memory
+    """Lean memory (v2 Phase 1 track A): every finished session segment of the project becomes an episode,
+    including any an earlier session end missed and sessions left idle (a crash sends no SessionEnd). Runs after
+    the hook's own work, so it can't change its output."""
+    from horizon.eventlog.episodes import SessionEpisodes, configured_scorer, local_memory
 
     tasks = TaskStore(db)
-    return SessionEpisodes(db).write(settings.team_id, lambda: local_memory(settings, db), project,
-                                     task_for=lambda proj, session: tasks.session_task(settings.team_id, proj,
-                                                                                       session))
+    return SessionEpisodes(db, settings.session_idle_minutes).write(
+        settings.team_id, lambda: local_memory(settings, db), project,
+        task_for=lambda proj, session: tasks.session_task(settings.team_id, proj, session),
+        judge=configured_scorer(settings))
+
+
+def past_sessions_briefing(db, settings: Settings):
+    """Lean's context from similar past sessions (v2 Phase 1), when `session_memory` is on."""
+    if settings.session_memory != "on":
+        return None
+    from horizon.eventlog.briefing import past_sessions
+    from horizon.eventlog.episodes import SessionEpisodes, local_memory
+
+    return lambda project, session, goal: past_sessions(SessionEpisodes(db, settings.session_idle_minutes),
+                                                        settings.team_id, project, goal,
+                                                        lambda: local_memory(settings, db), session,
+                                                        settings.session_memory_min_similarity)
+
+
+def _episodes_quietly(db, settings: Settings, project: str) -> None:
+    try:
+        write_session_episodes(db, settings, project)
+    except Exception as exc:
+        if os.environ.get("HORIZON_DEBUG"):
+            print(f"horizon: session episodes failed: {exc!r}", file=sys.stderr)
 
 
 def pick_handler(name: str, profile: str):
@@ -443,18 +478,18 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
             try:
                 scorer = lambda: make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)  # noqa: E731
                 project = project_dir(payload)
-                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer), project)
+                brief = past_sessions_briefing(db, settings) if profile == "lean" else None
+                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief), project)
+                if name == "session-start" and profile == "lean":
+                    # before this start is logged, so a resumed session's idle part still reads as idle
+                    _episodes_quietly(db, settings, project)
                 try:
                     log_events(name, payload, EventStore(db), settings.team_id, project, injected_chars(result))
                 except Exception as exc:
                     if os.environ.get("HORIZON_DEBUG"):
                         print(f"horizon: event log failed in {name}: {exc!r}", file=sys.stderr)
                 if name == "session-end" and profile == "lean":
-                    try:
-                        write_session_episodes(db, settings, project)
-                    except Exception as exc:
-                        if os.environ.get("HORIZON_DEBUG"):
-                            print(f"horizon: session episodes failed: {exc!r}", file=sys.stderr)
+                    _episodes_quietly(db, settings, project)
             finally:
                 db.close()
         return json.dumps(result) if result else ""

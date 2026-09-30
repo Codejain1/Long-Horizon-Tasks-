@@ -1,12 +1,14 @@
 """v2 Phase 1 track A: session episodes written into the memrouter from the event log, with no agent call."""
 
+import dataclasses
 import json
+from datetime import timedelta
 
 import pytest
 
 from horizon import cli
 from horizon.db import connect
-from horizon.eventlog.episodes import SessionEpisodes, draft_episode
+from horizon.eventlog.episodes import draft_episode
 from horizon.hooks import run_hook
 from horizon.memrouter.router import MemRouter
 from horizon.memrouter.store import EpisodeStore
@@ -24,13 +26,6 @@ def transcript(tmp_path):
     path = tmp_path / "t.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in TRANSCRIPT))
     return str(path)
-
-
-@pytest.fixture
-def log(settings):
-    db = connect(settings.db_url)
-    yield SessionEpisodes(db)
-    db.close()
 
 
 def pytest_output(passed, failed):
@@ -177,6 +172,59 @@ def test_the_cli_backfills_a_log_recorded_without_episodes(settings, memrouter, 
     assert [e.situation for e in episodes(memrouter)] == ["Add partial refunds."]
     cli.main(["episodes-from-log"])
     assert json.loads(capsys.readouterr().out) == {"written": 0, "skipped": 0, "failed": 0}
+
+
+def age(log, session_id, hours):
+    """Push a session's events into the past, as if it went quiet `hours` ago."""
+    from horizon.models import now
+    from horizon.taskstate.store import ts
+
+    log.db.execute("UPDATE events SET created_at = %s WHERE session_id = %s",
+                   (ts(log.db, now() - timedelta(hours=hours)), session_id))
+
+
+def test_a_crashed_session_becomes_an_episode_once_it_has_been_idle(settings, memrouter, project_dir, log):
+    """No SessionEnd (a crash, a killed terminal): the next session's start closes it after the idle timeout."""
+    Session(settings, project_dir, "s1").play("Add partial refunds to the orders module.", runs=[(3, 1)], end=False)
+    assert log.pending(TEAM) == []  # still open: it might carry on
+    age(log, "s1", 3)
+    Session(settings, project_dir, "s2").hook("session-start", source="startup")
+    [ep] = episodes(memrouter)
+    assert ep.situation == "Add partial refunds to the orders module." and ep.actual.success == 0.75
+    assert [r["session_id"] for r in log.episodes(TEAM)] == ["s1"]  # the running session isn't closed
+
+
+def test_a_session_quiet_for_less_than_the_timeout_stays_open(settings, memrouter, project_dir, log):
+    Session(settings, project_dir, "s1").play("Add partial refunds.", runs=[(4, 0)], end=False)
+    age(log, "s1", 1)  # the default timeout is 2 hours
+    Session(settings, project_dir, "s2").hook("session-start", source="startup")
+    assert episodes(memrouter) == [] and log.episodes(TEAM) == []
+    short = dataclasses.replace(settings, session_idle_minutes=30)
+    Session(short, project_dir, "s3").hook("session-start", source="startup")
+    assert [r["session_id"] for r in log.episodes(TEAM)] == ["s1"]
+
+
+def test_a_session_resumed_after_going_idle_splits_where_it_went_quiet(settings, memrouter, project_dir, log):
+    """Its own resume closes the idle part first (before the resume is logged), and the rest is a new segment."""
+    session = Session(settings, project_dir, "s1")
+    session.play("Add partial refunds to the orders module.", runs=[(3, 1)], end=False)
+    age(log, "s1", 5)
+    session.play("Now include refunds in the CSV export.", runs=[(5, 0)], start="resume")
+    assert [(e.situation, e.actual.success) for e in episodes(memrouter)] == [
+        ("Add partial refunds to the orders module.", 0.75), ("Now include refunds in the CSV export.", 1.0)]
+    assert log.pending(TEAM) == []
+
+
+def test_an_idle_segment_with_no_ground_truth_is_skipped_once(settings, memrouter, project_dir, log):
+    from horizon.models import now
+
+    Session(settings, project_dir, "s1").play("Explain how refunds work.", end=False)
+    later = now() + timedelta(hours=3)
+    [seg] = log.pending(TEAM, at=later)
+    assert (seg.after_n, seg.session_id) == (0, "s1")
+    assert log.write(TEAM, lambda: pytest.fail("nothing to record"), at=later) == {"written": [], "skipped": 1,
+                                                                                    "failed": 0}
+    assert log.pending(TEAM, at=later) == [] and episodes(memrouter) == []
 
 
 def test_draft_episode_is_pure_and_explains_what_it_skips(settings, project_dir, log):

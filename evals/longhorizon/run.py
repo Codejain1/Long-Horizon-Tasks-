@@ -44,8 +44,10 @@ HORIZON_TOOLS = ["mcp__horizon__start_task", "mcp__horizon__recall_context", "mc
                  "mcp__horizon__submit_consequences", "mcp__horizon__record_outcome", "mcp__horizon__explain_decision",
                  "mcp__horizon__show_memories"]
 LIMIT_TEXT = ("session limit", "usage limit", "rate limit")
-PROFILES = {"horizon": "full", "lean": "lean", "observe": "observe"}  # arm -> install profile
-MCP_ARMS = ("horizon", "lean")  # arms whose agent gets Horizon's MCP tools
+PROFILES = {"horizon": "full", "lean": "lean", "observe": "observe", "candidate": "lean"}  # arm -> install profile
+# The candidate arm is lean with the features still behind the evaluation gate turned on (docs/EVALS.md).
+ARM_ENV = {"candidate": {"HORIZON_SESSION_MEMORY": "on"}}
+MCP_ARMS = ("horizon", "lean", "candidate")  # arms whose agent gets Horizon's MCP tools
 TEST_COMMAND = re.compile(r"pytest(?! --version)|ci\.sh")
 
 
@@ -78,6 +80,7 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
         git(repo, "commit", "-qm", "start", "--allow-empty")
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
     env["PATH"] = f"{Path(python).parent}:{env.get('PATH', '')}"
+    env.update(ARM_ENV.get(arm, {}))
     if arm in PROFILES:
         env["HORIZON_DB_URL"] = f"sqlite:///{work / 'horizon.db'}"
         subprocess.run([python, "-m", "horizon", "install-claude-code", "--dir", str(repo),
@@ -327,7 +330,7 @@ def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[s
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", required=True)
-    ap.add_argument("--arm", choices=["baseline", "observe", "lean", "horizon"], required=True)
+    ap.add_argument("--arm", choices=["baseline", "observe", "lean", "candidate", "horizon"], required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--sessions", type=int, default=None, help="Stop after this many sessions.")

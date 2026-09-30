@@ -93,6 +93,14 @@ class Settings:
     world_model_min_pairs: int = 30  # paired outcomes per stand-in before the gate can pass
     world_model_settle_confidence: float = 0.6  # forecast confidence to settle a close call without spikes
     world_model_gate_ttl_s: int = 600  # how long a gate result is reused before the replay runs again
+    # A session with no event for this long is over even without SessionEnd (a crash, a killed terminal).
+    session_idle_minutes: int = 120
+    # "on": when a lean task starts, show what similar past sessions taught (v2 Phase 1). Off until it passes
+    # the evaluation gate (docs/EVALS.md); the evals' candidate arm turns it on.
+    session_memory: str = "off"
+    # Unasked-for context must be clearly relevant: fastembed puts related tasks at 0.87+, unrelated ones at
+    # ~0.72 (the hash embedder's scale is lower: 0.56+ against ~0.39).
+    session_memory_min_similarity: float = 0.8
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -131,6 +139,10 @@ class Settings:
             dev_api_key=get("DEV_API_KEY", None),
             rollback_below=get("ROLLBACK_BELOW", base.rollback_below, float),
             max_attempts=get("MAX_ATTEMPTS", base.max_attempts, int),
+            session_idle_minutes=get("SESSION_IDLE_MINUTES", base.session_idle_minutes, int),
+            session_memory=get("SESSION_MEMORY", base.session_memory),
+            session_memory_min_similarity=get("SESSION_MEMORY_MIN_SIMILARITY", base.session_memory_min_similarity,
+                                              float),
             scorer=get("SCORER", base.scorer),
             jev_model=get("JEV_MODEL", base.jev_model),
             llm_scorer_model=get("LLM_SCORER_MODEL", base.llm_scorer_model),

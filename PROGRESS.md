@@ -324,17 +324,88 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Also fixed:** track E's docs commit changed `docs/PRIVACY.md` without the packaged copy that `/privacy` serves, which `test_phase7` caught. Both copies now match, with a line on session episodes.
   - **Tests:** 561 pass on SQLite and Postgres (537 before, plus 24 in `tests/test_session_episodes.py`).
 
+- **Session 18: Q66 (idle sessions), Q65 (past sessions as context), track B (Jev as outcome judge).**
+  - **Owner's direction:** good context should help the agent build better and cut the cost of trial and error ("try this, if it doesn't work try another"). Pick the best answer for Q66. The TypeSafe key was provided, which enables track B.
+  - **Built:**
+    1. **Q66, idle sessions:** `SessionEpisodes.pending` also closes a session whose last event is older than `session_idle_minutes` (120) and isn't a `session_end`.
+       - If the session carries on later, the rest becomes a new segment: `after_n` is the later of the previous `session_end` and the previous recorded segment.
+       - Lean's `SessionStart` runs the catch-up before logging its own start, so a resumed session's idle part still reads as idle. It loads the embedder only if something needs writing.
+    2. **Q65, past sessions as context:** `eventlog/briefing.py`, behind `HORIZON_SESSION_MEMORY` (default `off`).
+       - A lean task's first message recalls similar session episodes in the project, plus lessons and fears.
+       - For each one, the episode's event-log segment gives how it ended, how many test runs failed on the way, the files changed, the tests that failed on the way, and those still failing.
+       - Only sessions with similarity ≥ 0.8 are included (`session_memory_min_similarity`). Identical outcomes merge into one line with a count. The note is capped at 1,200 characters and uses no code.
+       - The evals get a `candidate` arm (lean plus `HORIZON_SESSION_MEMORY=on`).
+    3. **Track B, the outcome judge:** `eventlog/judge.py`. With `HORIZON_SCORER` set to jev or llm, a segment with no test run but some evidence (an edit or a follow-up message) is judged.
+       - Jev puts it on five ordered levels, reading the redacted prompts and activity counts, and asks per follow-up whether the message is a correction.
+       - `actual.success` is the level's position, with signal `implicit`.
+       - There's no episode when confidence is below 0.5, or when Jev says "done" but the last message is a correction.
+       - A judge failure is recorded as a skip, so there's no retry storm. `episodes-from-log --rejudge` reconsiders earlier "no ground truth" skips.
+       - The same scorer now filters lean's recalled memories for relevance (the attention filter), as it already did on the MCP server.
+  - **Acceptance criteria:** all met.
+    1. A crashed session becomes an episode once idle, and never while it's still running.
+    2. A session quiet for less than the timeout stays open, and the timeout is configurable.
+    3. A session resumed after going idle splits where it went quiet.
+    4. An idle segment with no ground truth is skipped once.
+    5. Session memory is off by default.
+    6. With it on, a similar task starts with where the last one went and what tripped it up, and a failed session shows what was still failing.
+    7. An unrelated task, or another project, gets nothing.
+    8. With no history, the embedder isn't loaded.
+    9. Only a task's first message gets the note.
+    10. The note stays within budget however much memory holds, and identical sessions merge into one line.
+    11. A memory failure never stops a task starting, and no code reaches the note.
+    12. In the `candidate` arm, session 2 gets the note and `injected_chars` rises; `lean` is unchanged.
+    13. A session without tests gets a judged `implicit` outcome from counts and redacted prompts, never paths.
+    14. Tests override the judge.
+    15. With nothing to judge, Jev isn't called.
+    16. An unsure or contradicted verdict isn't stored.
+    17. A failing judge never breaks the hook.
+    18. With no configured scorer, nothing is judged.
+    19. One scorer serves a whole batch.
+    20. `--rejudge` works.
+  - **Live checks** (key passed only as `TYPESAFE_API_KEY`, never written to a file):
+    - Jev on three cases: user confirmed 1.00 (confidence 0.99), still broken 0.01 (0.98), corrected then accepted 0.91 (0.70). Each call took 0.3–0.6 s.
+    - End to end through the real hooks with `HORIZON_SCORER=jev`: a session with no tests became an `implicit` episode with success 0.998. Session end took 0.61 s.
+  - **Latency** (fastembed, separate processes, like Claude Code):
+    - The first prompt of a task takes 0.72 s with session memory on and history present, and 0.21 s with it off.
+  - **Mutation checks:** each of these deliberately injected bugs was caught by a test, and the code was restored:
+    - `after_n` ignoring recorded segments;
+    - no catch-up at session start;
+    - no relevance floor;
+    - the note on every prompt.
+  - **Tests:** 612 pass on SQLite and Postgres (561 before, plus 51):
+    - `test_session_briefing.py`: 11;
+    - `test_outcome_judge.py`: 10;
+    - `test_session_episodes.py`: 4 more;
+    - `test_longhorizon.py`: 1 more.
+    - The `log` fixture moved to `conftest.py`.
+
 ## In progress
 
-- Nothing. Tracks A and E are built; B, C and D are next (see "Next step").
+- Nothing. Tracks A, B and E are built, and Q65/Q66 are resolved; C and D are next (see "Next step").
 
 ## Decisions made
+
+**v2 Phase 1: Q65, Q66 and track B (session 18)**
+- **Q66: close idle sessions after 2 hours (configurable).** A crash, a killed terminal or a closed laptop leaves no `SessionEnd`. Of the options, a timeout is the only one that catches all of these without the host's help. 2 hours is long enough that a lunch break doesn't split a session. If a split session resumes, its rest becomes its own segment, like a resumed invocation.
+- **Catch-up also runs at lean's session start (this reverses track A's "never at session start").** It costs nothing when nothing is idle, and 0.7 s only on the first start after a crash. It runs before the start is logged, so a session's own resume can close its idle part.
+- **Q65: surface past sessions, but behind a setting, and measure it.** The owner wants good context to cut trial and error. Principle 5 (nothing on by default until it beats the gate) is in `PROJECT.md`, so turning it on by default would contradict the docs. Instead it's built fully, and the evals' `candidate` arm runs it against `lean`.
+- **The note shows facts from the log, not advice.** It gives how a similar session ended, the files it changed (where to look), the tests that tripped it (what to check first) and what was still failing (what not to repeat). These are what save the "try this, then that" loop. Wording is "what happened then; check it still holds", so stale history doesn't read as an instruction.
+- **Shown at a task's first message, not at session start.** The goal is only known then; session start has nothing to match on.
+- **Relevance floor 0.8 (fastembed), well above recall's 0.2.** Unasked-for context has to be clearly relevant: related tasks score 0.87 or more, unrelated ones about 0.72. Wrong context costs tokens and misleads.
+- **1,200-character cap, at most 3 sessions, identical outcomes merged.** It's about 300 tokens, once per task.
+- **Local only for now.** Hosted memory lives on the server, and hosted doesn't forward events yet (question 60).
+- **Track B: the judge uses the owner's configured scorer (`HORIZON_SCORER`), not a new setting.** It's the same opt-in as the rule classifier, and nothing leaves the machine unless the owner chose a scorer. So no principle 5 change is needed: without a scorer, behaviour is unchanged.
+- **Judged outcomes are `implicit`.** Memory already weighs these below test runs (0.4 against 0.7), and a judgement is weaker evidence than a test. No schema change.
+- **The judge reads prompts and counts only.** It gets the task, follow-up messages (redacted) and the numbers of edits, files, commands and turns, never paths. Follow-up messages are the real evidence: "still broken" versus "thanks, works".
+- **Judge only with evidence; drop unsure or contradicted verdicts.** A lone question with no edit isn't judged (no paying Jev to guess). A verdict with confidence below 0.5 is dropped, and so is "done" when the last message is a correction.
+- **A failing judge marks the segment skipped rather than pending,** so a bad key can't cause a retry storm at every session end. `--rejudge` covers recovery.
+- **The configured scorer is also the attention filter on lean's memory,** matching the MCP server. It's the "relevant?" classifier question.
 
 **v2 Phase 1 track A (session 17)**
 - **The unit is a segment ending at `session_end`, not a whole session.** Headless resumed sessions (`--resume`) end once per invocation, and each invocation is a separate piece of work with its own prompt and result.
 - **The option is `session`,** with task type `session` as a condition. A session isn't one decision, and a fixed label keeps consolidation and predictor stats for sessions apart from decisions'.
 - **No test run means no episode.** Without tests there's no ground truth, and track B's outcome judge fills that gap. The skip is recorded so it isn't retried; track B can re-derive from the log.
-- **Written only at lean's `SessionEnd`, never at session start.** Loading the embedder takes about 0.7 s, which is fine at exit but not before the agent's first turn. Missed segments are caught up at the next end.
+- **Written only at lean's `SessionEnd`, never at session start.** Loading the embedder takes about 0.7 s, which is fine at exit but not before the agent's first turn. Missed segments are caught up at the next end. (Superseded in session 18: session start also catches up idle sessions.)
 - **Not under observe, full or hosted.** Observe stays a pure recorder, and its episodes can be derived later with `episodes-from-log`. Full already writes `record_outcome` episodes. Hosted doesn't forward events.
 - **A new additive table, `session_episodes`, records whether each segment was written or skipped.** The episode schema is unchanged, so no stored data changes.
 
@@ -716,18 +787,22 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 61 | Should Phase 1 start, and with which tracks? | **Owner chose track E first** (session 16); it's built. Tracks A–D next. |
 | 62 | Does F1 really compact a headless session, and what does the stream show? | Needs **one real run** on the owner's subscription (about one short session): `python evals/longhorizon/run.py --scenario compaction --arm observe --out /tmp/lh-f1`. Check that `compactions` is 1 and that the event log has `compaction` plus a `session_start` with source `compact`. Default until then: compactions are counted from any `system` event whose subtype contains "compact". |
 | 63 | Which run seeds `stall`? | Default: a baseline run of `marathon`'s first tickets (normal work on the same codebase), passed as `--seed`. Stall detection itself is Phase 2, so nothing reads the seed yet. |
-| 65 | Should session episodes surface in the next session (lean's session start), or only feed learning until the context composer (track D) decides what to show? | Default: learning only. Nothing is injected, so lean's context and its eval results are unchanged; track D and the eval gate decide. |
-| 66 | Sessions that end without `SessionEnd` (a crash, a killed terminal) never become episodes | Default: accepted for now. An idle-timeout rule (e.g. no event for an hour) can close them once real logs show how often it happens. |
+| 65 | Should session episodes surface in the next session, or only feed learning until the context composer (track D) decides what to show? | **Owner decided to surface them (session 18).** A new task's first message gets what similar past sessions taught, to cut trial and error. It's built behind `HORIZON_SESSION_MEMORY` and turned on in the evals' `candidate` arm. It becomes the default once `candidate` beats `lean` on `marathon` (principle 5), or earlier if the owner overrides principle 5 for it (question 67). |
+| 66 | Sessions that end without `SessionEnd` (a crash, a killed terminal) never become episodes | **Resolved (session 18):** closed after 2 hours idle (`HORIZON_SESSION_IDLE_MINUTES`), at the next session start or end. |
+| 67 | Turn `HORIZON_SESSION_MEMORY` on by default before a real `candidate` run? | Default: no; off until `candidate` beats `lean` in a real run (principle 5). Running it needs the owner's subscription. A short check: `marathon` tickets 1–8, `lean` and `candidate`, one repeat each. |
+| 68 | The TypeSafe key was pasted in chat | It's used only as an environment variable and not stored anywhere in the repo. The owner should **rotate it** when convenient. |
+| 69 | Jev judged "No, refunds over the order total must be rejected." as a correction at only 0.26 | Default: that's fine. A new requirement isn't quite a correction, and the correction answers only block contradicted verdicts; they don't set the score. Revisit with real judged sessions. |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
-**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
+**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 67 (a real `candidate` against `lean` run), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
-**v2 (this copy):** the rest of Phase 1 of `PROJECT.md` §0. Tracks E (session 16) and A (session 17) are built. The others are independent:
-- B: Jev as outcome judge (needs `TYPESAFE_API_KEY`). It fills the sessions track A skips for having no tests;
+**v2 (this copy):** the rest of Phase 1 of `PROJECT.md` §0. Tracks E (session 16), A (session 17) and B (session 18) are built, and so is Q65's past-sessions context (behind its setting). The others are independent:
 - C: world model v2 with Jev as the prior;
-- D: the context composer.
+- D: the context composer. It should absorb the past-sessions note as one of its sources, alongside session start, each prompt, after compaction and before risky actions.
+
+**Owner, when convenient:** a short real `candidate` against `lean` run to decide Q67; rotate the TypeSafe key (question 68).
 
 **Owner, when convenient:** one real `compaction` run to verify F1 (question 62). Real marathon runs wait until the Phase 1–2 components exist (`docs/EVALS.md` budget).
 

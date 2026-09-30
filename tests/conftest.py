@@ -49,6 +49,16 @@ def task_store(settings):
 
 
 @pytest.fixture
+def log(settings):
+    """The event log's session episodes (v2 Phase 1)."""
+    from horizon.eventlog.episodes import SessionEpisodes
+
+    db = connect(settings.db_url)
+    yield SessionEpisodes(db)
+    db.close()
+
+
+@pytest.fixture
 def episode_store(settings):
     db = connect(settings.db_url)
     yield EpisodeStore(db, settings.embedding_dim)

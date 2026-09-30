@@ -35,7 +35,7 @@ So the default install became the lean profile (hooks capture the task, the rule
 |---|---|---|
 | **Adapters** | One general core; each domain supplies state, actions, outcomes and risky actions (`src/horizon/adapters/`) | Interface and coding adapter built (Phase 0) |
 | **Capture** | Hooks record every observation as an event, redacted on the user's machine (`src/horizon/eventlog/`) | Event log built for local lean (Phase 0); hosted forwarding later |
-| **Understanding** | Jev as a fast, calibrated judge: classifier (rule? correction? relevant?), outcome judge where there are no tests, and decider only with evidence | Rule classifier built; the rest in Phase 1 |
+| **Understanding** | Jev as a fast, calibrated judge: classifier (rule? correction? relevant?), outcome judge where there are no tests, and decider only with evidence | Rule classifier, outcome judge (with its correction question) and the relevance filter on lean's memory built; decider in Phase 1 |
 | **Memory** | The memrouter (§7, `MEMROUTER.md`): episodes from real outcomes become lessons, fears and strategies; learning from surprise | Built; fed by the hooks from Phase 1 |
 | **World model** | Predicts what happens next from the state and an action. It gives memory its surprise baseline and drives what to show, when to simulate and stall detection | `kernel-v1` built (§6); Jev prior next; Dreamer-style model once step-level data exists |
 | **Foresight** | Look before risky leaps: a trigger fires, then imagined rollouts, a sandbox spike and finally Jev scoring with evidence | Consequence chain built (§6); triggers in Phase 4 |
@@ -52,8 +52,8 @@ Benchmark after every phase with `docs/EVALS.md`; cut anything that doesn't move
 
 0. **Foundation (built):** the event schema and store, the adapter interface, the coding adapter (hook payloads to events, coding state, risk rules, session outcome), replay into transitions, each turn's real token usage, the hooks logging every session, and the evaluation specs.
 1. **Parallel tracks:**
-   - A. Session episodes written into the memrouter from the event log (**built**: lean's `SessionEnd` hook and `horizon episodes-from-log`; `MEMROUTER.md` v2 note);
-   - B. Jev as outcome judge, and more classifier questions;
+   - A. Session episodes written into the memrouter from the event log (**built**: lean's `SessionEnd` hook, idle sessions closed after a timeout, and `horizon episodes-from-log`; `MEMROUTER.md` v2 note). Reading them back as a new task's context ("what similar past sessions taught", to cut trial and error) is **built behind `HORIZON_SESSION_MEMORY`**, off until the eval's `candidate` arm beats lean (principle 5);
+   - B. Jev as outcome judge, and more classifier questions (**built**: sessions without tests get a judged, `implicit` outcome when a scorer is configured; a correction question per follow-up; the scorer filters lean's recalled memories for relevance);
    - C. world model v2 (Jev as the prior);
    - D. the context composer;
    - E. the `marathon`, `compaction` and `stall` harnesses, plus an `observe` profile for baseline data (**built**, not yet run with real sessions; `compaction`'s forcing method F1 still needs one real run).

@@ -282,6 +282,23 @@ def test_the_observe_arm_records_events_silently_and_lean_injection_is_measured(
     assert any(json.loads((tmp_path / "player-lean.1.json").read_text()))
 
 
+def test_the_candidate_arm_is_lean_with_session_memory_on(tmp_path):
+    """Session 1's test run makes it an episode; in the candidate arm, session 2 starts with what it taught.
+    Lean (the default) says nothing about it."""
+    run = load("run")
+    player = HOOK_PLAYER.replace('fire("Stop"', 'fire("PostToolUse", tool_name="Bash", tool_input={"command": '
+                                 '"pytest -q"}, tool_response={"stdout": "= 3 passed in 0.1s ="})\nfire("Stop"')
+    for arm in ("lean", "candidate"):
+        run.main(["--scenario", "notes", "--arm", arm, "--out", str(tmp_path / "out"), "--claude",
+                  scripted(tmp_path, f"player-{arm}", player, "fires the installed hooks"), "--sessions", "2"])
+    said = {arm: json.loads((tmp_path / f"player-{arm}.2.json").read_text())[1] for arm in ("lean", "candidate")}
+    assert "similar past sessions" in said["candidate"] and "3/3 tests passing" in said["candidate"]
+    assert "similar past sessions" not in said["lean"]
+    rows = json.loads((tmp_path / "out" / "notes-candidate" / "results.json").read_text())["sessions"]
+    lean = json.loads((tmp_path / "out" / "notes-lean" / "results.json").read_text())["sessions"]
+    assert rows[1]["horizon"]["injected_chars"] > lean[1]["horizon"]["injected_chars"]
+
+
 def test_resume_from_another_run_and_seed_its_test_history(tmp_path, monkeypatch):
     """Replay: a lean run starts from a baseline run's repo after session 2, with Horizon's memory seeded from
     that run's real test runs, so a check that failed in both sessions is already a known pitfall."""

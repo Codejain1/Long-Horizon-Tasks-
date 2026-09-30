@@ -119,6 +119,7 @@ A cheaper model faces hard-to-undo choices (migrations, dependency and storage d
 Every Horizon-arm session leaves its event log (`events` table), which is step-level training data for the world model.
 - **Built:** the `observe` profile and arm log events in a baseline run too, injecting nothing the agent can see (`injected_chars` stays 0). That doubles the step-level data without changing the baseline.
 - **Built:** each run exports its whole event log to `events.jsonl`, and each row records the session's events by kind and the characters Horizon injected.
+- **Built:** the `candidate` arm (`run.py --arm candidate`) is lean plus the settings under test, set in `run.py`'s `ARM_ENV`. It currently turns on `HORIZON_SESSION_MEMORY` (past sessions as context). `marathon` is where that should show: fewer failed test runs, repeat failures and tokens on tickets like earlier ones, at the cost of `injected_chars`. It becomes the default only if it beats `lean` there.
 
 ## Budget
 
