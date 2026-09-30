@@ -32,7 +32,7 @@ from horizon.redact import CODE_REMOVED, MAX_NOTE, redact
 from horizon.taskstate.checkpoints import capture, restore_steps, same_tree
 from horizon.taskstate.store import TaskStore
 from horizon.taskstate.usage import attempt_usage
-from horizon.testparse import is_test_command, parse_test_output
+from horizon.testparse import may_run_tests, parse_test_output
 
 WORKFLOW = (
     "This project uses the Horizon MCP server (tools: start_task, recall_context, evaluate_options, "
@@ -235,7 +235,7 @@ def parsed_capture(payload: dict) -> dict | None:
     if payload.get("tool_name") != "Bash":
         return None
     command = (payload.get("tool_input") or {}).get("command", "")
-    if not is_test_command(command):
+    if not may_run_tests(command):
         return None
     counts = parse_test_output(_tool_output(payload.get("tool_response")))
     if counts is None:

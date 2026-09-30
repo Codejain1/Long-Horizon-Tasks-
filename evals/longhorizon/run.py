@@ -40,18 +40,25 @@ def git(repo: Path, *args: str) -> str:
 
 
 def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
-          start_dir: Path | None = None) -> tuple[Path, dict]:
+          start_dir: Path | None = None, resume: tuple[Path, int] | None = None) -> tuple[Path, dict]:
     repo = work / name
-    if start_dir and start_dir.is_dir():  # a scenario that starts from an existing codebase
-        shutil.copytree(start_dir, repo)
-    repo.mkdir(parents=True, exist_ok=True)
-    for name, text in scenario.get("start_files", {}).items():
-        (repo / name).write_text(text)
-        if name.endswith(".sh"):
-            (repo / name).chmod(0o755)
-    git(repo, "init", "-q")
-    git(repo, "add", "-A")
-    git(repo, "commit", "-qm", "start")
+    if resume:  # another run's repo as it was after session N-1
+        source, first = resume
+        work.mkdir(parents=True)
+        subprocess.run(["git", "clone", "-q", str(source / "repo"), str(repo)], check=True)
+        commit = git(repo, "log", "--format=%H", f"--grep=^after session {first - 1}$").split()[0]
+        git(repo, "checkout", "-q", "-B", "main", commit)
+    else:
+        if start_dir and start_dir.is_dir():  # a scenario that starts from an existing codebase
+            shutil.copytree(start_dir, repo)
+        repo.mkdir(parents=True, exist_ok=True)
+        for name, text in scenario.get("start_files", {}).items():
+            (repo / name).write_text(text)
+            if name.endswith(".sh"):
+                (repo / name).chmod(0o755)
+        git(repo, "init", "-q")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "start")
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
     env["PATH"] = f"{Path(python).parent}:{env.get('PATH', '')}"
     if arm in ("horizon", "lean"):
@@ -83,6 +90,25 @@ def test_run_counts(events: list[dict]) -> tuple[int, int]:
     results = [text(b.get("content")) for b in blocks(events)
                if b.get("type") == "tool_result" and b.get("tool_use_id") in ids]
     return len(results), sum(bool(re.search(r"\b\d+ (failed|errors?)\b", r)) for r in results)
+
+
+def seed_test_runs(source: Path, sessions: range, repo: Path, env: dict, python: str) -> int:
+    """Replay another run's real test runs through Horizon's own PostToolUse hook, as if they had happened in
+    this project under Horizon: its memory starts with that history (e.g. a check failing in 2 sessions)."""
+    n = 0
+    for i in sessions:
+        events = [json.loads(line) for line in (source / f"session{i}.jsonl").read_text().splitlines() if line.strip()]
+        commands = {b["id"]: (b.get("input") or {}).get("command", "") for b in blocks(events)
+                    if b.get("type") == "tool_use" and b.get("name") == "Bash"}
+        for b in blocks(events):
+            if b.get("type") == "tool_result" and b.get("tool_use_id") in commands:
+                payload = {"session_id": f"seed-{i}", "cwd": str(repo), "tool_name": "Bash",
+                           "tool_input": {"command": commands[b["tool_use_id"]]},
+                           "tool_response": {"stdout": text(b.get("content")), "stderr": ""}}
+                subprocess.run([python, "-m", "horizon", "hook", "post-tool-use", "--profile", "lean"],
+                               input=json.dumps(payload), text=True, env=env, check=True, capture_output=True)
+                n += 1
+    return n
 
 
 def run_session(prompt: str, repo: Path, *, claude: str, model: str, arm: str, env: dict, log: Path) -> dict:
@@ -163,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--sessions", type=int, default=None, help="Stop after this many sessions.")
     ap.add_argument("--claude", default="claude", help="The claude CLI (tests pass a fake).")
+    ap.add_argument("--resume", metavar="RUN_DIR", help="Start from another run's repo (e.g. OUT/backlog-baseline) "
+                                                        "after session --from-session minus 1; Horizon arms are seeded "
+                                                        "with that run's test history.")
+    ap.add_argument("--from-session", type=int, default=1)
     args = ap.parse_args(argv)
 
     scenario_dir = HERE / "scenarios" / args.scenario
@@ -174,10 +204,16 @@ def main(argv: list[str] | None = None) -> int:
     # "repos": one fresh repo per session (a new project for the same team), sharing only Horizon's memory.
     # Then each session's hidden tests run on its own repo; otherwise they accumulate on the one repo.
     repos = scenario.get("repos")
+    resume = (Path(args.resume), args.from_session) if args.resume else None
     if not repos:
-        repo, env = setup(scenario, args.arm, work, python, start_dir=scenario_dir / "start")
+        repo, env = setup(scenario, args.arm, work, python, start_dir=scenario_dir / "start", resume=resume)
+    if resume and args.arm != "baseline":
+        seeded = seed_test_runs(resume[0], range(1, args.from_session), repo, env, python)
+        print(f"[{args.scenario}/{args.arm}] seeded {seeded} test runs from {resume[0]}", flush=True)
     rows = []
     for i, prompt in enumerate(scenario["sessions"][: args.sessions], start=1):
+        if i < args.from_session:
+            continue
         print(f"[{args.scenario}/{args.arm}] session {i}", flush=True)
         if repos:
             repo, env = setup(scenario, args.arm, work, python, repos[i - 1])

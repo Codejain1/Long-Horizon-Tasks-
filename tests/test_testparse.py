@@ -1,6 +1,18 @@
 import pytest
 
-from horizon.testparse import is_test_command, parse_test_output
+from horizon.testparse import is_test_command, may_run_tests, parse_test_output
+
+
+@pytest.mark.parametrize("cmd", ["./ci.sh", "cd app && ./ci.sh -q", "sh scripts/test.sh", "bash ci.sh",
+                                 "scripts/run_tests", "just test", "bazel test //..."])
+def test_wrappers_may_run_tests(cmd):
+    assert may_run_tests(cmd) and not is_test_command(cmd)
+
+
+@pytest.mark.parametrize("cmd", ["ls -la", "git status", "cat tests/test_x.py", "echo testing", "grep -r failed .",
+                                 "cd app && cat logs/test.log", "tail -n 50 build/ci.sh"])
+def test_plain_commands_never_count(cmd):
+    assert not may_run_tests(cmd)
 
 
 @pytest.mark.parametrize("cmd", [

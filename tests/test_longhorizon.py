@@ -169,3 +169,36 @@ def test_failed_test_runs_are_counted_from_the_transcript():
             {"type": "tool_result", "tool_use_id": "d", "content": "3 failed attempts.txt"}]}},
     ]
     assert run.test_run_counts(events) == (2, 1)
+
+
+def test_resume_from_another_run_and_seed_its_test_history(tmp_path, monkeypatch):
+    """Replay: a lean run starts from a baseline run's repo after session 2, with Horizon's memory seeded from
+    that run's real test runs, so a check that failed in both sessions is already a known pitfall."""
+    run = load("run")
+    marker = fake(tmp_path, "marker", "n = len(list(repo.glob('m*'))); (repo / f'm{n + 1}').write_text('x')",
+                  "leaves one marker file per session")
+    run.main(["--scenario", "backlog", "--arm", "baseline", "--out", str(tmp_path / "a"), "--claude", marker,
+              "--sessions", "3"])
+    source = tmp_path / "a" / "backlog-baseline"
+    fail = ("Exit code 1\nF....\nFAILED tests/test_policy.py::test_every_public_function_is_in_the_changelog - "
+            "AssertionError\n1 failed, 4 passed in 0.04s")
+    for i in (1, 2):
+        (source / f"session{i}.jsonl").write_text("\n".join(json.dumps(e) for e in [
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "./ci.sh"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t", "content": fail}]}},
+        ]))
+    probe = fake(tmp_path, "probe", "assert sorted(p.name for p in repo.glob('m*')) == ['m1', 'm2']",
+                 "checks it starts from the state after session 2")
+    db = tmp_path / "b" / "backlog-lean" / "horizon.db"
+    run.main(["--scenario", "backlog", "--arm", "lean", "--out", str(tmp_path / "b"), "--claude", probe,
+              "--resume", str(source), "--from-session", "3", "--sessions", "3"])
+    rows = json.loads((tmp_path / "b" / "backlog-lean" / "results.json").read_text())["sessions"]
+    assert [r["session"] for r in rows] == [3] and rows[0]["aborted"] is None
+
+    from horizon.db import connect
+    from horizon.taskstate.store import TaskStore
+
+    repo = str((tmp_path / "b" / "backlog-lean" / "repo").resolve())
+    assert TaskStore(connect(f"sqlite:///{db}")).recurring_failures(repo) == [
+        ("tests/test_policy.py::test_every_public_function_is_in_the_changelog", 2)]

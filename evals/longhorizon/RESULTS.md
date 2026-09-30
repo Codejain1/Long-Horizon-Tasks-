@@ -84,3 +84,5 @@ Each sentence of a prompt is classified as a team rule (all projects), a project
 | Jev (two yes/no questions per sentence, one request, about 1 s) | **97 %** | "Let's never do a release on Friday again" filed as a team rule (arguably right). |
 
 Jev is used whenever `HORIZON_SCORER=jev`, with keywords as the fallback. The labelled set is small and written by us, so this is a first measurement.
+
+**Found while building the replay:** Horizon's test-run capture recognised only known commands like `pytest` and `npm test`, so CI run through `./ci.sh` was **never captured**. In the backlog and team runs, lean's pitfall memory therefore couldn't see most test runs. Capture now also accepts wrapper scripts and task-runner test targets, when their output parses as a test run.
