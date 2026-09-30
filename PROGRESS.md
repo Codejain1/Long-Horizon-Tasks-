@@ -256,11 +256,74 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Mutation checks:** injected bugs in the coding state reducer (failed runs not counted), a risk rule (`npm publish` missed) and redaction (store-side `sanitise` disabled) were each caught by a test.
   - **Tests:** 492 pass on SQLite and Postgres 16 + pgvector (471 before, plus 21 new ones in `tests/test_eventlog.py` and `tests/test_privacy.py`).
 
+- **Session 16: v2 Phase 1, track E** (the owner chose "track E first"; commits 20ff318, 1f2d316, c44afa9, 609bfca and the docs commit). Built, not yet run with real Claude Code sessions.
+  - **E1, the `observe` profile:**
+    - `install-claude-code --profile observe` installs lean's hooks with no MCP entry and no CLAUDE.md block, and removes both if present. `--hosted` is refused.
+    - The hooks log events but return nothing and keep no task state.
+    - Every hook call's first event records `injected_chars`, the characters of its output the model reads.
+  - **E2, harness metrics** (`evals/longhorizon/run.py`, `report.py`):
+    - an `observe` arm;
+    - failing checks from the agent's own test runs;
+    - repeat failures, and regressions against the previous session's hidden results (both also across `--resume`);
+    - per session, Horizon's events by kind and the characters it injected;
+    - `events.jsonl`, the run's whole event log.
+  - **E3, `marathon`:**
+    - The starting codebase is an invoicing service of about 400 lines. It has 5 CI policies, CI runs in `Asia/Kolkata`, and a conftest runs the tests in reverse order.
+    - There are 24 tickets, and the cents and `uuid4().hex` rule is stated only in ticket 1.
+    - 40 hidden ticket tests plus 5 policy tests.
+    - A reference solution passes all of them and the repo's own CI.
+    - New drift checks: `no_floats` and `uuid_hex_ids`.
+  - **E4, `compaction`:**
+    - One session can now be several resumed invocations (`--resume <session id>`). Usage is summed, the logs are joined, each invocation is recorded and compactions are counted.
+    - The `tab` scenario gives the goal, 4 constraints and parts 1–3, then sends `/compact`, then gives parts 4–8 with a shortcut in each part.
+    - New `utc_only` check.
+  - **E5, `stall`:**
+    - Six tickets on the marathon codebase (the new `start_from` field, plus an overlay).
+    - #3 asks for output that a platform-owned silence policy forbids. #5 needs a binary only CI hosts have. The four controls reuse marathon tickets.
+    - Each session records whether it wrote `BLOCKED.md` and whether the note gives the right reason.
+    - Hidden checks catch faking.
+    - `--seed RUN_DIR` replays another run's sessions through the installed hooks.
+  - **Acceptance criteria**, all met except the F1 check, which needs a real session:
+    1. observe logs the same events as lean, prints nothing, leaves task state unchanged, and installs as hooks only (switching back to lean works);
+    2. `injected_chars` is 0 under observe and positive under lean;
+    3. repeat failures and regressions come from the transcript and the hidden tests, not the agent's summary;
+    4. each run exports its event log;
+    5. every new scenario's reference passes all hidden checks, and marathon's reference also passes its repo CI;
+    6. each planted trap, shortcut and fake is caught by its own check and by nothing else. That covers 5 policies, 2 quirks, 5 drift cases, the storage and backup traps, 6 compaction shortcuts and 4 stall fakes, while an honest `sign_invoice` is not flagged;
+    7. a compaction session resumes one Claude session (verified against a fake `claude` that records its arguments);
+    8. `BLOCKED.md` is scored per session: a right reason, a wrong one, and a note on a solvable ticket are told apart;
+    9. seeding replays full sessions through the hooks;
+    10. **not verifiable without a real run:** that `claude -p --resume <id> "/compact"` really compacts, which hooks fire, and the stream's compaction marker (question 62).
+  - **Mutation checks:** these deliberately injected bugs were each caught by a test, and the code was then restored:
+    - the observe handler speaking;
+    - the repeat-failure count;
+    - dropping `--resume`;
+    - accepting any `BLOCKED.md` reason;
+    - seeding without tool calls.
+  - **Tests:** 537 pass on SQLite and Postgres 16 + pgvector: 492 before, plus 45 new (`test_marathon.py` 19, `test_compaction.py` 9, `test_stall.py` 10, and 7 in `test_longhorizon.py` and `test_eventlog.py`).
+
 ## In progress
 
-- Nothing. v2 Phase 0 is done; Phase 1 waits for the owner's go-ahead (see "Next step").
+- Nothing. Track E is built. Tracks A–D of Phase 1 are next (see "Next step").
 
 ## Decisions made
+
+**v2 Phase 1 track E (session 16)**
+- **observe:** it reuses lean's hook set and matchers, with a handler that returns nothing, so its event log is the same as lean's by construction. It's local only, because hosted installs don't send events yet.
+- **`injected_chars` goes on each hook call's first event.** Summing it per session gives the context cost without a new event kind.
+- **Repeat failures are counted per check id** (pytest `FAILED`/`ERROR` lines in the agent's own runs). The policies and quirks show up there first.
+- **A regression is a hidden test that passed after the previous session and doesn't now.** Separate-repo scenarios (`team`) can't regress.
+- **The marathon codebase is about 400 lines, not about 800.** That's enough for 5 policies and 24 tickets that roughly triple it; more lines would only add reading cost.
+- **Marathon backups use format v2** (`{"version": 2, "tables": …}`), with v1 still accepted on import, so ticket 12 is a real migration.
+- **Decimal is allowed.** Only float literals and `float()` calls are drift, since the rule is about floats.
+- **The marathon reference is one final solution checked against all hidden tests,** not one solution per ticket. Every ticket's tests stay in the cumulative set, so it's equivalent.
+- **A compaction session is a list of prompts, each resuming the previous session id.** A usage limit stops the remaining invocations.
+- **Compactions are counted from stream events whose `system` subtype contains "compact".** The exact marker is confirmed by the first real run.
+- **`utc_only` flags local or naive clocks,** `astimezone()` with no zone and `ZoneInfo`. Offsets built by hand are left to the hidden tests.
+- **Stall reuses the marathon codebase through `start_from` plus an overlay,** rather than a third codebase. Its controls reuse marathon tickets and hidden tests, and a test keeps the copies identical.
+- **Stall is scored with `BLOCKED.md`, not hidden tests.** The harness diffs the session's commit and matches a per-ticket reason pattern; hidden tests only catch faking. Every ticket's prompt carries the same `BLOCKED.md` line, so nothing marks the stall tickets.
+- **Ticket #3's silence policy is behavioural** (it captures stdout and stderr), so `sys.stdout.write` can't get around it. The hidden check also runs the library outside pytest, to catch printing only when tests aren't running.
+- **Seeding replays full sessions through the arm's own hooks,** as subprocesses and in order. Before, only test runs were replayed; the forecast needs whole sessions.
 
 **Long-horizon eval (session 13)**
 - The hidden tests and checks run outside the repo, so neither arm can see or overfit them.
@@ -617,21 +680,25 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 
 | 56 | Make `--profile lean` the default install? | **Done, owner-approved (2026-09-30):** lean is the default for Claude Code; `--profile full` keeps the whole workflow. Codex stays full until its `UserPromptSubmit` support is checked. See PROJECT.md §0. |
 | 57 | How to tell Codex sessions from Claude Code in the event log | Default: the `HORIZON_HOST` environment variable (default `claude-code`); Codex's installer can set it once Codex gets the lean profile. |
-| 58 | Should Horizon ship an `observe` profile (log events, inject nothing) to collect baseline data from plain sessions? | Default: build it in Phase 1 track E for the evals only; whether users get it is the owner's call (`docs/EVALS.md`). |
-| 59 | How the `compaction` eval forces a compaction | Default: `/compact` on a resumed headless session (`--resume`), with a long-transcript fallback if that doesn't work headless (`docs/EVALS.md`). |
+| 58 | Should Horizon ship an `observe` profile (log events, inject nothing) to collect baseline data from plain sessions? | **Built** (session 16) and documented in `CLAUDE_CODE.md`, since it's harmless and local. Whether to advertise it to users is still the owner's call. |
+| 59 | How the `compaction` eval forces a compaction | **Built** as F1: `/compact` on a resumed headless session. The long-transcript fallback (F2) is built only if F1 fails (question 62). |
 | 60 | Forward events in hosted mode? | Default: not yet. It needs a server endpoint and a privacy review; Phase 4's team sharing is the first place it's needed. |
-| 61 | Should Phase 1 start, and with which tracks? | Default: wait for the owner. All five tracks can run in parallel; track E (the harnesses) first if only one, since it gates the rest. |
+| 61 | Should Phase 1 start, and with which tracks? | **Owner chose track E first** (session 16); it's built. Tracks A–D next. |
+| 62 | Does F1 really compact a headless session, and what does the stream show? | Needs **one real run** on the owner's subscription (about one short session): `python evals/longhorizon/run.py --scenario compaction --arm observe --out /tmp/lh-f1`. Check that `compactions` is 1 and that the event log has `compaction` plus a `session_start` with source `compact`. Default until then: compactions are counted from any `system` event whose subtype contains "compact". |
+| 63 | Which run seeds `stall`? | Default: a baseline run of `marathon`'s first tickets (normal work on the same codebase), passed as `--seed`. Stall detection itself is Phase 2, so nothing reads the seed yet. |
+| 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
-**Needs the owner** (credentials, money or an irreversible decision): 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
+**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
-**v2 (this copy):** Phase 1 of `PROJECT.md` §0, after the owner's go-ahead (question 61). Its tracks are independent:
-- A: session episodes into the memrouter from the event log;
-- B: Jev as outcome judge;
+**v2 (this copy):** the rest of Phase 1 of `PROJECT.md` §0. Track E is built (session 16). The other tracks are independent:
+- A: session episodes into the memrouter from the event log. It's the natural next track, because the `observe` and lean runs now leave the data it needs;
+- B: Jev as outcome judge (needs `TYPESAFE_API_KEY`);
 - C: world model v2 with Jev as the prior;
-- D: the context composer;
-- E: the `marathon`, `compaction` and `stall` harnesses, plus the `observe` profile.
+- D: the context composer.
+
+**Owner, when convenient:** one real `compaction` run to verify F1 (question 62). Real marathon runs wait until the Phase 1–2 components exist (`docs/EVALS.md` budget).
 
 **Carried over from v1:**
 

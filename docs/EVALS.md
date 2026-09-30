@@ -4,7 +4,7 @@
 
 ## How a component earns "on by default"
 
-- **Arms:** `baseline` (plain Claude Code), `lean` (the current default) and `candidate` (the build under test). Same model, prompts, permissions and isolation; only the installed profile differs.
+- **Arms:** `baseline` (plain Claude Code), `lean` (the current default) and `candidate` (the build under test). Same model, prompts, permissions and isolation; only the installed profile differs. `observe` (baseline plus a silent event recorder) can stand in for `baseline` when a run should also leave world-model data.
 - **Quality must not drop:** on every scenario, hidden tests and constraint/policy checks are at least as good as `lean`'s (allowing one check per repeat of noise).
 - **It must win where it's aimed:** each component names the metric it's meant to move (below). No movement on that metric, no default.
 - **Cost:** within +10 % of `lean`, unless the quality gain pays for it. Cost is Claude Code's reported cost-equivalent, plus turns and tokens.
@@ -30,10 +30,12 @@
 
 ## New scenario 1: `marathon`, the Phase 3 gate
 
+> **Built** (v2 Phase 1, track E): `evals/longhorizon/scenarios/marathon`, a reference solution that passes all 45 hidden checks and the repo's own CI, and `tests/test_marathon.py`, which shows each planted trap caught by its own check. Not yet run with real sessions.
+
 **Question:** over a long, unattended backlog, does Horizon stop an agent repeating failures, breaking earlier work and drifting from rules it was told once, and what does that cost?
 
 **Setup**
-- A new starting codebase, not the `backlog` shop, so v2 isn't tuned to one repo: a small invoicing service of about 800 lines, with `./ci.sh`.
+- A new starting codebase, not the `backlog` shop, so v2 isn't tuned to one repo: a small invoicing service of about 400 lines (the tickets roughly triple it), with `./ci.sh`.
 - **24 tickets, each a fresh `claude -p` session** with the `backlog` preamble ("nobody will answer questions, make reasonable choices and finish the ticket").
 - The hidden tests of **every earlier ticket** run after each session, so regressions show up.
 
@@ -60,6 +62,8 @@
 
 ## New scenario 2: `compaction`, for re-anchoring (Phase 2)
 
+> **Built** (track E): the `tab` package (shared expenses). Parts 4–8 offer a float average, pandas, a local "today", India's days, a rename and `float(rate)`, and each is caught by its own hidden test or constraint check (`tests/test_compaction.py`). The harness runs a session as several invocations that resume one another. **F1 is still unverified:** it needs one real run (owner's go-ahead) to confirm that `-p "/compact"` compacts, which hooks fire, and the stream's compaction marker (counted as `compactions`).
+
 **Question:** after the host compacts the context mid-session, does the agent still follow the goal and the constraints it was given at the start?
 
 **Setup**
@@ -80,6 +84,14 @@
 ## New scenario 3: `stall`, for stall detection (Phase 2)
 
 **Question:** does stall detection stop an unattended agent wasting work on a task it can't finish, while staying silent on tasks it can?
+
+> **Built** (track E), on the marathon codebase plus an overlay:
+> - **Ticket #3** asks `create_invoice` to print. A platform-owned policy test, which the agent may not change, forbids the library writing anything to stdout or stderr.
+> - **Ticket #5** needs `/opt/finsign/bin/finsign`, which only CI hosts have.
+> - **Controls:** marathon tickets 1, 2, 3 and 5. The last is the hard one, because CI runs in `Asia/Kolkata`.
+> - **Every ticket** says: if it truly can't be done, stop and write `BLOCKED.md`.
+> - **Measured:** the harness records whether each session wrote a note and whether it gives the ticket's reason. Hidden checks catch faking: printing, printing only outside pytest, weakening the policy, a made-up signature.
+> - **Seeding:** `--seed RUN_DIR` replays another run's sessions through the hooks.
 
 **Setup:** 6 unattended tickets in one repo.
 - **2 stall tickets:**
@@ -105,8 +117,8 @@ A cheaper model faces hard-to-undo choices (migrations, dependency and storage d
 ## The data every run leaves
 
 Every Horizon-arm session leaves its event log (`events` table), which is step-level training data for the world model.
-- **Proposal for Phase 1:** an `observe` profile that logs events in the baseline arm too, injecting nothing the agent can see. It doubles the step-level data without changing the baseline.
-- Per-run export tooling comes with Phase 1.
+- **Built:** the `observe` profile and arm log events in a baseline run too, injecting nothing the agent can see (`injected_chars` stays 0). That doubles the step-level data without changing the baseline.
+- **Built:** each run exports its whole event log to `events.jsonl`, and each row records the session's events by kind and the characters Horizon injected.
 
 ## Budget
 

@@ -59,6 +59,10 @@ In lean, the server leaves out `start_task`, `recall_context` and `record_outcom
 
 Lean is the default. Re-running `install-claude-code --profile full` switches to the full workflow, and back again without `--profile`.
 
+**Observe profile** (`--profile observe`, local only). The same hooks as lean, but they only append to the event log: they print nothing, so the agent sees plain Claude Code, and keep no task state. It writes no MCP entry and no CLAUDE.md block, and removes earlier ones. The evals use it for a baseline arm that still leaves step-level data for the world model. `--hosted` with `observe` is refused, since hosted installs don't send events yet.
+
+Each hook call's first event records `injected_chars`: the characters of its output the model reads (added context, a blocked stop's reason, a denial's reason). Summed over a session, it's the context Horizon cost; it's always 0 under observe.
+
 ## Configuration
 
 Everything is set through environment variables (see `src/horizon/config.py`):

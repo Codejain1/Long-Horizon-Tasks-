@@ -56,7 +56,7 @@ Benchmark after every phase with `docs/EVALS.md`; cut anything that doesn't move
    - B. Jev as outcome judge, and more classifier questions;
    - C. world model v2 (Jev as the prior);
    - D. the context composer;
-   - E. the `marathon`, `compaction` and `stall` harnesses, plus an `observe` profile for baseline data.
+   - E. the `marathon`, `compaction` and `stall` harnesses, plus an `observe` profile for baseline data (**built**, not yet run with real sessions; `compaction`'s forcing method F1 still needs one real run).
 2. **Joining:** surprise measured against the world model's forecast; stall detection; re-anchoring after compaction.
 3. **The gate:** the `marathon` evaluation against plain Claude Code and lean.
 4. **Only if the gate passes:** risky-action foresight with the weaker-model test; hosted team and cross-agent sharing; new adapters (browser, SDK).
