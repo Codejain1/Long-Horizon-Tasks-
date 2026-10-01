@@ -97,6 +97,25 @@ def agent_env(python: str) -> dict:
     return env
 
 
+DENY_READ: list[Path] = []  # with ISOLATE: this repo, the run's --out folder and any --deny-read paths
+
+
+def read_guard(cmd: list[str], repo: Path) -> list[str]:
+    """With ISOLATE on macOS, run the agent under a Seatbelt profile that denies reading this repo, the run
+    folders and every other `lhx-` temp folder: hiding paths wasn't enough, agents searched the home folder and
+    found the hidden tests. Its own repo and database folders stay readable; writes are left to the agent's
+    own sandbox. Elsewhere the command runs as is."""
+    if not ISOLATE["on"] or sys.platform != "darwin" or not shutil.which("sandbox-exec"):
+        return cmd
+    q = lambda p: json.dumps(os.path.realpath(p))  # noqa: E731
+    tmp = os.path.realpath(tempfile.gettempdir())
+    deny = " ".join(f"(subpath {q(p)})" for p in DENY_READ)
+    allow = " ".join(f"(subpath {q(p)})" for p in {Path(repo).resolve().parent, *(d.parent for d in RUN.values())})
+    profile = (f'(version 1)(allow default)(deny file-read* {deny} (regex #"^{tmp}/{TEMP_PREFIX}"))'
+               f"(allow file-read* {allow})")
+    return ["sandbox-exec", "-p", profile, *cmd]
+
+
 _PATH = re.compile(r"(?<![\w.~])/(?:Users|private|tmp|var|home|opt|etc|Volumes)/[^\s\"'`|;&<>()*?]*")
 
 
@@ -424,7 +443,7 @@ def run_session(prompts: str | list[str], repo: Path, *, claude: str, model: str
     start = time.monotonic()
     streams, results, invocations, session_id = [], [], [], None
     for prompt in prompts:
-        cmd = agent_command(prompt, claude=claude, model=model, arm=arm, session_id=session_id)
+        cmd = read_guard(agent_command(prompt, claude=claude, model=model, arm=arm, session_id=session_id), repo)
         try:
             proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=SESSION_TIMEOUT,
                                   stdin=subprocess.DEVNULL)
@@ -544,6 +563,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--isolate", action=argparse.BooleanOptionalAction, default=None,
                     help="Keep the agent's repo, database and Horizon outside this repo (default: on for the real "
                          "`claude` and `agent` CLIs, off for fakes).")
+    ap.add_argument("--deny-read", action="append", default=[], metavar="PATH",
+                    help="With isolation on macOS, also keep the agent from reading PATH (e.g. the folder holding "
+                         "every run of a batch, or another copy of this repo). Repeatable.")
     args = ap.parse_args(argv)
     AGENT.update(host=args.agent, bin=args.agent_bin)
     if args.agent == "cursor":  # its tickets take 2–10 minutes; a hang is a dropped backend, retried sooner
@@ -561,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
     ISOLATE["on"] = args.isolate if args.isolate is not None \
         else (args.claude if args.agent == "claude" else args.agent_bin) in ("claude", "agent")
     RUN.clear()
+    DENY_READ[:] = [REPO_ROOT, Path(args.out).resolve(), *(Path(p).expanduser().resolve() for p in args.deny_read)]
     apy = agent_python() if ISOLATE["on"] else python  # the agent's: hooks, CI, PATH
     # "repos": one fresh repo per session (a new project for the same team), sharing only Horizon's memory.
     # Then each session's hidden tests run on its own repo; otherwise they accumulate on the one repo.

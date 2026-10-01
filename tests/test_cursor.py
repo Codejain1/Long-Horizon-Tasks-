@@ -1,11 +1,14 @@
 """Cursor as a host: its hooks translated to Horizon's lean hooks, and the eval harness driving the Cursor CLI."""
 
 import json
+import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
 import threading
 
+import pytest
 from test_longhorizon import EVAL, load
 
 from horizon.cursor import run_cursor_hook, to_cursor, to_horizon, user_messages
@@ -184,6 +187,7 @@ print("\\n".join(json.dumps(e) for e in out))
 def test_an_isolated_run_keeps_the_agent_out_of_the_eval_tree_and_counts_its_peeks(tmp_path, monkeypatch):
     run = load("run")
     monkeypatch.setattr(run, "agent_python", lambda: sys.executable)  # the real one builds a cached env
+    monkeypatch.setattr(run, "read_guard", lambda cmd, repo: cmd)  # the fake runs from this repo's own venv
     monkeypatch.setattr(run.tempfile, "tempdir", str(tmp_path / "t"))
     (tmp_path / "t").mkdir()
     agent = tmp_path / "agent"
@@ -204,6 +208,25 @@ def test_an_isolated_run_keeps_the_agent_out_of_the_eval_tree_and_counts_its_pee
     with sqlite3.connect(work / "horizon.db") as conn:  # the isolated database, copied into the run folder
         assert conn.execute("SELECT count(*) FROM events").fetchone()[0] == 1
     assert row["horizon"]["events"] == {"session_start": 1} and len((work / "events.jsonl").read_text().split()) == 1
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not shutil.which("sandbox-exec"), reason="macOS Seatbelt only")
+def test_the_read_guard_keeps_the_agent_out_of_denied_folders_and_other_runs(tmp_path, monkeypatch):
+    run = load("run")
+    temp = tmp_path / "t"
+    monkeypatch.setattr(run.tempfile, "tempdir", str(temp))
+    mine, other, db, secret = temp / "lhx-mine" / "repo", temp / "lhx-other" / "repo", temp / "lhx-db", tmp_path / "eval"
+    for d in (mine, other, db, secret):
+        d.mkdir(parents=True)
+        (d / "f.txt").write_text(d.name)
+    monkeypatch.setitem(run.ISOLATE, "on", True)
+    monkeypatch.setattr(run, "DENY_READ", [secret])
+    monkeypatch.setattr(run, "RUN", {"db": db / "horizon.db"})
+    read = lambda p: subprocess.run(run.read_guard(["cat", str(p)], mine), capture_output=True, text=True)  # noqa: E731
+    assert read(mine / "f.txt").stdout == "repo" and read(db / "f.txt").stdout == "lhx-db"
+    assert read(other / "f.txt").returncode and read(secret / "f.txt").returncode
+    monkeypatch.setitem(run.ISOLATE, "on", False)
+    assert run.read_guard(["cat"], mine) == ["cat"]
 
 
 def test_the_agents_environment_names_nothing_in_this_repo(monkeypatch):
