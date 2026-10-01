@@ -1052,11 +1052,13 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 
 ## Next step
 
-**v2 (this copy):** Phase 1 of `PROJECT.md` §0 is built: tracks E (session 16), A (17), B (18), C (19) and D (20). Next:
-- **Phase 3 gate runs are done (session 22):** no gated component beat lean, so Phase 4 doesn't start (principle 5).
-- **Refused-command memory is built (session 23).** Its real check is queued (`/tmp/lh-de`). Next: read it against the Phase 3 runs (`refused_calls`, tokens on stall ticket 5, marathon tickets 1–8), and record it in `RESULTS.md`. If it cuts refused calls without costing tokens, run `lean` on the same tickets for a paired comparison. Then marathon's later tickets (question 78).
+**v2 (this copy), state on 2026-10-02.** Phases 0–2 are built. The Phase 3 gate found no component that beats lean, so Phase 4 waits (principle 5). Refused-command memory, the handoff rerun and the rental rerun after the over-capture fix (question 88) are done and recorded in `RESULTS.md`. Question 78 is covered by the Cursor marathon, which ran tickets 1–21 with no gain for lean, so no Sonnet rerun is planned.
 
-- **Cursor works as a second agent (session 24)** at no subscription cost. Ticket 4 repeats showed the gap was noise (question 82). Three repeats of baseline against lean then showed no quality or token difference, and lean 21 % slower (questions 83 and 84). Hook latency is fixed (question 83), and the handoff scenario exists (question 84). Jev's key reaches Cursor hooks (question 85). The eval harness now isolates agents and measures contamination. In the isolated handoff rerun, lean + Jev carried every early rule to the late tickets (24 of 24 checks against baseline's 2 of 12, question 86). The second scenario (`rental`, guarded) confirmed it: 22 of 27 rule checks against 8, at 56 % of baseline's tokens. **Next:** fix Jev's over-capture (question 88) and rerun rental. Then the owner decides on the real RentEase product (question 91) and on Jev as the default splitter (question 87). After that, use Cursor for the repeated runs the Claude usage limit keeps cutting short. Whether any component beats lean needs a scenario where visible-test history predicts the hidden failure, and marathon ticket 4 isn't one.
+What the evidence supports: **lean + Jev carries rules given early and needed late** (handoff 24/24 against 2/12; rental 26/27 against 8/27, at 56–62 % of baseline's tokens), and **pitfall warnings** stop a policy that keeps breaking (v1 replays). On general unattended coding (marathon), nothing beat plain Claude Code.
+
+Next:
+- **Owner decisions** that now gate progress: Jev as lean's default rule splitter (question 87; two scenarios now support it), the real RentEase product (question 91), and pushing this branch for review.
+- **Engineering, once decided:** if Jev becomes the default, make the installer set it up (the key from the environment or Keychain) and fall back to keywords silently. Otherwise, the next evidence is a scenario where earlier sessions' test history decides a later ticket (question 84), which is the only place the history-based components could still win.
 
 **Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, the `candidate` against `lean` gate run on `marathon` (question 72).
 
