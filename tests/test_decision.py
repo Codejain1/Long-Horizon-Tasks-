@@ -6,8 +6,16 @@ import json
 import httpx2
 import pytest
 
-from horizon.decision.layer import (Option, build_questions, consequence_questions, first_pass, measured,
-                                    plan_consequences, second_pass)
+from horizon.decision import scorers
+from horizon.decision.layer import (
+    Option,
+    build_questions,
+    consequence_questions,
+    first_pass,
+    measured,
+    plan_consequences,
+    second_pass,
+)
 from horizon.decision.scorers import Answer, JevScorer, LLMScorer
 from horizon.models import Actual
 from horizon.service import Platform, ToolInputError
@@ -316,3 +324,22 @@ def test_compare_scorers(settings, task_store, memrouter, project_dir):
     assert report["decisions"] == 1 and report["top_choice_agreement"] == 0.0
     assert report["scorers"]["jev"]["brier"] == pytest.approx((0.9 - 1.0) ** 2)
     assert report["scorers"]["llm"]["brier"] == pytest.approx((0.2 - 1.0) ** 2)  # the worse predictor, measurably
+
+
+def test_the_typesafe_key_comes_from_the_keychain_when_cursor_hides_the_variable(monkeypatch):
+    calls = []
+
+    def security(cmd, **_):
+        calls.append(cmd)
+        return type("Done", (), {"returncode": 0, "stdout": "apikey_from_keychain\n"})()
+
+    monkeypatch.setattr("subprocess.run", security)
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "apikey_from_the_environment")
+    assert scorers.typesafe_key() == "apikey_from_the_environment" and calls == []
+    monkeypatch.setenv("TYPESAFE_API_KEY", "...")  # what a Cursor hook sees
+    assert scorers.typesafe_key() == "apikey_from_keychain"
+    assert calls == [["security", "find-generic-password", "-s", "horizon-typesafe", "-w"]]
+    monkeypatch.delenv("TYPESAFE_API_KEY")
+    monkeypatch.setattr("subprocess.run", lambda cmd, **_: type("Missing", (), {"returncode": 44, "stdout": ""})())
+    assert scorers.typesafe_key() is None

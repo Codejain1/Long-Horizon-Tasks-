@@ -32,15 +32,38 @@ def score(instructions: str, levels: list[str]) -> dict:
     return {"type": "score", "instructions": instructions, "criteria": levels}
 
 
+KEYCHAIN_SERVICE = "horizon-typesafe"
+
+
+def typesafe_key() -> str | None:
+    """TYPESAFE_API_KEY, or the macOS Keychain's `horizon-typesafe` item when the variable is missing or hidden:
+    Cursor passes secret-looking variables to hooks as "..."."""
+    import os
+    import subprocess
+    import sys
+
+    key = os.environ.get("TYPESAFE_API_KEY", "")
+    if len(key) > 8:
+        return key
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
 class JevScorer:
-    """TypeSafe's Jev through the official SDK (reads TYPESAFE_API_KEY; retries 429/529 itself)."""
+    """TypeSafe's Jev through the official SDK (the key from `typesafe_key`; retries 429/529 itself)."""
 
     name = "jev"
 
     def __init__(self, model: str = "jev-latest", client: Any = None):
         from typesafe_sdk import TypeSafeClient
 
-        self.client = client or TypeSafeClient(model=model)
+        self.client = client or TypeSafeClient(model=model, api_key=typesafe_key())
 
     def ask(self, state: dict, questions: dict[str, dict]) -> dict[str, Answer]:
         from typesafe_sdk import Noul, Score
