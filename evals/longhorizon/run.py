@@ -51,6 +51,7 @@ PROFILES = {"horizon": "full", "lean": "lean", "observe": "observe", "candidate"
 ARM_ENV = {"candidate": {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "composer", "HORIZON_STALL": "on",
                          "HORIZON_DEAD_ENDS": "on"}}
 EXTRA_ENV: dict[str, str] = {}  # --set KEY=VALUE, for ablations (e.g. the candidate without one feature)
+AGENT = {"host": "claude"}  # --agent: which coding agent runs the sessions (claude or cursor)
 MCP_ARMS = ("horizon", "lean", "candidate")  # arms whose agent gets Horizon's MCP tools
 TEST_COMMAND = re.compile(r"pytest(?! --version)|ci\.sh")
 
@@ -88,8 +89,13 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
     env.update(EXTRA_ENV)
     if arm in PROFILES:
         env["HORIZON_DB_URL"] = f"sqlite:///{work / 'horizon.db'}"
-        subprocess.run([python, "-m", "horizon", "install-claude-code", "--dir", str(repo),
-                        "--profile", PROFILES[arm]], check=True, env=env, capture_output=True)
+        if AGENT["host"] == "cursor":
+            if PROFILES[arm] == "full":
+                raise SystemExit("the full profile isn't available for Cursor (lean, observe and candidate are)")
+            install = [python, "-m", "horizon", "install-cursor", "--dir", str(repo), "--profile", PROFILES[arm]]
+        else:
+            install = [python, "-m", "horizon", "install-claude-code", "--dir", str(repo), "--profile", PROFILES[arm]]
+        subprocess.run(install, check=True, env=env, capture_output=True)
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", "install horizon")
     return repo, env
@@ -238,27 +244,84 @@ def blocked_note(repo: Path, reason: str | None) -> dict:
             "note": note[:300]}
 
 
+CURSOR_TOOLS = {"shellToolCall": "Bash", "editToolCall": "Edit", "writeToolCall": "Write", "readToolCall": "Read",
+                "globToolCall": "Glob", "grepToolCall": "Grep", "deleteToolCall": "Delete", "lsToolCall": "LS"}
+
+
+def from_cursor(events: list[dict]) -> list[dict]:
+    """A Cursor CLI `stream-json` log in Claude Code's message shape (tool_use and tool_result blocks, and a result
+    with Claude's usage keys), so every metric reads both agents the same way."""
+    out = []
+    for e in events:
+        if e.get("type") == "tool_call" and e.get("subtype") == "completed":
+            kind, call = next(((k, v) for k, v in (e.get("tool_call") or {}).items() if k.endswith("ToolCall")),
+                              ("", {}))
+            args, result = call.get("args") or {}, call.get("result") or {}
+            name = CURSOR_TOOLS.get(kind, kind)
+            inp = {"command": args.get("command", "")} if name == "Bash" else {"file_path": args.get("path", "")}
+            done = result.get("success") or result.get("failure") or result.get("error") or {}
+            text = (done.get("interleavedOutput") or (done.get("stdout", "") + done.get("stderr", ""))
+                    if name == "Bash" else str(done.get("message") or ""))
+            use_id = e.get("call_id", "")
+            out.append({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": use_id, "name": name, "input": inp}]}})
+            out.append({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": use_id, "content": text,
+                 **({"is_error": True} if "success" not in result else {})}]}})
+        elif e.get("type") == "result":
+            usage = e.get("usage") or {}
+            out.append({"type": "result", "session_id": e.get("session_id"), "result": e.get("result"),
+                        "is_error": e.get("is_error"), "total_cost_usd": 0,
+                        "num_turns": sum(x.get("type") == "assistant" for x in events),
+                        "usage": {"input_tokens": usage.get("inputTokens", 0),
+                                  "output_tokens": usage.get("outputTokens", 0),
+                                  "cache_read_input_tokens": usage.get("cacheReadTokens", 0),
+                                  "cache_creation_input_tokens": usage.get("cacheWriteTokens", 0)}})
+        elif e.get("type") in ("system", "user", "assistant"):
+            out.append(e)
+    return out
+
+
+def agent_command(prompt: str, *, claude: str, model: str, arm: str, session_id: str | None) -> list[str]:
+    if AGENT["host"] == "cursor":
+        # Headless Cursor applies no permission list (`-p` may run any command), so the sandbox keeps writes in
+        # the project, as Claude Code's allowed-tools list does.
+        cmd = [AGENT.get("bin", "agent"), "-p", prompt, "--output-format", "stream-json", "--model", model,
+               "--force", "--trust", "--sandbox", "enabled"]
+        return cmd + (["--resume", session_id] if session_id else [])
+    cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+           "--model", model, "--setting-sources", "project,local", "--strict-mcp-config", "--allowedTools",
+           *AGENT_TOOLS, *(HORIZON_TOOLS if arm in MCP_ARMS else [])]
+    if session_id:
+        cmd += ["--resume", session_id]
+    if arm in MCP_ARMS:
+        cmd += ["--mcp-config", ".mcp.json"]
+    if arm in PROFILES:
+        cmd += ["--include-hook-events"]
+    return cmd
+
+
 def run_session(prompts: str | list[str], repo: Path, *, claude: str, model: str, arm: str, env: dict,
                 log: Path) -> dict:
-    """One Claude Code session. A list of prompts is one session driven by several invocations: each after the
+    """One agent session. A list of prompts is one session driven by several invocations: each after the
     first resumes the previous one's session (`--resume`), so e.g. "/compact" compacts the context mid-job."""
     prompts = [prompts] if isinstance(prompts, str) else list(prompts)
     start = time.monotonic()
     streams, results, invocations, session_id = [], [], [], None
     for prompt in prompts:
-        cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
-               "--model", model, "--setting-sources", "project,local", "--strict-mcp-config", "--allowedTools",
-               *AGENT_TOOLS, *(HORIZON_TOOLS if arm in MCP_ARMS else [])]
-        if session_id:
-            cmd += ["--resume", session_id]
-        if arm in MCP_ARMS:
-            cmd += ["--mcp-config", ".mcp.json"]
-        if arm in PROFILES:
-            cmd += ["--include-hook-events"]
+        cmd = agent_command(prompt, claude=claude, model=model, arm=arm, session_id=session_id)
         proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=45 * 60,
                               stdin=subprocess.DEVNULL)
-        streams.append(proc.stdout if proc.stdout.endswith("\n") or not proc.stdout else proc.stdout + "\n")
-        events = [e for e in map(_json_or_none, proc.stdout.splitlines()) if e is not None]
+        stdout = proc.stdout
+        if AGENT["host"] == "cursor":
+            raw = [e for e in map(_json_or_none, stdout.splitlines()) if e is not None]
+            with log.with_suffix(".cursor.jsonl").open("a") as f:
+                f.write(stdout if stdout.endswith("\n") or not stdout else stdout + "\n")
+            stdout = "".join(json.dumps(e) + "\n" for e in from_cursor(raw))
+            if not stdout:
+                stdout = json.dumps({"type": "result", "result": proc.stderr[-500:], "is_error": True}) + "\n"
+        streams.append(stdout if stdout.endswith("\n") or not stdout else stdout + "\n")
+        events = [e for e in map(_json_or_none, stdout.splitlines()) if e is not None]
         result = next((e for e in reversed(events) if e.get("type") == "result"), {}) or {}
         results.append(result)
         session_id = result.get("session_id") or session_id
@@ -355,7 +418,12 @@ def main(argv: list[str] | None = None) -> int:
                                                       "installed hooks (arms with Horizon), e.g. for `stall`.")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="An extra environment setting for the arm, e.g. HORIZON_CONTEXT=classic (repeatable).")
+    ap.add_argument("--agent", choices=["claude", "cursor"], default="claude",
+                    help="The coding agent: Claude Code (`--claude`), or the Cursor CLI (`--agent-bin`, with a model "
+                         "from `agent --list-models`, e.g. composer-2.5).")
+    ap.add_argument("--agent-bin", default="agent", help="The Cursor CLI (tests pass a fake).")
     args = ap.parse_args(argv)
+    AGENT.update(host=args.agent, bin=args.agent_bin)
     EXTRA_ENV.clear()
     EXTRA_ENV.update(kv.split("=", 1) for kv in args.set)
 
@@ -409,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
                                                        | {row["session_id"]}))
         rows.append(row)
         (work / "results.json").write_text(json.dumps({"scenario": args.scenario, "arm": args.arm,
-                                                       "model": args.model,
+                                                       "agent": args.agent, "model": args.model,
                                                        "settings": {**ARM_ENV.get(args.arm, {}), **EXTRA_ENV},
                                                        "sessions": rows}, indent=2))
         print(f"   hidden {len(row['hidden']['passed'])} passed / {len(row['hidden']['failed'])} failed, "

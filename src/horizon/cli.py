@@ -19,9 +19,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("hook", help="Run a Claude Code hook (reads the hook JSON on stdin).")
     p.add_argument("name", choices=["session-start", "pre-tool-use", "post-tool-use", "stop", "user-prompt",
-                                    "pre-compact", "session-end"])
+                                    "pre-compact", "session-end", "sessionStart", "beforeSubmitPrompt", "preToolUse",
+                                    "postToolUse", "postToolUseFailure", "preCompact", "sessionEnd"])
     p.add_argument("--remote", help="Hosted server URL: send parsed facts there (key in HORIZON_API_KEY).")
     p.add_argument("--profile", choices=["full", "lean", "observe"], default="full")
+    p.add_argument("--host", choices=["claude-code", "cursor"], default="claude-code",
+                   help="cursor: the name is a Cursor hook event (lean and observe, local only).")
 
     sub.add_parser("stats", help="Show invocation reliability stats.")
 
@@ -72,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-agents-md", action="store_true", help="Don't touch AGENTS.md.")
     p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
 
+    p = sub.add_parser("install-cursor", help="Add Horizon's hooks to a project for Cursor (lean or observe).")
+    p.add_argument("--dir", default=".", help="Project directory (default: current).")
+    p.add_argument("--profile", choices=["lean", "observe"], default="lean")
+
     p = sub.add_parser("install-claude-code", help="Add the MCP server, hooks and CLAUDE.md snippet to a project.")
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
@@ -90,9 +97,14 @@ def main(argv: list[str] | None = None) -> int:
 
         serve(args.transport, args.host, args.port)
     elif args.cmd == "hook":
-        from horizon.hooks import run_hook
+        if args.host == "cursor":
+            from horizon.cursor import run_cursor_hook
 
-        out = run_hook(args.name, sys.stdin.read(), remote=args.remote, profile=args.profile)
+            out = run_cursor_hook(args.name, sys.stdin.read(), profile=args.profile)
+        else:
+            from horizon.hooks import run_hook
+
+            out = run_hook(args.name, sys.stdin.read(), remote=args.remote, profile=args.profile)
         if out:
             print(out)
     elif args.cmd == "stats":
@@ -231,6 +243,10 @@ def main(argv: list[str] | None = None) -> int:
         changed = install_codex(Path(args.dir), agents_md=not args.no_agents_md, hosted=args.hosted)
         print("Updated: " + ", ".join(changed))
         print("Then in Codex: trust the project and review its hooks with /hooks (Codex asks once).")
+    elif args.cmd == "install-cursor":
+        from horizon.install import install_cursor
+
+        print("Updated: " + ", ".join(install_cursor(Path(args.dir), profile=args.profile)))
     elif args.cmd == "install-claude-code":
         from horizon.install import install
 
