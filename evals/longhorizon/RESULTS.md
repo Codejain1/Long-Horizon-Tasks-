@@ -331,3 +331,19 @@ One baseline run read other runs' Cursor transcripts before the guard covered th
 | Time | 7.4 min | 8.2 min |
 
 **Same cost, every rule kept.** Without Horizon, the agent kept only the Model Tenancy Act cap, which is visible in the start code. It forgot the deposit size, reserve, consent, yield split, term limit, the April rate change, phone masking and the platform report. Token and time differences were small this time (−5 % tokens, +10 % time), where the earlier pair showed −40 % tokens: efficiency varies from run to run, and an agent that forgets the rules also does less work. Rule retention is the result that holds: 35 of 36 rule checks with Horizon across this run and the three guarded runs, against 9 of 36 without.
+
+## Ward: hospital medication administration, 14 tickets, 11 rule checks (2026-10-02, `demo/sidebyside`, Claude Code + Sonnet, 1 run each)
+
+The new, harder scenario: 9 rules given in tickets 1–3 and 9, needed in 5–14 without being repeated. One limit combines four of them. CI runs in New York, across British summer time, and a docs policy applies on every ticket. Lean had Jev picking out rules.
+
+| | Without Horizon | With Horizon |
+|---|---|---|
+| Rules kept | 2/11 | **11/11** |
+| Hidden tests passed | 22/31 | **31/31** |
+| Cost | $1.66 | $1.99 (+20 %) |
+| Tokens | 1.80 M | 2.30 M (+28 %) |
+| Time | 7.5 min | 10.0 min |
+
+- **With Horizon, every ticket ended with every hidden test passing.** Without Horizon, failures began at ticket 5 (cross-reactive allergies), and one more came almost every ticket after. It kept only the rolling 24-hour window and the append-only audit trail, two rules a careful engineer might pick by default anyway.
+- **Without Horizon was cheaper by doing less.** Its tickets 5, 6, 7 and 10 took 4–5 turns each (about 0.08 M tokens), against 11–13 for lean. Those are the tickets where the forgotten rules (allergies, weight scaling, witnesses, kidney function) were the work. On this scenario, the extra 20 % of cost is the price of building the rules the tickets needed.
+- One run each. Over all side-by-side runs so far (ward and rental), Horizon kept 46 of 47 rule checks, against 11 of 47 without.
