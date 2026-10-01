@@ -308,9 +308,16 @@ class Platform:
                 token_budget=self.settings.recall_token_budget, task_id=task_id, project_id=task.project_id))
             memories = slice_.memories if slice_ is not None else []
             fear = sum(m.severity == "severe" for m in memories)
+            # What the project already said beyond this task: Jev judges each option against the work to come.
+            project = task.cwd or ""
+            earlier = [t.goal[:300] for t in self.tasks.recent_completed(self.settings.team_id, project, limit=10)
+                       if t.id != task.id] if project else []
             state = {
                 "goal": task.goal,
                 "constraints": task.constraints,
+                "project_rules": ((self.tasks.project_constraints(self.settings.team_id, project) if project else [])
+                                  + self.tasks.team_rules(self.settings.team_id))[:40],
+                "earlier_tasks": earlier,
                 "situation": situation,
                 "conditions": [c.model_dump(mode="json") for c in conditions or []],
                 "options": [{"label": o.label, "description": o.description} for o in options],

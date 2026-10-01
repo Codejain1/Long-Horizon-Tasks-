@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 
 MEASURED = ("cost_usd", "tokens", "latency_ms")
 CRUCIAL_SIGNALS = ("irreversible", "many_steps", "real_cost")
-JUDGED = ("compatibility", "architecture_fit")
+JUDGED = ("compatibility", "architecture_fit", "future_fit", "efficiency")
 
 _FIT_LEVELS = {
     "compatibility": [
@@ -39,6 +39,22 @@ _FIT_LEVELS = {
         "Neutral: neither helps nor hurts the structure",
         "Good fit with the project's structure",
         "Natural fit that simplifies the structure",
+    ],
+    # The owner's ask: judge the options on the work still to come, not only on today's ticket.
+    "future_fit": [
+        "Will have to be replaced or rewritten for work the project has planned or already needs",
+        "Will need significant rework for planned work",
+        "Will need some changes for planned work",
+        "Holds up for planned work with small changes",
+        "Holds up for all the planned and likely future work as is",
+    ],
+    # Cost, tokens and speed judged by Jev, for when the host gives no estimates (it usually doesn't).
+    "efficiency": [
+        "Very expensive: many tokens and much time to build, and slow or costly to run",
+        "Expensive to build or to run",
+        "Average cost to build and to run",
+        "Cheap to build and to run",
+        "Very cheap: quick to build with few tokens, fast and cheap to run",
     ],
 }
 
@@ -72,8 +88,15 @@ def _option_questions(i: int, evidence: bool) -> dict[str, dict]:
     return {
         f"o{i}.success": noul(f"Will {ref} work: achieve `goal` within `constraints` for `situation`, "
                               f"given `past_outcomes`{' and `consequences`' if evidence else ''}?"),
-        f"o{i}.compatibility": score(f"How compatible is {ref} with the stack, `constraints` and "
-                                     f"`past_outcomes`{given}?", _FIT_LEVELS["compatibility"]),
+        f"o{i}.compatibility": score(f"How compatible is {ref} with the stack, the work in progress, "
+                                     f"`constraints`, `project_rules` and `past_outcomes`{given}?",
+                                     _FIT_LEVELS["compatibility"]),
+        f"o{i}.future_fit": score(f"How well will {ref} hold up for the work still to come: what `goal`, "
+                                  f"`project_rules` and `earlier_tasks` say is planned or likely next (more users "
+                                  f"or processes, new features, scale, data that must last){given}?",
+                                  _FIT_LEVELS["future_fit"]),
+        f"o{i}.efficiency": score(f"How cheap is {ref} in tokens and time to build, and in cost and speed to run"
+                                  f"{given}?", _FIT_LEVELS["efficiency"]),
         f"o{i}.architecture_fit": score(f"How well does {ref} fit the project's architecture{given}?",
                                         _FIT_LEVELS["architecture_fit"]),
         f"o{i}.reversible": noul(f"Could {ref} be undone cheaply later if it turns out wrong?"),

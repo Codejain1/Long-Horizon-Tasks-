@@ -8,6 +8,7 @@ import pytest
 
 from horizon.decision import scorers
 from horizon.decision.layer import (
+    JUDGED,
     Option,
     build_questions,
     consequence_questions,
@@ -28,7 +29,8 @@ class FakeScorer:
 
     def __init__(self, crucial=0.9, high_stakes=0.1, success=(0.8, 0.5), fit=(0.75, 0.5), reversible=(0.5, 0.5),
                  confidence=0.9, breaks_tests=(0.1, 0.1), costlier=(0.5, 0.5), second=None):
-        self.values = {"success": success, "compatibility": fit, "architecture_fit": fit, "reversible": reversible,
+        self.values = {"success": success, "compatibility": fit, "architecture_fit": fit, "future_fit": fit,
+                       "efficiency": fit, "reversible": reversible,
                        "breaks_tests": breaks_tests, "costlier": costlier}
         self.crucial, self.high_stakes, self.confidence, self.second = crucial, high_stakes, confidence, second or {}
         self.calls = []
@@ -44,7 +46,7 @@ class FakeScorer:
                 out[qid] = Answer(self.high_stakes)
             else:
                 i, dim = qid[1:].split(".")
-                conf = self.confidence if dim in ("compatibility", "architecture_fit") else None
+                conf = self.confidence if dim in JUDGED else None
                 out[qid] = Answer(values[dim][int(i)], conf)
         return out
 
