@@ -205,3 +205,18 @@ These are the same setups as the Phase 3 runs. Stall was seeded from the questio
 - **Marathon:** refused calls fell from 8 to 2, but tokens were in between lean's and Phase 3 candidate's.
 
 Refusals are a small share of a session's cost, and per-ticket tokens swing ±50 % between runs, so one run can't show a token effect. The behaviour works as designed: it warns once, the agent stops, and nothing is lost. Not a gate pass: principle 5 asks for better outcomes or lower cost, and neither is shown.
+
+## Cursor agent: `baseline` against `lean`, marathon tickets 1–12, 3 repeats each (2026-10-01, composer-2.5)
+
+Six runs ran in parallel, and none needed a retry. Values are mean ± standard deviation over the 3 runs.
+
+| Tickets 1–12 | Hidden tests failing at the end | Violations | Test runs failing | Tool calls | Tokens | Wall time |
+|---|---|---|---|---|---|---|
+| baseline | 1.33 ± 0.58 | 1.0 ± 1.7 (one run: a `float()` in `fx.py`, 3 tickets) | 1.7 ± 1.2 | 330 ± 17 | 2.90 M ± 0.17 | 16.7 ± 0.9 min |
+| lean | 1.33 ± 1.15 (one run clean) | **0 in all 3** | 3.3 ± 1.2 | 340 ± 15 | 2.88 M ± 0.32 | **20.3 ± 0.8 min (+21 %)** |
+
+**Lean is no better than baseline here, and it is slower.**
+- **Hidden tests and tokens:** the same within noise. The misses are the same traps in both arms: `open_store(None)` (ticket 4), survives-a-restart (ticket 4) and the UTC monthly statement (ticket 8). Visible tests don't cover them, so lean has nothing to carry forward.
+- **Violations:** lean had none in 3 runs. One baseline run broke the integer-cents rule from ticket 10 on. That fits what lean exists for (it re-states session 1's constraints at each start), but 0 of 3 against 1 of 3 isn't evidence.
+- **Wall time:** lean took 3.6 minutes more per 12 tickets, about 0.6 s per tool call. Cursor waits for each hook, and every Horizon hook starts a new Python process. That cost is certain, and it's ours to remove.
+- **The earlier single run's −8 % tokens for lean** (tickets 1–15) doesn't hold up: over three runs tokens are equal.
