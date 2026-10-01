@@ -35,6 +35,7 @@ TOOL_CREDITS = {
     "submit_consequences": 5,
     "explain_decision": 0,
     "show_memories": 0,
+    "project_memory": 0,
     "delete_memory": 0,
     "clear_fear": 0,
     "human_approval": 0,

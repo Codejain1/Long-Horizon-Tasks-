@@ -78,6 +78,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("install-cursor", help="Add Horizon's hooks to a project for Cursor (lean or observe).")
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--profile", choices=["lean", "observe"], default="lean")
+    p.add_argument("--no-mcp", action="store_true", help="Hooks only: don't add the horizon MCP server.")
+    p.add_argument("--user", action="store_true", help="Install in ~/.cursor, for every project opened in Cursor.")
+    p.add_argument("--scorer", choices=["jev"], help="Pick out rules with Jev (key: TYPESAFE_API_KEY or the "
+                                                     "macOS Keychain item horizon-typesafe).")
 
     p = sub.add_parser("install-claude-code", help="Add the MCP server, hooks and CLAUDE.md snippet to a project.")
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
@@ -246,7 +250,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "install-cursor":
         from horizon.install import install_cursor
 
-        print("Updated: " + ", ".join(install_cursor(Path(args.dir), profile=args.profile)))
+        print("Updated: " + ", ".join(install_cursor(Path(args.dir), profile=args.profile, mcp=not args.no_mcp,
+                                                     user=args.user, scorer=args.scorer)))
+        print("Then reload Cursor (or restart the CLI) so it picks up the hooks and the MCP server.")
     elif args.cmd == "install-claude-code":
         from horizon.install import install
 

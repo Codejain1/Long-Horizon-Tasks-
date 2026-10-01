@@ -228,7 +228,8 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
         if AGENT["host"] == "cursor":
             if PROFILES[arm] == "full":
                 raise SystemExit("the full profile isn't available for Cursor (lean, observe and candidate are)")
-            install = [python, "-m", "horizon", "install-cursor", "--dir", str(repo), "--profile", PROFILES[arm]]
+            install = [python, "-m", "horizon", "install-cursor", "--dir", str(repo), "--profile", PROFILES[arm],
+                       "--no-mcp"]
         else:
             install = [python, "-m", "horizon", "install-claude-code", "--dir", str(repo), "--profile", PROFILES[arm]]
         subprocess.run(install, check=True, env=env, capture_output=True)

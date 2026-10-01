@@ -153,14 +153,30 @@ def install_gitignore(project: Path) -> None:
 
 # --- Cursor --------------------------------------------------------------------------------
 
-def install_cursor(project: Path, command: list[str] | None = None, profile: str = "lean") -> list[str]:
-    """Project-level `.cursor/hooks.json`: Horizon's lean (or observe) hooks, replacing earlier Horizon entries.
-    Lean needs no tools or instructions in Cursor: the session-start context says what Horizon does."""
+def install_cursor(project: Path, command: list[str] | None = None, profile: str = "lean", mcp: bool = True,
+                   user: bool = False, scorer: str | None = None) -> list[str]:
+    """`.cursor/hooks.json`: Horizon's lean (or observe) hooks, replacing earlier Horizon entries, and with `mcp`
+    the `horizon` server in `.cursor/mcp.json` (optional tools: project_memory, evaluate_options, show_memories).
+    Lean needs no tools or instructions in Cursor: the session-start context says what Horizon does.
+    `user`: in `~/.cursor`, for every project opened in Cursor. `scorer` ("jev"): set for the hooks and the
+    server, since Cursor starts them without the user's shell environment."""
     from horizon.cursor import HOOKS, INSTALLED, MATCHERS
 
     command = command or default_command()
     project = project.resolve()
-    path = project / ".cursor" / "hooks.json"
+    base = Path.home() / ".cursor" if user else project / ".cursor"
+    env = {"HORIZON_SCORER": scorer} if scorer else {}
+    hook_command = (["env", *(f"{k}={v}" for k, v in env.items())] if env else []) + command
+    changed = [str(base / "hooks.json") if user else ".cursor/hooks.json"]
+    if mcp:
+        path = base / "mcp.json"
+        data = _load(path)
+        data.setdefault("mcpServers", {})["horizon"] = {"command": command[0], "args": command[1:] + ["serve"],
+                                                         "env": {"HORIZON_PROFILE": "lean", **env}}
+        _dump(path, data)
+        changed.append(str(path) if user else ".cursor/mcp.json")
+    command = hook_command
+    path = base / "hooks.json"
     data = _load(path)
     data.setdefault("version", 1)
     hooks = data.setdefault("hooks", {})
@@ -175,8 +191,10 @@ def install_cursor(project: Path, command: list[str] | None = None, profile: str
         else:
             hooks.pop(event, None)
     _dump(path, data)
+    if user:
+        return changed
     install_gitignore(project)
-    return [".cursor/hooks.json", ".gitignore"]
+    return [*changed, ".gitignore"]
 
 
 # --- Codex ---------------------------------------------------------------------------------

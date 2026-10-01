@@ -9,6 +9,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -54,8 +55,9 @@ Never skip record_outcome after a test run: it is how the memory learns what wor
 
 LEAN_INSTRUCTIONS = """\
 Horizon records each task from the user's messages and carries its goal, constraints and the team's rules to
-later sessions and projects; you don't need to call it. Optional: evaluate_options before a hard-to-reverse
-choice (the task id is in the context), and show_memories or explain_decision when the user asks."""
+later sessions and projects; you don't need to call it. Optional: project_memory to re-read what earlier
+sessions decided, evaluate_options before a hard-to-reverse choice (the task id is in the context), and
+show_memories or explain_decision when the user asks."""
 
 START_TASK = """\
 Create the task state for a new coding task. Call this FIRST, once per task, before any edits:
@@ -100,6 +102,12 @@ EXPLAIN_DECISION = """\
 Explain a decision Horizon helped make: the evidence it used (past outcomes, consequence checks), the scores
 per option and pass, why it chose what it chose, and what happened after. Call this when the user asks why an
 option was chosen, or before revisiting a decision."""
+
+PROJECT_MEMORY = """\
+What Horizon carries for this project from earlier sessions: the constraints and rules the user gave in earlier
+tasks, the team's rules, checks that keep failing here, and what the last tasks were. The same text a new session
+starts with. Call this before work that may depend on an earlier decision (money, legal, data handling, formats),
+or when the user asks what was decided before."""
 
 SHOW_MEMORIES = """\
 Show what Horizon remembers for this team: lessons, strategies, fear warnings and recent episodes, each with
@@ -332,6 +340,19 @@ def create_server(target: "Platform | Gateway", lean: bool | None = None) -> MCP
         ctx: Context | None = None,
     ) -> dict[str, Any] | InputRequiredResult:
         return await gw.run(ctx, "explain_decision", lambda p: p.explain_decision(task_id, decision_id))
+
+    @server.tool(description=PROJECT_MEMORY)
+    async def project_memory(
+        project_dir: Annotated[str | None, Field(description="The project's root folder, as an absolute path "
+                                                             "(your workspace root). Default: the server's "
+                                                             "working directory.")] = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any] | InputRequiredResult:
+        from horizon.hooks import core_session_start
+
+        project = gw.project_scope(ctx) or str(Path(project_dir or os.getcwd()).expanduser())
+        return await gw.run(ctx, "project_memory", lambda p: {"project": project, "memory": core_session_start(
+            p.tasks, p.settings.team_id, project, lean=True)["hookSpecificOutput"]["additionalContext"]})
 
     @server.tool(description=SHOW_MEMORIES)
     async def show_memories(

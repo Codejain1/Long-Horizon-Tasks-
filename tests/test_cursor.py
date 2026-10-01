@@ -125,6 +125,50 @@ def test_install_cursor_adds_horizons_hooks_and_keeps_others(tmp_path):
     assert {"Shell", "Write", "StrReplace"} <= set(tools) and "Read" not in tools
 
 
+def test_install_cursor_adds_the_mcp_server_and_can_install_for_every_project_with_jev(tmp_path, monkeypatch):
+    home, project = tmp_path / "home", tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".cursor").mkdir(parents=True)
+    (home / ".cursor" / "mcp.json").write_text(json.dumps({"mcpServers": {"playwright": {"command": "npx"}}}))
+    for _ in range(2):  # idempotent
+        changed = install_cursor(project, ["py", "-m", "horizon"], user=True, scorer="jev")
+    assert changed == [str(home / ".cursor" / "hooks.json"), str(home / ".cursor" / "mcp.json")]
+    servers = json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]
+    assert servers["playwright"] == {"command": "npx"}
+    assert servers["horizon"] == {"command": "py", "args": ["-m", "horizon", "serve"],
+                                  "env": {"HORIZON_PROFILE": "lean", "HORIZON_SCORER": "jev"}}
+    hooks = json.loads((home / ".cursor" / "hooks.json").read_text())["hooks"]
+    assert hooks["sessionStart"] == [{"command": "env HORIZON_SCORER=jev py -m horizon hook sessionStart --host cursor"
+                                                 " --profile lean", "timeout": 30}]
+    assert list(project.iterdir()) == []  # nothing written into the project
+    assert install_cursor(project, ["py", "-m", "horizon"]) == [".cursor/hooks.json", ".cursor/mcp.json", ".gitignore"]
+    assert install_cursor(tmp_path / "bare", ["py"], mcp=False) == [".cursor/hooks.json", ".gitignore"]
+    assert not (tmp_path / "bare" / ".cursor" / "mcp.json").exists()
+
+
+@pytest.mark.anyio
+async def test_project_memory_returns_what_a_new_session_starts_with(settings, task_store, memrouter, project_dir):
+    from mcp import Client
+    from test_mcp_server import payload
+
+    from horizon.server import create_server
+    from horizon.service import Platform
+    from horizon.models import TaskState
+
+    rule = "Phone numbers in anything that leaves the platform show only the first two and last two digits."
+    task_store.create(TaskState(team_id=settings.team_id, goal="Ticket #2: KYC.", cwd=project_dir, status="completed",
+                                constraints=[rule]))
+    async with Client(create_server(Platform(settings, task_store, lambda: memrouter, cwd=project_dir),
+                                    lean=True)) as client:
+        tools = {t.name for t in (await client.list_tools()).tools}
+        out = payload(await client.call_tool("project_memory", {"project_dir": project_dir}))
+        other = payload(await client.call_tool("project_memory", {"project_dir": project_dir + "-other"}))
+    assert "project_memory" in tools and "start_task" not in tools
+    assert out["project"] == project_dir and f"- {rule}" in out["memory"]
+    assert rule not in other["memory"]
+
+
 FAKE_AGENT = '''#!{python}
 """A fake Cursor `agent -p`: writes the reference ledger and streams one shell call."""
 import json, pathlib, shutil, sys
@@ -273,3 +317,8 @@ def test_the_harness_retries_a_dropped_session_from_the_last_commit(tmp_path, mo
     row = json.loads((work / "results.json").read_text())["sessions"][0]
     assert row["retries"] == 1 and row["aborted"] is None and row["session_id"] == "cur-1"
     assert row["hidden"]["failed"] == [] and not (work / "repo" / "half_done.py").exists()
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
