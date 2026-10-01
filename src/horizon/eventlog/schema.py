@@ -12,9 +12,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from horizon.models import new_id, now
+from horizon.models import Model, new_id, now
 
 EVENT_SCHEMA_VERSION = 1
 
@@ -26,20 +26,20 @@ EventKind = Literal["session_start", "prompt", "step", "turn_end", "compaction",
 HORIZON_ACTIONS = frozenset({"dead_end_warning"})
 
 
-class Action(BaseModel):
+class Action(Model):
     name: str  # the domain's vocabulary, e.g. "edit", "bash", "test_run"
     target: str | None = None  # a short, redacted identifier: a project-relative path, a command summary
     risky: bool = False
     risk: str | None = None  # why it's risky, e.g. "migration", "destructive"
 
 
-class Result(BaseModel):
+class Result(Model):
     ok: bool | None = None  # None when the host doesn't say
     metrics: dict[str, float] = Field(default_factory=dict)  # counts and measurements
     facts: dict[str, Any] = Field(default_factory=dict)  # small, redacted values, e.g. failing test ids
 
 
-class Event(BaseModel):
+class Event(Model):
     id: str = Field(default_factory=lambda: new_id("evt"))
     schema_version: int = EVENT_SCHEMA_VERSION
     team_id: str

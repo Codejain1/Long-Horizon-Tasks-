@@ -12,9 +12,10 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
-import numpy as np
+if TYPE_CHECKING:  # numpy costs hooks 75 ms to import; only vectors need it
+    import numpy as np
 
 
 class Database:
@@ -70,6 +71,8 @@ class SQLiteDatabase(Database):
         return json.dumps(value, default=_json_default)
 
     def vector(self, vec: np.ndarray) -> Any:
+        import numpy as np
+
         return np.asarray(vec, dtype=np.float32).tobytes()
 
     def close(self) -> None:
@@ -102,6 +105,8 @@ class PostgresDatabase(Database):
         return Jsonb(json.loads(json.dumps(value, default=_json_default)))
 
     def vector(self, vec: np.ndarray) -> Any:
+        import numpy as np
+
         return np.asarray(vec, dtype=np.float32)
 
     def close(self) -> None:

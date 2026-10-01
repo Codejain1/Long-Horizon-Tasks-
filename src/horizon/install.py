@@ -156,7 +156,7 @@ def install_gitignore(project: Path) -> None:
 def install_cursor(project: Path, command: list[str] | None = None, profile: str = "lean") -> list[str]:
     """Project-level `.cursor/hooks.json`: Horizon's lean (or observe) hooks, replacing earlier Horizon entries.
     Lean needs no tools or instructions in Cursor: the session-start context says what Horizon does."""
-    from horizon.cursor import HOOKS, MATCHERS
+    from horizon.cursor import HOOKS, INSTALLED, MATCHERS
 
     command = command or default_command()
     project = project.resolve()
@@ -167,9 +167,13 @@ def install_cursor(project: Path, command: list[str] | None = None, profile: str
     for event in HOOKS:
         entries = [h for h in hooks.get(event, []) if not re.search(r"horizon hook \w+ --host cursor",
                                                                     h.get("command", ""))]
-        cmd = shlex.join(command + ["hook", event, "--host", "cursor", "--profile", profile])
-        entries.append({"command": cmd, "timeout": 30, **({"matcher": MATCHERS[event]} if event in MATCHERS else {})})
-        hooks[event] = entries
+        if event in INSTALLED:
+            cmd = shlex.join(command + ["hook", event, "--host", "cursor", "--profile", profile])
+            entries.append({"command": cmd, "timeout": 30, **({"matcher": MATCHERS[event]} if event in MATCHERS else {})})
+        if entries:
+            hooks[event] = entries
+        else:
+            hooks.pop(event, None)
     _dump(path, data)
     install_gitignore(project)
     return [".cursor/hooks.json", ".gitignore"]

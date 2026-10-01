@@ -9,7 +9,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 EPISODE_SCHEMA_VERSION = 1
 
@@ -27,7 +27,13 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
-class Condition(BaseModel):
+class Model(BaseModel):
+    """Validation is built on first use, not at import: a hook uses a few models and must start fast."""
+
+    model_config = ConfigDict(defer_build=True)
+
+
+class Condition(Model):
     """A condition an outcome depends on, e.g. {key: "rps", op: ">", value: 10000}."""
 
     key: str
@@ -35,12 +41,12 @@ class Condition(BaseModel):
     value: Any
 
 
-class OptionRef(BaseModel):
+class OptionRef(Model):
     label: str
     details: str | None = None
 
 
-class Predicted(BaseModel):
+class Predicted(Model):
     """What was expected before acting. ``success`` is a probability (0..1)."""
 
     success: float | None = Field(default=None, ge=0, le=1)
@@ -51,7 +57,7 @@ class Predicted(BaseModel):
     source: PredictionSource = "host"
 
 
-class TestResults(BaseModel):
+class TestResults(Model):
     """Counts only; raw test output is never stored (PROJECT.md §12)."""
 
     __test__ = False  # not a pytest test class
@@ -67,7 +73,7 @@ class TestResults(BaseModel):
         return self.passed / self.total if self.total else 0.0
 
 
-class Actual(BaseModel):
+class Actual(Model):
     """What happened. ``success`` is the test pass rate (0..1)."""
 
     success: float = Field(ge=0, le=1)
@@ -78,19 +84,19 @@ class Actual(BaseModel):
     signal_type: SignalType = "auto"
 
 
-class Scope(BaseModel):
+class Scope(Model):
     team_id: str
     project_id: str | None = None
     task_id: str | None = None
 
 
-class Provenance(BaseModel):
+class Provenance(Model):
     agent_id: str | None = None
     task_id: str | None = None
     created_at: datetime = Field(default_factory=now)
 
 
-class Episode(BaseModel):
+class Episode(Model):
     id: str = Field(default_factory=lambda: new_id("ep"))
     scope: Scope
     situation: str
@@ -118,13 +124,13 @@ def episode_text(situation: str, conditions: list[Condition]) -> str:
     return "\n".join(parts)
 
 
-class TrackRecord(BaseModel):
+class TrackRecord(Model):
     successes: int = 0
     failures: int = 0
     human_weighted: float = 0.0  # successes minus failures, human signals counted double
 
 
-class Lesson(BaseModel):
+class Lesson(Model):
     """A lesson ("what is true"), a strategy ("what works") or a fear lesson (MEMROUTER.md §3, §4, §9).
 
     Strength and stability live in the graph's memory_state, shared with episodes."""
@@ -146,7 +152,7 @@ class Lesson(BaseModel):
     updated_at: datetime = Field(default_factory=now)
 
 
-class MemoryItem(BaseModel):
+class MemoryItem(Model):
     """One recalled memory, as returned to the host (MEMROUTER.md §6 step 6)."""
 
     episode_id: str  # the memory's id: an episode, lesson or strategy
@@ -165,12 +171,12 @@ class MemoryItem(BaseModel):
     activation: float | None = None  # after spreading activation (§6 step 3)
 
 
-class ProgressEntry(BaseModel):
+class ProgressEntry(Model):
     at: datetime = Field(default_factory=now)
     note: str
 
 
-class DecisionEntry(BaseModel):
+class DecisionEntry(Model):
     at: datetime = Field(default_factory=now)
     situation: str
     chosen: str
@@ -180,14 +186,14 @@ class DecisionEntry(BaseModel):
     checkpoint_id: str | None = None  # the state before this decision was implemented (PROJECT.md §8)
 
 
-class GitRef(BaseModel):
+class GitRef(Model):
     """A commit whose tree is the working tree at checkpoint time (HEAD, or a `git stash create` commit)."""
 
     repo: str
     commit: str
 
 
-class ClaudeCodeRef(BaseModel):
+class ClaudeCodeRef(Model):
     """A Claude Code checkpoint: the user prompt to pick in /rewind."""
 
     session_id: str
@@ -196,7 +202,7 @@ class ClaudeCodeRef(BaseModel):
     at: datetime | None = None
 
 
-class Checkpoint(BaseModel):
+class Checkpoint(Model):
     """A reference to the host's own checkpoint mechanisms. We never store the code itself."""
 
     id: str = Field(default_factory=lambda: new_id("ckpt"))
@@ -208,7 +214,7 @@ class Checkpoint(BaseModel):
     created_at: datetime = Field(default_factory=now)
 
 
-class FailureEntry(BaseModel):
+class FailureEntry(Model):
     at: datetime = Field(default_factory=now)
     attempt: int
     chosen: str
@@ -216,7 +222,7 @@ class FailureEntry(BaseModel):
     checkpoint_id: str | None = None
 
 
-class TaskState(BaseModel):
+class TaskState(Model):
     id: str = Field(default_factory=lambda: new_id("task"))
     team_id: str
     project_id: str | None = None
@@ -250,7 +256,7 @@ class TaskState(BaseModel):
     updated_at: datetime = Field(default_factory=now)
 
 
-class TestCapture(BaseModel):
+class TestCapture(Model):
     """Real test counts captured by the PostToolUse hook."""
 
     __test__ = False

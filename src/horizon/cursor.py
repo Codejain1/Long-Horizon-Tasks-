@@ -30,11 +30,14 @@ HOOKS = {  # Cursor event -> Horizon hook
     "stop": "stop",
     "sessionEnd": "session-end",
 }
-MATCHERS = {"preToolUse": "Shell"}
-CONTEXT_EVENTS = {"sessionStart", "postToolUse", "postToolUseFailure"}  # where Cursor accepts additional_context
-CATCH_UP_EVENTS = {"postToolUse", "postToolUseFailure", "sessionEnd"}  # where missed prompts are read
 TOOLS = {"Shell": "Bash", "Write": "Write", "StrReplace": "Edit", "Edit": "Edit", "MultiEdit": "Edit",
          "EditNotebook": "NotebookEdit"}
+# Cursor waits for every hook (about 0.2 s each), so they fire only on the tools Horizon reads, as on Claude Code.
+MATCHERS = {"postToolUse": "|".join(TOOLS), "postToolUseFailure": "|".join(TOOLS)}
+# preToolUse only warns about refused commands, and headless Cursor refuses none: not installed.
+INSTALLED = [e for e in HOOKS if e != "preToolUse"]
+CONTEXT_EVENTS = {"sessionStart", "postToolUse", "postToolUseFailure"}  # where Cursor accepts additional_context
+CATCH_UP_EVENTS = {"postToolUse", "postToolUseFailure", "sessionEnd"}  # where missed prompts are read
 _QUERY = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.S)
 
 

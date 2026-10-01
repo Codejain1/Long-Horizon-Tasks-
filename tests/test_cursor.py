@@ -108,14 +108,17 @@ def test_parallel_hooks_record_the_message_once(settings, project_dir, tmp_path)
 def test_install_cursor_adds_horizons_hooks_and_keeps_others(tmp_path):
     (tmp_path / ".cursor").mkdir()
     (tmp_path / ".cursor" / "hooks.json").write_text(json.dumps(
-        {"version": 1, "hooks": {"afterFileEdit": [{"command": "fmt.sh"}]}}))
+        {"version": 1, "hooks": {"afterFileEdit": [{"command": "fmt.sh"}],  # an earlier install's preToolUse:
+                                 "preToolUse": [{"command": "py -m horizon hook preToolUse --host cursor"}]}}))
     install_cursor(tmp_path, ["py", "-m", "horizon"])
     install_cursor(tmp_path, ["py", "-m", "horizon"])  # idempotent
     hooks = json.loads((tmp_path / ".cursor" / "hooks.json").read_text())["hooks"]
     assert hooks["afterFileEdit"] == [{"command": "fmt.sh"}]
     assert hooks["sessionStart"] == [{"command": "py -m horizon hook sessionStart --host cursor --profile lean",
                                       "timeout": 30}]
-    assert hooks["preToolUse"][0]["matcher"] == "Shell" and len(hooks["postToolUseFailure"]) == 1
+    assert "preToolUse" not in hooks and len(hooks["postToolUseFailure"]) == 1
+    tools = hooks["postToolUse"][0]["matcher"].split("|")
+    assert {"Shell", "Write", "StrReplace"} <= set(tools) and "Read" not in tools
 
 
 FAKE_AGENT = '''#!{python}
