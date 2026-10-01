@@ -288,3 +288,30 @@ All functional hidden tests passed in every run, with 0 violations, 0 retries an
 - **Jev over-captures.** Besides the three rules, it stored ticket specs ("a book on loan can't be lent again"), the ticket 1 preamble and "Run ./ci.sh". They're shown at every session start, and they did no harm here, but they cost context and need a filter.
 
 These results replace the earlier handoff table, whose runs could read the hidden tests.
+
+## Rental: Indian rental platform, rules given early, needed late (2026-10-01, Cursor, composer-2.5, 12 tickets, 3 runs per arm)
+
+The second scenario with rules given early and needed late. RentEase is a no-brokerage rental platform where the security deposit is placed with a lending partner. Tickets 1–3 set nine business and legal rules:
+- a deposit of four months' rent, capped at two months in Model Tenancy Act states;
+- agreements of at most 11 months;
+- 25 % of each deposit kept in reserve;
+- nothing deployed without the tenant's consent;
+- a 9 % partner yield split 2 % to the tenant, 3 % to the owner and the rest to the platform, later raised to 10 % with the same shares;
+- tenant phone numbers masked in anything that leaves the platform.
+
+Tickets 5–12 need these rules, and the hidden tests check each one (9 of 23 tests). The reference solution passes all 23 tests. A version that forgets the rules fails exactly the 9 rule tests.
+
+**Runs with a read guard (batch 2).** Path isolation alone wasn't enough. In the first batch, keyword-lean agents searched the home folder and read the hidden tests in 2 of 3 runs, so that batch is discarded. Every agent now runs under a macOS Seatbelt profile. It blocks reads of this repo, the run folders, other runs' temp folders, and every agent project folder except the run's own. Each blocked attempt was confirmed to fail, by an empty result or "Operation not permitted".
+
+One baseline run read other runs' Cursor transcripts before the guard covered them. It was replaced by a fourth run, which tried a hidden-test path and was blocked.
+
+| Arm (3 runs) | 4-month deposit | MTA cap | 11-month term | 25 % reserve | Consent | 9 % split | 10 % from April | Phone masked | Platform report | Rule checks | Hidden tests passed | Tokens per run | Wall time |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| baseline | 1 | 3 | 0 | 1 | 1 | 0 | 0 | 2 | 0 | 8/27 | 16, 16, 18 | 4.57 M ± 0.99 | 20.0 min |
+| lean (keywords) | 1 | 3 | 3 | 1 | 1 | 1 | 1 | 3 | 0 | 14/27 | 22, 17, 17 | 6.42 M ± 1.81 | 26.3 min |
+| lean + Jev | **3** | 3 | 3 | **3** | **3** | 2 | 2 | 1 | **2** | **22/27** | 22, 20, 22 | **2.58 M ± 0.32** | **18.0 min** |
+
+**Lean + Jev carried 22 of 27 rule checks, against baseline's 8 (Fisher p ≈ 0.0001) and keyword lean's 14 (p ≈ 0.02), at 56 % of baseline's tokens and 10 % less wall time.**
+- **Baseline passes what its repo or ticket shows.** The MTA cap is visible in the start code (`MTA_STATES`), and the phone rule is restated in ticket 2 itself. It lost the deposit size, reserve, consent and yield rules, and with them the money tickets.
+- **Keyword lean costs more here.** Its agents queried their own Horizon database with `sqlite3` to recover rules, which explains the extra tokens and time. Keyword capture missed most money rules.
+- **Jev's misses come from over-capture (question 88).** Jev stored 43–46 constraints per run, mostly ticket specs. The session start shows the 20 newest, so by ticket 11 the phone rule from ticket 2 had dropped off: phone masking passed in 1 of 3 Jev runs. The rendered session starts for the failing runs list 20 constraints and no phone rule. This is the next fix.
