@@ -494,12 +494,26 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
       - a failing forecast never blocks the episode;
       - `fallback` never builds a forecast.
   - **Tests:** 699 pass on SQLite and Postgres (660 before, plus 39). Ruff is clean on the changed files.
+- **v2 session 22: Phase 3 gate runs** (owner-approved, real Claude Code on the subscription, about $25 cost-equivalent in total; full tables in `evals/longhorizon/RESULTS.md`):
+  - **F1 verified (question 62):** `/compact` on a resumed headless session compacts it (one `compact_boundary`), and Horizon logs a `compact` session start.
+  - **Compaction, 3 repeats of `baseline`/`lean`/`candidate`:** violations after compaction were 2/0/0 for baseline, and zero in every lean and candidate run. Candidate cost ≈ 560 tokens per compaction. It meets the gate's letter but shows no gain over lean. Part 6 (India's "today" against the UTC rule) failed in all 9 runs.
+  - **Stall, `baseline` against `candidate`, seeded:** both arms stopped correctly on both stall tickets, with no false alarms and all controls green. But no session had a single failing test run on a stall ticket, so the detector never had anything to see. Candidate's ticket 5 explored for 1.27 M tokens against baseline's 322 k. **Gate not met.**
+  - **Marathon, `lean` against `candidate`, tickets 1–12:** both arms hit the usage limit (lean in ticket 7, candidate in ticket 11). On tickets 1–6 both were clean (17/17, 0 violations), and candidate used 10 % fewer tokens, which is within noise. **No signal either way.**
+  - **Two bugs the runs exposed, fixed** (`7991b16`): the harness scored a later ticket's correct `BLOCKED.md` reason as wrong once the file passed 2,000 characters; and `split_rules` split after a list number ("1.") and dropped numbered items with no rule keyword under a "these constraints hold:" lead-in.
+  - **Tests:** 701 pass on SQLite and Postgres.
 
 ## In progress
 
-- Nothing. Phases 1 and 2 are built. What's behind the gate (composer with re-anchoring, session memory, stall detection) waits for real runs (questions 62, 72, 74).
+- Nothing running. Phase 3 found no gain for the gated components (re-anchoring, stall detection, session memory), so all stay off (principle 5). What to do next is the owner's call (questions 76–78).
 
 ## Decisions made
+
+**v2 Phase 3 (session 22)**
+- **The stall run was seeded from the question 67 lean marathon run** (7 session episodes): normal work on the same codebase, and already on disk, so no extra spend.
+- **Marathon arms ran in parallel** to halve the wall time. They share the usage limit, so both stopped early. Tickets 1–6 are compared, the stretch both finished.
+- **`BLOCKED.md` is judged on the lines the session added** (from its commit's diff), not on a prefix of the whole file.
+- **Numbered items under a rule lead-in inherit its classification**, and "1." is no longer a sentence end. A plain numbered list of steps is still not a rule.
+- **Nothing is switched on.** None of the three gates showed a gain over lean.
 
 **v2 Phase 2 (session 21)**
 - **Order: re-anchoring, stall detection, surprise.** Re-anchoring extends the composer. Stall detection is the owner's "stop endless trial and error". Surprise is plumbing whose effect shows only over many sessions.
@@ -934,7 +948,7 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 59 | How the `compaction` eval forces a compaction | **Built** as F1: `/compact` on a resumed headless session. The long-transcript fallback (F2) is built only if F1 fails (question 62). |
 | 60 | Forward events in hosted mode? | Default: not yet. It needs a server endpoint and a privacy review; Phase 4's team sharing is the first place it's needed. |
 | 61 | Should Phase 1 start, and with which tracks? | **Owner chose track E first** (session 16); it's built. Tracks A–D next. |
-| 62 | Does F1 really compact a headless session, and what does the stream show? | Needs **one real run** on the owner's subscription (about one short session): `python evals/longhorizon/run.py --scenario compaction --arm observe --out /tmp/lh-f1`. Check that `compactions` is 1 and that the event log has `compaction` plus a `session_start` with source `compact`. Default until then: compactions are counted from any `system` event whose subtype contains "compact". |
+| 62 | Does F1 really compact a headless session, and what does the stream show? | **Verified (session 22):** one `compact_boundary` per run and a `compact` session start in the event log. Gate run done: re-anchoring had zero violations after compaction but no gain over lean, so it stays off. |
 | 63 | Which run seeds `stall`? | Default: a baseline run of `marathon`'s first tickets (normal work on the same codebase), passed as `--seed`. Stall detection itself is Phase 2, so nothing reads the seed yet. |
 | 65 | Should session episodes surface in the next session, or only feed learning until the context composer (track D) decides what to show? | **Owner decided to surface them (session 18).** A new task's first message gets what similar past sessions taught, to cut trial and error. It's built behind `HORIZON_SESSION_MEMORY` and turned on in the evals' `candidate` arm. It becomes the default once `candidate` beats `lean` on `marathon` (principle 5), or earlier if the owner overrides principle 5 for it (question 67). |
 | 66 | Sessions that end without `SessionEnd` (a crash, a killed terminal) never become episodes | **Resolved (session 18):** closed after 2 hours idle (`HORIZON_SESSION_IDLE_MINUTES`), at the next session start or end. |
@@ -943,22 +957,24 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 69 | Jev judged "No, refunds over the order total must be rejected." as a correction at only 0.26 | Default: that's fine. A new requirement isn't quite a correction, and the correction answers only block contradicted verdicts; they don't set the score. Revisit with real judged sessions. |
 | 70 | When the session forecast beats the fallback on replay, should Phase 2 switch surprise to it by itself (like `HORIZON_WORLD_MODEL=auto`)? | Default: yes, behind the same gate as `kernel-v1`: at least 30 paired sessions and a one-sided paired test at 95 %, re-checked periodically. It can be decided when Phase 2 wires it. |
 | 71 | One latency script hung before its first forecast and couldn't be reproduced (the same script then ran at 12–20 ms per forecast) | Default: most likely the first fastembed model load waiting on its cache lock, not the forecast code. Watch hook latency in the next real run. |
-| 72 | The gate run for Phase 1's context: `candidate` (session memory plus the composer) against `lean` on `marathon` | **Owner** (subscription). Suggested: tickets 1–12, 1 repeat each arm, then `--set HORIZON_CONTEXT=classic` for an ablation if it shows a signal. Replaces question 67's second run, since the candidate changed. Default until then: both stay off. |
+| 72 | The gate run for Phase 1's context: `candidate` (session memory plus the composer) against `lean` on `marathon` | **Run (session 22):** tickets 1–6 compared (both arms hit the usage limit). Both clean; candidate −10 % tokens, within noise. Stays off; next is question 78. |
 | 73 | Should classic lean's constraint window (the last three tasks) be fixed even if the composer as a whole doesn't pass? | Default: no, not separately. The composer carries the fix; if the gate fails on cost only, the constraint part can be split out and tested alone. |
-| 74 | The `stall` gate run: `candidate` against `baseline`, seeded from a marathon baseline run (`--seed`) | **Owner** (subscription). Check zero `stall_warnings` on the controls (especially ticket 5, the `Asia/Kolkata` one) and tokens before stopping on tickets 3 and 5. Default floor `HORIZON_STALL_MIN_RUNS=4`; raise it if the control ticket's debugging produces 4 stuck runs. |
+| 74 | The `stall` gate run: `candidate` against `baseline`, seeded from a marathon baseline run (`--seed`) | **Run (session 22):** zero false alarms, but also zero failing-run streaks, so the detector never fired. Candidate wasn't faster to stop. Stays off; see question 76. |
 | 75 | Should hosted installs get stall detection? | Default: later, with event forwarding (question 60). It needs the event log and the forecast on the server. |
+| 76 | Stall detection watches only failing test runs, but the real stall (candidate's ticket 5) was repeated probing with ordinary commands | Default: don't extend it yet. Options: count repeated failing non-test commands (e.g. the same missing binary) as stuck runs, or redesign the scenario so the dead end shows up as failing tests. Either needs another real run. |
+| 77 | Part 6 of `compaction` fails in every arm, even with the UTC rule restated | Default: keep it as a judgement trap and report it separately. It measures interpreting a rule, not remembering it, so re-anchoring can't fix it. |
+| 78 | Marathon showed no difference on tickets 1–6, where little goes wrong | Default: the informative stretch is later tickets, where CI policies trip (question 67's plan): `--resume` from a lean run at ticket 7, tickets 7–14, one arm at a time so the usage limit doesn't cut both. **Owner** (subscription). |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
-**Needs the owner** (credentials, money or an irreversible decision): 62 (one real `compaction` session to verify F1, then the `compaction` gate run for re-anchoring), 72 (the `candidate` gate run on `marathon`, which replaces 67's second run), 74 (the `stall` gate run), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
+**Needs the owner** (credentials, money or an irreversible decision): 78 (marathon's later tickets) or 76 (extend stall detection), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
 
 **v2 (this copy):** Phase 1 of `PROJECT.md` §0 is built: tracks E (session 16), A (17), B (18), C (19) and D (20). Next:
-- **Phase 2 is built (session 21).** Phase 3 is the gate itself (`PROJECT.md` §0): real runs on the owner's subscription, cheapest and most informative first.
-  1. `compaction` F1 check, then `baseline`/`lean`/`candidate` (question 62): one short session per arm.
-  2. `stall`, `baseline` against `candidate`, seeded (question 74): 6 tickets per arm.
-  3. `marathon`, `lean` against `candidate` (question 72), then `team` for the composer.
-- Until those runs: nothing more is built on top (principle 5). Phase 4 starts only if the gate passes.
+- **Phase 3 gate runs are done (session 22):** compaction, stall and marathon tickets 1–6. No gated component beat lean, so Phase 4 doesn't start (principle 5). Next, the owner picks one:
+  1. Marathon's later tickets, where trouble happens (question 78), one arm at a time.
+  2. Stall detection for repeated non-test failures, then a re-run (question 76).
+  3. `team` for the composer.
 
 **Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, the `candidate` against `lean` gate run on `marathon` (question 72).
 

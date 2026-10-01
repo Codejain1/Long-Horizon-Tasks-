@@ -114,3 +114,39 @@ Both arms start from the no-Horizon run's repo after ticket 3. Lean's memory is 
 **Caveat:** one run each. Ticket 1 had no note in either arm, yet already differed by 5 turns, so the noise is large.
 
 **Changed as a result:** the note now shows only past sessions that hit trouble (a failing test run on the way, or failures left at the end), so a clean history adds nothing. `HORIZON_SESSION_MEMORY` stays off (question 67).
+
+## Phase 3 gate: compaction, `baseline`, `lean` and `candidate` (2026-10-01, Sonnet, 3 repeats each)
+
+`candidate` is lean plus `HORIZON_SESSION_MEMORY=on`, `HORIZON_CONTEXT=composer` and `HORIZON_STALL=on`. The compaction scenario states three constraints in the first message, runs `/compact` partway, then asks for parts that hit each constraint. `/compact` on a resumed headless session does compact (question 62): one `compact_boundary` per run, and Horizon sees a `compact` session start.
+
+| Arm | Violations after compaction (repeats 1/2/3) | Part 6 | Mean tokens | Mean cost-equivalent | Injected chars |
+|---|---|---|---|---|---|
+| baseline | 2 / 0 / 0 (float money in repeat 1) | failed 3/3 | 792 k | $1.11 | 0 |
+| lean | 0 / 0 / 0 | failed 3/3 | 893 k | $1.28 | 1,754 |
+| candidate | 0 / 0 / 0 | failed 3/3 | 877 k | $1.14 | ≈ 4,460 (the re-anchor at the compact start is ≈ 2,230, ≈ 560 tokens) |
+
+**Passes on paper, no gain over lean.** The candidate has fewer violations than baseline, none more than lean, and costs under 1 k tokens per compaction. But lean already reached zero; the restated task added nothing measurable. Part 6 (India's "today" against the all-times-UTC rule) failed in all 9 runs, even with the constraint restated right after compaction. The model treats a user-local date as outside the rule, so this is a judgement trap rather than a forgetting one.
+
+## Phase 3 gate: stall, `baseline` against `candidate` (2026-10-01, Sonnet, 1 run each)
+
+Six tickets: 2 that can't be finished (ticket 3 conflicts with a CI policy, ticket 5 needs a missing tool `finsign`) and 4 controls. Both arms were seeded with the 7 session episodes of the question 67 lean marathon run, so the forecast had history. The stall threshold came out at the floor (4 failing runs) for every ticket.
+
+| | Stall tickets: right `BLOCKED.md` reason | Tokens on stall tickets (3 / 5) | Controls: hidden tests, violations | Tokens on controls | Stall warnings |
+|---|---|---|---|---|---|
+| baseline | 2/2 | 382 k / 322 k | all pass, 0 | 2.57 M | — |
+| candidate | 2/2 | 243 k / **1.27 M** | all pass, 0 | 3.11 M | 0 |
+
+**Stall detection had nothing to catch.** No session in either arm had even one failing test run on a stall ticket: the model read the policy test and stopped (ticket 3), or probed for `finsign` with ordinary commands (ticket 5). Candidate's ticket 5 took 31 turns re-running the missing tool and checking whether commands were blocked before writing a correct note. That is an exploration stall the detector doesn't watch, since it only counts failing test runs. Gate not met: candidate wasn't faster to stop, and the scenario can't exercise the detector as designed.
+
+**Harness fix found here:** the `BLOCKED.md` check read the first 2,000 characters of the whole file, so a later ticket's correct reason was scored as wrong once earlier notes filled it. It now matches only the lines the session added (commit `7991b16`). The table above is re-scored with the fix.
+
+## Phase 3 gate: marathon, `lean` against `candidate`, tickets 1–12 (2026-10-01, Sonnet, 1 run each, question 72)
+
+Both arms ran in parallel and both hit the subscription's usage limit: `lean` during ticket 7, `candidate` during ticket 11. The comparison covers tickets 1–6.
+
+| Tickets 1–6 | Hidden tests | Violations | Turns | Test runs (failing) | Tokens | Cost-equivalent | Stall warnings |
+|---|---|---|---|---|---|---|---|
+| lean | 17/17 | 0 | 172 | 15 (1) | 5.79 M | $2.65 | 0 |
+| candidate | 17/17 | 0 | 169 | 18 (2) | 5.22 M (−10 %) | $2.42 (−9 %) | 0 |
+
+**A wash, within noise.** Both arms were clean on every ticket. Candidate's per-ticket tokens swing from 0.55 M to 1.44 M, and its ticket 1 cost 1.8× lean's with identical context (266 characters injected in both), so a 10 % gap in one run says nothing. Candidate tickets 7–10 were also clean (all hidden tests pass, 0 violations). In ticket 11 it was cut off mid-work with the changelog policy test failing. Unlike the question 67 run, candidate cost no more than lean: the past-sessions note now appears only after trouble, and here there was almost none. No ticket produced a failing-run streak, so stall detection never had a chance to fire.
