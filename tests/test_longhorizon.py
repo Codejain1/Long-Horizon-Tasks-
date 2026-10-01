@@ -414,3 +414,47 @@ def test_resume_from_another_run_and_seed_its_test_history(tmp_path, monkeypatch
     repo = str((tmp_path / "b" / "backlog-lean" / "repo").resolve())
     assert TaskStore(connect(f"sqlite:///{db}")).recurring_failures(repo) == [
         ("tests/test_policy.py::test_every_public_function_is_in_the_changelog", 2)]
+
+
+WARD_RULES = {"test_cross_reactive_classes_are_refused", "test_the_limit_is_a_rolling_24_hours",
+              "test_children_get_a_weight_scaled_limit", "test_controlled_drugs_need_another_nurse_as_witness",
+              "test_corrections_never_change_the_record", "test_poor_kidney_function_halves_the_limit",
+              "test_the_april_guideline_lowers_paracetamol", "test_days_are_london_days",
+              "test_controlled_drugs_need_a_witness_in_batches", "test_exports_mask_the_mrn",
+              "test_weight_changes_rescale_the_limit"}
+WARD_FORGOT = '''from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+def blocked_classes(allergies): return set(allergies)
+def window_start(at):
+    day = at.astimezone(ZoneInfo("Europe/London")).date()
+    return datetime.combine(day, time(), ZoneInfo("Europe/London")) - timedelta(microseconds=1)
+def guideline_base(code, base, at): return base
+def weight_scaled(limit, weight_g): return limit
+def renal_scaled(limit, egfr): return limit
+def check_witness(drug, nurse_id, witness, nurses): return None
+def record_correction(event, reason, log):
+    event["corrected"] = True
+    event["reason"] = reason
+def ward_day(at): return at.astimezone(timezone.utc).date()
+def mask_mrn(mrn): return mrn
+'''
+
+
+def test_ward_checks_the_rules_given_early_in_the_tickets_that_need_them(tmp_path):
+    """The reference passes all 14 tickets and the CI policy; the same code with the 9 rules from tickets 1-3 and 9
+    guessed (calendar days, no cross-reactivity, no witness, edits in place, ...) fails exactly the 11 rule checks."""
+    run = load("run")
+    ref = EVAL / "reference" / "ward"
+    good = fake(tmp_path, "good", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)", "writes the reference")
+    run.main(["--scenario", "ward", "--arm", "baseline", "--out", str(tmp_path / "ok"), "--claude", good])
+    rows = json.loads((tmp_path / "ok" / "ward-baseline" / "results.json").read_text())["sessions"]
+    assert len(rows) == 14 and all(r["hidden"]["failed"] == [] and r["violations"] == [] for r in rows)
+    assert len(rows[-1]["hidden"]["passed"]) == 31
+    forgot = f'(repo / "ward" / "rules.py").write_text({WARD_FORGOT!r})'
+    naive = fake(tmp_path, "naive", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)\n{forgot}",
+                 "writes the reference with the early rules guessed")
+    run.main(["--scenario", "ward", "--arm", "baseline", "--out", str(tmp_path / "bad"), "--claude", naive,
+              "--from-session", "14", "--resume", str(tmp_path / "ok" / "ward-baseline")])
+    [row] = json.loads((tmp_path / "bad" / "ward-baseline" / "results.json").read_text())["sessions"]
+    assert {t.split("::")[-1] for t in row["hidden"]["failed"]} == WARD_RULES
+    assert len(row["hidden"]["passed"]) == 31 - len(WARD_RULES) and row["violations"] == []

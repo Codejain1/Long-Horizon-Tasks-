@@ -11,6 +11,7 @@ demo/sidebyside/scoreboard.py                     # Claude Code: real cost
 demo/sidebyside/scoreboard.py --price 1.5         # Cursor: cost estimated at $1.50 per million tokens
 ```
 
+- **The scenario:** `SCENARIO=rental` (the default) or `SCENARIO=ward`, the harder one: 14 tickets of hospital medication administration with 11 rule checks (`evals/longhorizon/scenarios/ward`). Both sides must use the same one.
 - **The agent:** `AGENT=claude` (the default, model `sonnet`, override with `MODEL=…`) or `AGENT=cursor`. Both sides must use the same one.
 - **Each terminal prints a line per finished ticket:** hidden tests, turns, tool calls, time, tokens and, with Claude Code, cost.
 - **The scoreboard compares the tickets both sides finished:**

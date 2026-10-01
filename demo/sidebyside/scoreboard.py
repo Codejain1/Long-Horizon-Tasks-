@@ -13,28 +13,25 @@ import argparse
 import json
 from pathlib import Path
 
-# Rental's hidden tests that check a rule given in tickets 1-3 (or 9) and needed later; the other 14 check the
-# ticket's own feature.
-RULES = {
-    "test_the_deposit_is_four_months_rent": "4-month deposit",
-    "test_residential_deposits_are_capped_in_model_tenancy_act_states": "Model Tenancy Act cap",
-    "test_agreements_longer_than_11_months_are_refused": "11-month agreements",
-    "test_a_quarter_of_the_deposit_stays_in_reserve": "25 % reserve",
-    "test_without_consent_nothing_is_deployed": "no deposit placed without consent",
-    "test_the_partner_pays_9_percent_split_2_3_and_the_rest": "9 % yield split 2/3/rest",
-    "test_from_april_the_partner_pays_10_percent_and_shares_stay": "10 % from April",
-    "test_the_statement_masks_tenant_phones": "phone numbers masked",
-    "test_platform_earnings_follow_the_reserve_consent_and_rates": "platform report",
-}
-SIDES = {"without": "rental-baseline", "with": "rental-lean"}
+SCENARIOS = Path(__file__).resolve().parents[2] / "evals" / "longhorizon" / "scenarios"
+SIDES = {"without": "baseline", "with": "lean"}
 
 
-def load(out: Path, side: str) -> list[dict] | None:
-    path = out / side / SIDES[side] / "results.json"
-    return json.loads(path.read_text())["sessions"] if path.exists() else None
+def load(out: Path, side: str) -> tuple[str, list[dict]] | None:
+    """(scenario, sessions) of the side's run, e.g. OUT/with/ward-lean/results.json."""
+    for path in sorted((out / side).glob(f"*-{SIDES[side]}/results.json")):
+        data = json.loads(path.read_text())
+        return data["scenario"], data["sessions"]
+    return None
 
 
-def summary(sessions: list[dict], price: float | None) -> dict:
+def rule_checks(scenario: str) -> dict[str, str]:
+    """The scenario's hidden tests that check a rule given early and needed later, with a label each."""
+    spec = SCENARIOS / scenario / "scenario.json"
+    return json.loads(spec.read_text()).get("rule_checks", {}) if spec.exists() else {}
+
+
+def summary(sessions: list[dict], price: float | None, rules: dict[str, str]) -> dict:
     last = sessions[-1]["hidden"]
     tokens = sum(s.get("tokens", 0) for s in sessions)
     cost = sum(s.get("cost_usd", 0) for s in sessions)
@@ -46,7 +43,7 @@ def summary(sessions: list[dict], price: float | None) -> dict:
         "cost": tokens / 1e6 * price if estimated else cost,
         "estimated": estimated,
         "hidden": (len(last["passed"]), len(last["passed"]) + len(last["failed"])),
-        "rules": {label: (name in last["passed"]) for name, label in RULES.items()
+        "rules": {label: (name in last["passed"]) for name, label in rules.items()
                   if name in last["passed"] or name in last["failed"]},
         "aborted": any(s.get("aborted") for s in sessions),
     }
@@ -58,19 +55,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--price", type=float, help="USD per million tokens, to estimate cost where none is reported.")
     args = ap.parse_args(argv)
     out = Path(args.out)
-    runs = {side: load(out, side) for side in SIDES}
-    if not any(runs.values()):
+    loaded = {side: load(out, side) for side in SIDES}
+    if not any(loaded.values()):
         print(f"No results in {out} yet.")
         return 1
+    scenario = next(v[0] for v in loaded.values() if v)
+    rules = rule_checks(scenario)
+    runs = {side: (v[1] if v else None) for side, v in loaded.items()}
+    print(f"Scenario: {scenario}")
     n = min(len(r) for r in runs.values() if r)  # compare on the tickets both sides finished
     if all(runs.values()) and len({len(r) for r in runs.values()}) > 1:
         print(f"(Comparing the first {n} tickets, which both sides finished.)")
-    s = {side: summary(r[:n], args.price) for side, r in runs.items() if r}
+    s = {side: summary(r[:n], args.price, rules) for side, r in runs.items() if r}
     rows = [
         ("Tickets done", lambda x: str(x["tickets"]) + (" (cut short)" if x["aborted"] else "")),
         ("Time", lambda x: f"{x['minutes']:.1f} min"),
         ("Tokens", lambda x: f"{x['tokens'] / 1e6:.2f} M"),
-        ("Cost", lambda x: (f"${x['cost']:.2f}" + (" (estimated)" if x["estimated"] else "")) if x["cost"] else "not reported (use --price)"),
+        ("Cost", lambda x: (f"${x['cost']:.2f}" + (" (estimated)" if x["estimated"] else "")) if x["cost"] else "n/a (use --price)"),
         ("Hidden tests passed", lambda x: f"{x['hidden'][0]}/{x['hidden'][1]}"),
         ("Rules kept", lambda x: f"{sum(x['rules'].values())}/{len(x['rules'])}"),
     ]
@@ -84,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             saved = 100 * (1 - h["tokens"] / w["tokens"])
             print(f"\nWith Horizon: {w['minutes'] / h['minutes']:.2f}x the speed, "
                   f"{abs(saved):.0f} % {'fewer' if saved >= 0 else 'more'} tokens")
-    labels = sorted({lab for v in s.values() for lab in v["rules"]}, key=list(RULES.values()).index)
+    labels = sorted({lab for v in s.values() for lab in v["rules"]}, key=list(rules.values()).index)
     if labels:
         print(f"\n{'Rule (given early, needed later)':<36}" + "".join(f"{('Without' if k == 'without' else 'With'):>10}" for k in s))
         for lab in labels:
