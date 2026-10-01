@@ -520,8 +520,12 @@ def hidden_tests(scenario_dir: Path, sessions: range, repo: Path, python: str) -
             shutil.copy(helper, tmp)
         for always in (scenario_dir / "hidden").glob("test_always_*.py"):  # checked after every session
             shutil.copy(always, tmp)
-        proc = subprocess.run([python, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "--tb=no", tmp],
-                              env={**os.environ, "PYTHONPATH": str(repo)}, capture_output=True, text=True, timeout=600)
+        # Plain output: a terminal's FORCE_COLOR (Ghostty sets it) colours even piped output, and the grading
+        # below then reads no results at all.
+        env = {k: v for k, v in os.environ.items() if k not in ("FORCE_COLOR", "PY_COLORS")}
+        proc = subprocess.run([python, "-m", "pytest", "-q", "-rA", "-p", "no:cacheprovider", "--tb=no", "--color=no",
+                               tmp], env={**env, "PYTHONPATH": str(repo), "NO_COLOR": "1"}, capture_output=True,
+                              text=True, timeout=600)
     passed = re.findall(r"^PASSED \S+::(\S+)", proc.stdout, re.M)
     failed = re.findall(r"^(?:FAILED|ERROR) \S+?(?:::(\S+))?(?: |$)", proc.stdout, re.M)
     return {"passed": sorted(passed), "failed": sorted(f or "collection" for f in failed)}
