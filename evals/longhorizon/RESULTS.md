@@ -186,3 +186,22 @@ Every run started from baseline's repo after ticket 3. Horizon arms were seeded 
 | candidate | 1 of 3 | `open_store(None)` and reset, twice | 233 k | 26 |
 
 **Ticket 4 is a trap for this model in every arm, Horizon or not.** Baseline also misses the `open_store(None)` behaviour. Counting the marathon run, each arm passed ticket 4 as follows: baseline 3 of 4, lean 2 of 4, candidate 1 of 4. Differences that size in four runs are noise; Fisher's exact test gives p ≈ 0.5 for candidate against baseline. The marathon's 1–15 gap came from this ticket, and nothing Horizon said caused it. Horizon doesn't prevent it either: the miss is a hidden behaviour the visible tests never exercise, so the test history Horizon reads has nothing to warn about.
+
+## Refused-command memory: `candidate` with `HORIZON_DEAD_ENDS=on` against Phase 3 (2026-10-01, Sonnet, 1 run each)
+
+These are the same setups as the Phase 3 runs. Stall was seeded from the question 67 lean run. Marathon stopped at the usage limit in ticket 7, so it covers tickets 1–6. Refused calls are counted from each run's stream; Phase 3 used the same reader.
+
+| | Refused calls | Tokens | Warnings | Hidden tests, violations |
+|---|---|---|---|---|
+| stall, Phase 3 candidate | 13 (ticket 5: 8) | 4.62 M (ticket 5: 1.27 M) | — | all pass, 0 |
+| stall, with refused-command memory | **8** (ticket 5: 7) | 4.58 M (ticket 5: **1.53 M**) | 2, both on ticket 5 | all pass, 0 |
+| marathon 1–6, Phase 3 lean | 1 | 5.79 M | — | all pass, 0 |
+| marathon 1–6, Phase 3 candidate | 8 | 5.22 M | — | all pass, 0 |
+| marathon 1–6, with refused-command memory | **2** | 5.50 M | 0 | all pass, 0 |
+
+**Fewer refused calls, no token saving.**
+- **Stall ticket 5:** the warning fired at the third `finsign` attempt, and the agent stopped calling it (5 attempts before, 3 now). It then spent its turns elsewhere and used more tokens, not fewer.
+- **Stall ticket 4:** refused calls fell from 4 to 0 and tokens fell from 0.90 M to 0.66 M, with no warning shown. The refusals in seeded history were listed at session start (1,616 characters against 1,179).
+- **Marathon:** refused calls fell from 8 to 2, but tokens were in between lean's and Phase 3 candidate's.
+
+Refusals are a small share of a session's cost, and per-ticket tokens swing ±50 % between runs, so one run can't show a token effect. The behaviour works as designed: it warns once, the agent stops, and nothing is lost. Not a gate pass: principle 5 asks for better outcomes or lower cost, and neither is shown.

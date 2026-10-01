@@ -523,12 +523,13 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Cursor host** (`src/horizon/cursor.py`, `horizon install-cursor`, `horizon hook <cursorEvent> --host cursor`): lean and observe through `.cursor/hooks.json`. Shell maps to Bash, failing commands are read from `postToolUseFailure`, and prompts come from Cursor's transcript at the next tool call, under a per-session lock. Lean's context no longer mentions `evaluate_options` on Cursor, which has no Horizon MCP tools.
   - **Harness:** `--agent cursor --model composer-2.5` drives `agent -p … --force --trust --sandbox enabled`, with the stream converted to Claude Code's shape.
   - **Real run** (marathon, 3 arms in parallel, `RESULTS.md`): baseline finished 24/24 with 0 hidden failures. On tickets 1–15, lean and candidate each carried one hidden failure from ticket 4 onward, which looks like single-run noise. Tokens were −8 % (lean) and −4 % (candidate), with 0 violations and 0 refused calls in every arm. lean and candidate were cut by Cursor backend disconnects (tickets 22 and 16).
+  - **Refused-command memory, real check (Claude Code, `RESULTS.md`):** refused calls fell on stall from 13 to 8 and on marathon tickets 1–6 from 8 to 2. The warning fired at the third `finsign` try and the agent stopped. Tokens didn't fall (stall ticket 5 went from 1.27 M to 1.53 M), so it's not a gate pass. It stays off by default.
   - **Ticket 4 repeated** (3 runs per arm): baseline misses the same hidden test, so the gap is noise (question 82).
   - **Tests:** 728 pass on SQLite and Postgres. Ruff shows only the I001 that predates this work.
 
 ## In progress
 
-- The queued real check of refused-command memory (`/tmp/lh-de`, from 6:25 pm). Compare against the Phase 3 runs: `refused_calls` and tokens on stall ticket 5, and refused calls on marathon tickets 1–8 against today's lean run.
+- Nothing running.
 
 ## Decisions made
 
