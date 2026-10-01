@@ -170,6 +170,9 @@ with sqlite3.connect(os.environ["HORIZON_DB_URL"].removeprefix("sqlite:///")) as
     db.execute("INSERT INTO events (session_id, kind, data) VALUES ('cur-1', 'session_start', '{{}}')")
 calls = [{{"readToolCall": {{"args": {{"path": {hidden!r}}}}}}},
          {{"globToolCall": {{"args": {{"targetDirectory": str(repo), "globPattern": "*.py"}}}}}},
+         {{"lsToolCall": {{"args": {{"path": str(repo.parent)}}}}}},
+         {{"globToolCall": {{"args": {{"targetDirectory": str(pathlib.Path.home() / ".cursor/projects/T-lhx-x-repo/agent-transcripts")}}}}}},
+         {{"shellToolCall": {{"args": {{"command": os.path.realpath(sys.executable) + " -m pytest -q"}}}}}},
          {{"shellToolCall": {{"args": {{"command": "cat /tmp/lhx-other/repo/ledger/core.py"}}}}}}]
 out = [{{"type": "system", "subtype": "init", "session_id": "cur-1"}}]
 out += [{{"type": "tool_call", "subtype": "started", "call_id": f"t{{i}}", "tool_call": c}} for i, c in enumerate(calls)]
@@ -193,7 +196,7 @@ def test_an_isolated_run_keeps_the_agent_out_of_the_eval_tree_and_counts_its_pee
     repo = (work / "repo").resolve()
     assert (work / "repo").is_symlink() and repo.parent.name.startswith("lhx-") and work not in repo.parents
     row = json.loads((work / "results.json").read_text())["sessions"][0]
-    assert row["outside_reads"] == {"eval": 1, "other_runs": 1, "agent_memory": 0, "elsewhere": 0}
+    assert row["outside_reads"] == {"eval": 1, "other_runs": 1, "agent_memory": 1, "elsewhere": 0}
     seen = json.loads((repo.parent / "env.json").read_text())
     root = str(run.REPO_ROOT)
     assert not [k for k, v in seen.items() if root in v and k != "PATH"]

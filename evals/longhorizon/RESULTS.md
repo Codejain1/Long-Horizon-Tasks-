@@ -153,6 +153,8 @@ Both arms ran in parallel and both hit the subscription's usage limit: `lean` du
 
 ## Cursor agent: marathon, `baseline`, `lean` and `candidate` (2026-10-01, Cursor CLI with composer-2.5, 1 run each)
 
+*Caveat: every Cursor run before "Handoff, isolated" ran with the eval tree readable and its path in the agent's repo; see the handoff section. In the marathon runs, at most one session per run named a path there.*
+
 The same scenario driven by Cursor's agent (`--agent cursor`), with Horizon installed as Cursor hooks (`install-cursor`). All three arms ran in parallel. `baseline` finished all 24 tickets. `lean` lost its connection to Cursor's backend in ticket 22, and `candidate` hung on a reconnect in ticket 16. Both were cut by the infrastructure, not by the agent. The comparison covers the tickets every arm finished.
 
 | Tickets 1–15 | Hidden tests failing at the end | Tickets ending with a hidden failure | Violations | Test runs failing | Tool calls | Tokens | Wall time |
@@ -254,6 +256,8 @@ Keyword capture recognises only the fines rule; Jev recognises all three. The Je
 
 All functional tests passed, and there were 0 violations in every run.
 
+**Caveat, found afterwards: these runs could see the answers.** Cursor's agent reads anything on disk. Its repo held `.cursor/hooks.json` with the path of this repo's Python, and some sessions followed it into the eval tree (hidden tests, reference solution) or into the run folder (`results.json`). Sessions that named such a path: baseline 1 of 24, lean 2 of 24, lean (Jev blocked) 4 of 24, candidate (Jev blocked) 7 of 24. The later Cursor runs (see "Handoff, isolated") keep the agent out and count every outside path.
+
 **What decides it is whether the agent writes the rules down in ticket 1.** In all 12 runs, the fines cap and the DD/MM/YYYY dates passed exactly when the agent had recorded the board's rules in `README.md` during ticket 1, and failed otherwise. Every candidate run happened to write the README (6 of the other 9 runs did not), so candidate's 3/3 isn't evidence that its memory worked.
 
 **Plain lean dropped a rule it had captured.** Lean recorded the fines rule in every run but showed constraints only from the last 3 tasks. By ticket 6 the rule was gone, and the three lean runs that hadn't written it down billed uncapped fines. Fixed: lean now lists every constraint the project's tasks set, as the composer does.
@@ -261,3 +265,26 @@ All functional tests passed, and there were 0 violations in every run.
 **Email masking is the gap memory should close.** Every run wrote a masking helper in ticket 2. In tickets 7 and 8, all but one run didn't use it in the report or the export. No arm captured that rule, since only Jev recognises it.
 
 **Tokens:** lean used 1.40–1.62 M per run against baseline's 2.21 M (−27 % to −37 %). With 3 runs and a 4 % wall-time gap, that's a lead, not a result.
+
+## Handoff, isolated: rules given early, needed late (2026-10-01, Cursor, composer-2.5, 8 tickets, 3 runs per arm)
+
+Same scenario, now run in isolation: each agent's repo and Horizon's database sit alone in temp folders, the agent's Horizon is a non-editable install outside this repo, and its environment names nothing here. Every session's tool calls were scanned for paths outside its repo. Across all 96 sessions, **0 named the eval tree, the run folder or another run**. Jev now works inside Cursor's hooks: it reads the key from the macOS Keychain when Cursor hides the environment variable. The Jev arms captured all three rules; keyword capture got only the fines cap.
+
+| Arm (3 runs) | Fines cap | Report masks emails | Export dates DD/MM/YYYY | Export masks emails | Runs that wrote the rules into the repo in ticket 1 | Tokens per run | Wall time |
+|---|---|---|---|---|---|---|---|
+| baseline | 1/3 | 0/3 | 1/3 | 0/3 | 1 | 1.61 M ± 0.07 | 14.6 ± 0.2 min |
+| lean (keywords) | 3/3 | 0/3 | 3/3 | 0/3 | 3 | 1.97 M ± 0.49 | 16.8 ± 1.1 min |
+| lean + Jev | **3/3** | **3/3** | **3/3** | **3/3** | **0** | 1.54 M ± 0.03 | 15.9 ± 0.2 min |
+| candidate + Jev | **3/3** | **3/3** | **3/3** | **3/3** | 1 | 1.48 M ± 0.09 | 16.0 ± 0.6 min |
+
+All functional hidden tests passed in every run, with 0 violations, 0 retries and 0 aborts.
+
+**With Jev, Horizon carried every rule to the ticket that needed it: 24 of 24 rule checks, against baseline's 2 of 12.**
+- **It's memory, not note-taking.** Five of the six Jev runs wrote nothing about the rules into the repo during ticket 1, yet passed every rule check in tickets 6–8. Baseline passed a rule only in the run that wrote it into `README.md`.
+- **Email masking needs a scorer that understands rules.** No arm without Jev used the masking helper in the report or the export (0 of 9 runs). Every Jev run did (6 of 6). Fisher's exact test gives p ≈ 0.012 against baseline's 3 runs and p ≈ 0.0002 against all 9 runs without Jev.
+- **Keyword lean's fines and dates are confounded.** All three keyword-lean runs wrote the dates rule into the repo in ticket 1 (README twice, `lending/policy.py` once), against one baseline run. Keyword capture never held the dates rule, so those passes came from the agent's own notes. Whether lean's session-start text prompts that note-taking is open.
+- **Cost:** Jev arms used the same tokens as baseline or fewer (−4 % and −8 %) and took 9 % more wall time (about 1.3 min per 8 tickets). Keyword lean's tokens vary too much between runs to read anything into.
+- **Cursor's own memory reaches every arm.** Agents in all arms read Cursor's transcripts of earlier sessions (`~/.cursor/projects/…/agent-transcripts`), at about the same rate, mostly in tickets 2–5. That's the baseline's built-in memory, and it didn't carry the rules.
+- **Jev over-captures.** Besides the three rules, it stored ticket specs ("a book on loan can't be lent again"), the ticket 1 preamble and "Run ./ci.sh". They're shown at every session start, and they did no harm here, but they cost context and need a filter.
+
+These results replace the earlier handoff table, whose runs could read the hidden tests.

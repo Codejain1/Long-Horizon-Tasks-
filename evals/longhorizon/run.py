@@ -120,17 +120,20 @@ def outside_reads(log: Path, repo: Path, work: Path, python: str) -> dict:
         args = [b.get("input") for b in blocks(read_log(log)) if b.get("type") == "tool_use"]
     real = os.path.realpath
     within = lambda p, d: p == d or p.startswith(d + "/")  # noqa: E731
-    inside, env_dir, work_dir = real(repo), real(Path(python).parents[1]), real(work)
+    inside, work_dir = real(repo), real(work)
+    if Path(inside).parent.name.startswith(TEMP_PREFIX):  # an isolated repo's own temp folder holds only the repo
+        inside = str(Path(inside).parent)
+    own = [real(Path(python).parents[1]), str(Path(real(python)).parents[1])]  # the agent's env and its base Python
     counts = {"eval": 0, "other_runs": 0, "agent_memory": 0, "elsewhere": 0}
     for p in {real(p.rstrip(".,:")) for a in args for p in _paths(a)}:
-        if within(p, inside) or within(p, env_dir):
+        if within(p, inside) or any(within(p, d) for d in own):
             continue
         if within(p, real(REPO_ROOT)) or within(p, work_dir):
             counts["eval"] += 1
+        elif "/.cursor/projects" in p or "/.claude/projects" in p:  # named after the repo's path, so before lhx-
+            counts["agent_memory"] += 1
         elif f"/{TEMP_PREFIX}" in p or "/lh-" in p:
             counts["other_runs"] += 1
-        elif "/.cursor/projects" in p or "/.claude/projects" in p:
-            counts["agent_memory"] += 1
         else:
             counts["elsewhere"] += 1
     return counts
