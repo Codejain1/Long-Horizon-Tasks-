@@ -319,3 +319,15 @@ One baseline run read other runs' Cursor transcripts before the guard covered th
 - **Jev's misses come from over-capture (question 88).** Jev stored 43–46 constraints per run, mostly ticket specs. The session start shows the 20 newest, so by ticket 11 the phone rule from ticket 2 had dropped off: phone masking passed in 1 of 3 Jev runs. The rendered session starts for the failing runs list 20 constraints and no phone rule. This is the next fix.
 
 **After the fix (3 more lean + Jev runs, same guard).** Lean's session start now leaves out sentences that every new ticket restates, and shows up to 40 constraints. With that, **lean + Jev passed 26 of 27 rule checks** (baseline 8), with every rule 3/3 except the platform report at 2/3. Hidden tests passed: 23, 23 and 22 of 23. Tokens were 2.85 M ± 0.31 per run (62 % of baseline's), wall time was 14.5 min against baseline's 20.0, and 0 sessions named the eval tree or another run.
+
+## Side-by-side demo, run live by the owner (2026-10-02, `demo/sidebyside`, Claude Code, 12 rental tickets, 1 run each)
+
+| | Without Horizon | With Horizon |
+|---|---|---|
+| Rules kept | 1/9 | **9/9** |
+| Hidden tests passed | 15/23 | **23/23** |
+| Cost | $1.50 | $1.56 |
+| Tokens | 1.97 M | 1.87 M |
+| Time | 7.4 min | 8.2 min |
+
+**Same cost, every rule kept.** Without Horizon, the agent kept only the Model Tenancy Act cap, which is visible in the start code. It forgot the deposit size, reserve, consent, yield split, term limit, the April rate change, phone masking and the platform report. Token and time differences were small this time (−5 % tokens, +10 % time), where the earlier pair showed −40 % tokens: efficiency varies from run to run, and an agent that forgets the rules also does less work. Rule retention is the result that holds: 35 of 36 rule checks with Horizon across this run and the three guarded runs, against 9 of 36 without.
