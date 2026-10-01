@@ -177,6 +177,43 @@ def test_handoff_checks_the_rules_given_early_in_the_tickets_that_need_them(tmp_
     assert set(row["hidden"]["failed"]) == HANDOFF_RULES and len(row["hidden"]["passed"]) == 11
 
 
+RENTAL_RULES = {"test_the_deposit_is_four_months_rent", "test_residential_deposits_are_capped_in_model_tenancy_act_states",
+                "test_agreements_longer_than_11_months_are_refused", "test_a_quarter_of_the_deposit_stays_in_reserve",
+                "test_without_consent_nothing_is_deployed", "test_the_partner_pays_9_percent_split_2_3_and_the_rest",
+                "test_from_april_the_partner_pays_10_percent_and_shares_stay",
+                "test_the_statement_masks_tenant_phones", "test_platform_earnings_follow_the_reserve_consent_and_rates"}
+RENTAL_FORGOT = '''from datetime import date
+def deposit_months(state, kind): return 3
+def max_term_months(): return 120
+def deployable_cents(deposit_cents, consent): return deposit_cents
+def partner_rate_pct(day): return 10 if day >= date(2026, 4, 1) else 8
+def shares_pct(): return 3, 3
+def masked_phone(phone): return phone
+def masked_pan(pan): return "X" * 6 + pan[-4:]
+def masked_aadhaar(aadhaar): return "X" * 8 + aadhaar[-4:]
+'''
+
+
+def test_rental_checks_the_rules_given_early_in_the_tickets_that_need_them(tmp_path):
+    """The reference passes all 12 tickets; the same code with tickets 1–3's rules guessed instead fails exactly
+    their checks, and nothing else."""
+    run = load("run")
+    ref = EVAL / "reference" / "rental"
+    good = fake(tmp_path, "good", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)", "writes the reference")
+    run.main(["--scenario", "rental", "--arm", "baseline", "--out", str(tmp_path / "ok"), "--claude", good])
+    rows = json.loads((tmp_path / "ok" / "rental-baseline" / "results.json").read_text())["sessions"]
+    assert len(rows) == 12 and all(r["hidden"]["failed"] == [] and r["violations"] == [] for r in rows)
+    assert len(rows[-1]["hidden"]["passed"]) == 23
+    forgot = f'(repo / "rentals" / "rules.py").write_text({RENTAL_FORGOT!r})'
+    naive = fake(tmp_path, "naive", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)\n{forgot}",
+                 "writes the reference with the early rules guessed")
+    run.main(["--scenario", "rental", "--arm", "baseline", "--out", str(tmp_path / "bad"), "--claude", naive,
+              "--from-session", "12", "--resume", str(tmp_path / "ok" / "rental-baseline")])
+    [row] = json.loads((tmp_path / "bad" / "rental-baseline" / "results.json").read_text())["sessions"]
+    assert {t.split("::")[-1] for t in row["hidden"]["failed"]} == RENTAL_RULES
+    assert len(row["hidden"]["passed"]) == 23 - len(RENTAL_RULES) and row["violations"] == []
+
+
 def test_failed_test_runs_are_counted_from_the_transcript():
     run = load("run")
     events = [
