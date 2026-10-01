@@ -174,3 +174,15 @@ Baseline got every ticket right. Neither mistake touches anything Horizon said. 
 - Horizon works on a second agent with no MCP server and no instructions file. The captures were correct: one prompt per session, test runs read from both success and failure hooks, and context grew as tickets accumulated.
 - The efficiency gap is small (lean −8 % tokens and −10 % tool calls), within the noise seen on Claude Code.
 - Hidden tests are the real signal, and here baseline won.
+
+### Ticket 4 repeated (Cursor, composer-2.5, 3 runs per arm, question 82)
+
+Every run started from baseline's repo after ticket 3. Horizon arms were seeded with that run's test history and received 184 characters at session start.
+
+| Ticket 4 | Runs that passed every hidden test | Hidden test missed | Tokens per run (mean) | Tool calls (mean) |
+|---|---|---|---|---|
+| baseline | 2 of 3 | `open_store(None)` and reset, once | 298 k | 42 |
+| lean | 2 of 3 | `open_store(None)` and reset, once | 386 k | 36 |
+| candidate | 1 of 3 | `open_store(None)` and reset, twice | 233 k | 26 |
+
+**Ticket 4 is a trap for this model in every arm, Horizon or not.** Baseline also misses the `open_store(None)` behaviour. Counting the marathon run, each arm passed ticket 4 as follows: baseline 3 of 4, lean 2 of 4, candidate 1 of 4. Differences that size in four runs are noise; Fisher's exact test gives p ≈ 0.5 for candidate against baseline. The marathon's 1–15 gap came from this ticket, and nothing Horizon said caused it. Horizon doesn't prevent it either: the miss is a hidden behaviour the visible tests never exercise, so the test history Horizon reads has nothing to warn about.

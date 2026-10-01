@@ -523,6 +523,7 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Cursor host** (`src/horizon/cursor.py`, `horizon install-cursor`, `horizon hook <cursorEvent> --host cursor`): lean and observe through `.cursor/hooks.json`. Shell maps to Bash, failing commands are read from `postToolUseFailure`, and prompts come from Cursor's transcript at the next tool call, under a per-session lock. Lean's context no longer mentions `evaluate_options` on Cursor, which has no Horizon MCP tools.
   - **Harness:** `--agent cursor --model composer-2.5` drives `agent -p … --force --trust --sandbox enabled`, with the stream converted to Claude Code's shape.
   - **Real run** (marathon, 3 arms in parallel, `RESULTS.md`): baseline finished 24/24 with 0 hidden failures. On tickets 1–15, lean and candidate each carried one hidden failure from ticket 4 onward, which looks like single-run noise. Tokens were −8 % (lean) and −4 % (candidate), with 0 violations and 0 refused calls in every arm. lean and candidate were cut by Cursor backend disconnects (tickets 22 and 16).
+  - **Ticket 4 repeated** (3 runs per arm): baseline misses the same hidden test, so the gap is noise (question 82).
   - **Tests:** 728 pass on SQLite and Postgres. Ruff shows only the I001 that predates this work.
 
 ## In progress
@@ -999,7 +1000,7 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 76 | Stall detection watches only failing test runs, but the real stall (candidate's ticket 5) was repeated probing with ordinary commands | **Partly answered (session 23):** the probing was refused calls, now caught by refused-command memory (`HORIZON_DEAD_ENDS`). Commands that run but keep failing the same way (e.g. `command not found`) are still not watched; default: wait for the real check. |
 | 77 | Part 6 of `compaction` fails in every arm, even with the UTC rule restated | Default: keep it as a judgement trap and report it separately. It measures interpreting a rule, not remembering it, so re-anchoring can't fix it. |
 | 81 | Cursor's backend dropped two of three long runs (tickets 16 and 22) | Default: compare on the tickets every arm finished. If it keeps happening, add a `--from-ticket` restart that reuses the repo state. |
-| 82 | On Cursor, both Horizon arms missed a ticket 4 hidden test that baseline passed (1 run each) | Default: noise. Neither mistake relates to the injected context. Repeat ticket 4 a few times per arm before drawing anything from it. |
+| 82 | On Cursor, both Horizon arms missed a ticket 4 hidden test that baseline passed (1 run each) | **Answered (session 24):** in 3 repeats per arm, baseline misses the same `open_store(None)` test too. Including the marathon run, ticket 4 passed 3 of 4 times for baseline, 2 of 4 for lean and 1 of 4 for candidate, which is noise (p ≈ 0.5). |
 | 79 | Should refused-command memory try to name the way that worked (e.g. "write the script in the repo, run plain `python3`")? | Default: no. Inferring the workaround from the next successful call is guesswork; naming what's refused already rules out the dead end. Revisit if the real check shows the agent still loops. |
 | 80 | Lean now runs a hook before every shell command (about 0.2 s), even with `HORIZON_DEAD_ENDS` off | Default: accept it; lean already runs one after every command. If it matters, the installer could add the `Bash` matcher only when the setting is on. |
 | 78 | Marathon showed no difference on tickets 1–6, where little goes wrong | Default: the informative stretch is later tickets, where CI policies trip (question 67's plan): `--resume` from a lean run at ticket 7, tickets 7–14, one arm at a time so the usage limit doesn't cut both. **Owner** (subscription). |
@@ -1013,7 +1014,7 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 - **Phase 3 gate runs are done (session 22):** no gated component beat lean, so Phase 4 doesn't start (principle 5).
 - **Refused-command memory is built (session 23).** Its real check is queued (`/tmp/lh-de`). Next: read it against the Phase 3 runs (`refused_calls`, tokens on stall ticket 5, marathon tickets 1–8), and record it in `RESULTS.md`. If it cuts refused calls without costing tokens, run `lean` on the same tickets for a paired comparison. Then marathon's later tickets (question 78).
 
-- **Cursor works as a second agent (session 24)** at no subscription cost. Next: repeat marathon ticket 4 about three times per arm on Cursor (question 82), then use Cursor for the repeats the Claude usage limit keeps cutting short.
+- **Cursor works as a second agent (session 24)** at no subscription cost. Ticket 4 repeats showed the gap was noise (question 82). Next: use Cursor for the repeated runs the Claude usage limit keeps cutting short. Whether any component beats lean needs a scenario where visible-test history predicts the hidden failure, and marathon ticket 4 isn't one.
 
 **Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, the `candidate` against `lean` gate run on `marathon` (question 72).
 
