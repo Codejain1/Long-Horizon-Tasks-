@@ -550,7 +550,8 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
     - Lean + Jev passed 22 of 27 rule checks; baseline 8, keyword lean 14 (p ≈ 0.0001 and 0.02).
     - Lean + Jev used 2.58 M tokens per run against baseline's 4.57 M, and 18.0 min against 20.0.
     - Jev's misses come from over-capture: 43–46 stored constraints, only the 20 newest shown, so the phone rule from ticket 2 had dropped off by ticket 11 (question 88).
-  - **Tests:** 735 (489 pass on SQLite; the 246 Postgres variants were skipped this time).
+  - **Over-capture fixed:** lean's session start leaves out sentences that the latest message repeated from an earlier one, and shows up to 40 constraints. Rental rerun, lean + Jev: **26 of 27 rule checks** (was 22; baseline 8), 2.85 M tokens, 14.5 min, 0 suspect sessions.
+  - **Tests:** 737 (490 pass on SQLite; the 247 Postgres variants were skipped this time).
 
 ## In progress
 

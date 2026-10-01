@@ -85,6 +85,8 @@ Each sentence of a prompt is classified as a team rule (all projects), a project
 
 Jev is used whenever `HORIZON_SCORER=jev`, with keywords as the fallback. The labelled set is small and written by us, so this is a first measurement.
 
+**Ticket-style sentences added (2026-10-01).** I added 22 sentences in a backlog's style: rules for later features, and API specs, preambles and lead-ins. Jev now scores **46 of 54 (85 %)**. It files 5 project rules as team rules and keeps 3 specs as rules. Over the handoff and rental tickets, it kept all 13 real rules but also 36 sentences that aren't rules. Two rewordings of the question changed little (45 of 54 with 27 non-rules kept, and 43 of 54 with 57 kept), so the question is unchanged. Lean's session start now leaves out sentences that the latest message repeated from an earlier one, and shows up to 40 constraints instead of 20.
+
 **Found while building the replay:** Horizon's test-run capture recognised only known commands like `pytest` and `npm test`, so CI run through `./ci.sh` was **never captured**. In the backlog and team runs, lean's pitfall memory therefore couldn't see most test runs. Capture now also accepts wrapper scripts and task-runner test targets, when their output parses as a test run.
 
 ## Pitfall warning, tested directly: backlog tickets 4–8 replayed (2026-09-30, Sonnet, 1 run each)
@@ -315,3 +317,5 @@ One baseline run read other runs' Cursor transcripts before the guard covered th
 - **Baseline passes what its repo or ticket shows.** The MTA cap is visible in the start code (`MTA_STATES`), and the phone rule is restated in ticket 2 itself. It lost the deposit size, reserve, consent and yield rules, and with them the money tickets.
 - **Keyword lean costs more here.** Its agents queried their own Horizon database with `sqlite3` to recover rules, which explains the extra tokens and time. Keyword capture missed most money rules.
 - **Jev's misses come from over-capture (question 88).** Jev stored 43–46 constraints per run, mostly ticket specs. The session start shows the 20 newest, so by ticket 11 the phone rule from ticket 2 had dropped off: phone masking passed in 1 of 3 Jev runs. The rendered session starts for the failing runs list 20 constraints and no phone rule. This is the next fix.
+
+**After the fix (3 more lean + Jev runs, same guard).** Lean's session start now leaves out sentences that every new ticket restates, and shows up to 40 constraints. With that, **lean + Jev passed 26 of 27 rule checks** (baseline 8), with every rule 3/3 except the platform report at 2/3. Hidden tests passed: 23, 23 and 22 of 23. Tokens were 2.85 M ± 0.31 per run (62 % of baseline's), wall time was 14.5 min against baseline's 20.0, and 0 sessions named the eval tree or another run.
