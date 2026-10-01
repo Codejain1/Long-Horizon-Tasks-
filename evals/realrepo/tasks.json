@@ -1,0 +1,39 @@
+{
+ "repo": "https://github.com/python-attrs/attrs.git",
+ "preamble": "You are working through the attrs project's backlog on your own: nobody will answer questions, so make reasonable choices and finish the task. ",
+ "suffix": " When you're done, run ./ci.sh (the project's CI) and make sure it passes.",
+ "tasks": [
+  {
+   "commit": "1c962d1",
+   "issue": "When a field has both a type annotation and a `type=` argument, attrs raises `ValueError: Type annotation and type argument cannot both be present`, which doesn't say which field is the problem. Name the field in the message, exactly: `Type annotation and type argument cannot both be present for 'x'.` (for a field named x)."
+  },
+  {
+   "commit": "cbaef3f",
+   "issue": "`attrs.validators.deep_mapping` requires both `key_validator` and `value_validator`. Often only one matters. Make each of them optional (`None` means: don't validate that side), and raise `ValueError` with exactly `At least one of key_validator or value_validator must be provided` if neither is given. Keep the type stubs in sync."
+  },
+  {
+   "commit": "af9c510",
+   "issue": "`attrs.validators.disabled()` doesn't nest: when an inner `with disabled():` block exits, validators are enabled again even though the outer `disabled()` block is still active, so validation runs where it shouldn't. Nested use should behave correctly."
+  },
+  {
+   "commit": "a572c3a",
+   "issue": "Using `on_setattr=attrs.setters.NO_OP` on a field of a frozen class raises `ValueError: Frozen classes can't use on_setattr.`, although NO_OP means \"no hook for this attribute\". It should be allowed."
+  },
+  {
+   "commit": "48b8611",
+   "issue": "`attrs.fields()` only accepts classes and raises `TypeError` for instances. Let it accept an instance of an attrs class too, returning exactly the same object as for its class. Anything that's neither an attrs class nor an attrs instance should raise `TypeError` with exactly `Passed object must be a class or attrs instance.`"
+  },
+  {
+   "commit": "0f758fe",
+   "issue": "Validators can be added with a decorator (`@x.validator`), but converters can't. Add `@x.converter` on fields: the decorated method takes `(self, value, field)` and becomes the field's converter (an `attrs.Converter` with `takes_self` and `takes_field`). If the field already has a converter, the two are composed with `attrs.converters.pipe`, the existing one first."
+  },
+  {
+   "commit": "5aa76a4",
+   "issue": "Add an `attrs.validators.ne(val)` validator that raises `ValueError` if the value equals `val`, alongside the existing `lt`, `le`, `ge` and `gt`, including its type stub and docs."
+  },
+  {
+   "commit": "f53fc54",
+   "issue": "On attrs classes, the instance method `__replace__` (used by `copy.replace`) is the very function object `attrs.evolve`, and building the class then overwrites that shared function's metadata. So `str(attrs.evolve)` and `attrs.evolve.__doc__` change to those of some class's method. `__replace__` must be its own method: `str(C(1, 2).__replace__)` should read like `<bound method C.__replace__ of C(x=1, y=2)>`, and `attrs.evolve` must stay untouched."
+  }
+ ]
+}
