@@ -110,6 +110,9 @@ class Settings:
     # "on": lean warns a session stuck on the same failing check (v2 Phase 2). Off until it passes the gate.
     stall: str = "off"
     stall_min_runs: int = 4  # never fewer consecutive stuck runs than this, whatever the forecast says
+    # "on": lean warns before a command like one the permissions already refused twice, and lists at session start
+    # what earlier sessions had refused (`horizon.deadends`). Refusals are logged either way. Off until the gate.
+    dead_ends: str = "off"
     # What a session episode's surprise is measured against (v2 Phase 2): "forecast" (the session forecast),
     # "fallback" (similar episodes' success, MEMROUTER.md §5), or "auto": the forecast once its replay is clearly
     # better than the fallback over `world_model_min_pairs` sessions.
@@ -161,6 +164,7 @@ class Settings:
             context_min_failed_runs=get("CONTEXT_MIN_FAILED_RUNS", base.context_min_failed_runs, float),
             stall=get("STALL", base.stall),
             stall_min_runs=get("STALL_MIN_RUNS", base.stall_min_runs, int),
+            dead_ends=get("DEAD_ENDS", base.dead_ends),
             session_surprise=get("SESSION_SURPRISE", base.session_surprise),
             scorer=get("SCORER", base.scorer),
             jev_model=get("JEV_MODEL", base.jev_model),

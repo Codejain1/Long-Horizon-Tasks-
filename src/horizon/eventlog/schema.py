@@ -22,6 +22,8 @@ EVENT_SCHEMA_VERSION = 1
 # with its result. turn_end: the agent finished a turn (carries the turn's real token usage). compaction: the
 # host is about to compact the context.
 EventKind = Literal["session_start", "prompt", "step", "turn_end", "compaction", "session_end"]
+# Steps that record what Horizon told the agent rather than what the agent did: not transitions.
+HORIZON_ACTIONS = frozenset({"dead_end_warning"})
 
 
 class Action(BaseModel):

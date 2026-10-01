@@ -11,16 +11,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from horizon.adapters.base import DomainAdapter
-from horizon.eventlog.schema import Action, Event, Result
+from horizon.eventlog.schema import HORIZON_ACTIONS, Action, Event, Result
 
 
 def initial_core() -> dict:
     return {"steps": 0, "prompts": 0, "turns": 0, "compactions": 0, "risky": 0, "tokens": 0.0}
 
 
+def agent_step(event: Event) -> bool:
+    return event.kind == "step" and event.action is not None and event.action.name not in HORIZON_ACTIONS
+
+
 def reduce_core(core: dict, event: Event) -> dict:
     core = dict(core)
-    if event.kind == "step":
+    if agent_step(event):
         core["steps"] += 1
         core["risky"] += int(bool(event.action and event.action.risky))
     elif event.kind == "prompt":
@@ -48,7 +52,7 @@ def replay(events: list[Event], adapter: DomainAdapter) -> tuple[list[dict], lis
     states, transitions = [], []
     for event in events:
         after = {"core": reduce_core(state["core"], event), "domain": adapter.reduce(state["domain"], event)}
-        if event.kind == "step" and event.action is not None:
+        if agent_step(event):
             transitions.append(Transition(event.id, state, event.action, event.result or Result(), after))
         states.append(after)
         state = after

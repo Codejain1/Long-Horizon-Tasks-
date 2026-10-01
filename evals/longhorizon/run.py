@@ -34,6 +34,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from horizon.deadends import WARNED, refusals
+
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 AGENT_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(python:*)", "Bash(python3:*)", "Bash(pytest:*)",
@@ -46,7 +48,8 @@ HORIZON_TOOLS = ["mcp__horizon__start_task", "mcp__horizon__recall_context", "mc
 LIMIT_TEXT = ("session limit", "usage limit", "rate limit")
 PROFILES = {"horizon": "full", "lean": "lean", "observe": "observe", "candidate": "lean"}  # arm -> install profile
 # The candidate arm is lean with the features still behind the evaluation gate turned on (docs/EVALS.md).
-ARM_ENV = {"candidate": {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "composer", "HORIZON_STALL": "on"}}
+ARM_ENV = {"candidate": {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "composer", "HORIZON_STALL": "on",
+                         "HORIZON_DEAD_ENDS": "on"}}
 EXTRA_ENV: dict[str, str] = {}  # --set KEY=VALUE, for ablations (e.g. the candidate without one feature)
 MCP_ARMS = ("horizon", "lean", "candidate")  # arms whose agent gets Horizon's MCP tools
 TEST_COMMAND = re.compile(r"pytest(?! --version)|ci\.sh")
@@ -134,7 +137,7 @@ def horizon_view(work: Path, session_ids: list[str]) -> dict:
     db = work / "horizon.db"
     session_ids = [s for s in session_ids if s]
     if not session_ids or not db.exists():
-        return {"events": {}, "injected_chars": 0, "stall_warnings": 0}
+        return {"events": {}, "injected_chars": 0, "stall_warnings": 0, "dead_end_warnings": 0}
     with sqlite3.connect(db) as conn:
         try:
             rows = conn.execute(f"SELECT kind, data FROM events WHERE session_id IN ({','.join('?' * len(session_ids))})"
@@ -146,7 +149,8 @@ def horizon_view(work: Path, session_ids: list[str]) -> dict:
         kinds[kind] = kinds.get(kind, 0) + 1
     datas = [json.loads(data).get("data") or {} for _, data in rows]
     return {"events": kinds, "injected_chars": sum(int(d.get("injected_chars") or 0) for d in datas),
-            "stall_warnings": sum(bool(d.get("stall_warning")) for d in datas)}
+            "stall_warnings": sum(bool(d.get("stall_warning")) for d in datas),
+            "dead_end_warnings": sum(bool(d.get(WARNED)) for d in datas)}
 
 
 def export_events(work: Path) -> int:
@@ -216,7 +220,8 @@ def seed_history(source: Path, repo: Path, env: dict, python: str, profile: str)
                 fire("post-tool-use", session, tool_name=use.get("name", ""), tool_input=use.get("input") or {},
                      tool_response={"stdout": text(b.get("content")), "stderr": ""})
         fire("stop", session, stop_hook_active=False)
-        fire("session-end", session, reason="other")
+        # the log has the transcript's message format, so its refused commands reach the event log too
+        fire("session-end", session, reason="other", transcript_path=str(source / f"session{i}.jsonl"))
     return calls
 
 
@@ -274,6 +279,7 @@ def run_session(prompts: str | list[str], repo: Path, *, claude: str, model: str
         "test_runs": test_runs,
         "failed_test_runs": failed_runs,
         "failed_checks": failing_checks(events),
+        "refused_calls": len(refusals(str(log))),
         "horizon_calls": {t.removeprefix("mcp__horizon__"): tools.count(t) for t in sorted(set(tools))
                           if t.startswith("mcp__horizon__")},
         "cost_usd": round(sum(float(r.get("total_cost_usd") or 0) for r in results), 4),

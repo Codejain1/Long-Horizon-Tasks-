@@ -185,11 +185,12 @@ def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
 
 
 def lean_session_start(store: TaskStore, team: str, project: str, session: str | None,
-                       budget: int | None = None, source: str | None = None) -> dict:
+                       budget: int | None = None, source: str | None = None, refused: list[str] | None = None) -> dict:
     """A new session: the previous sessions' tasks are done, so their goals and constraints show as earlier
     tasks. A resumed or compacted session keeps its session id, and its task stays active. With a `budget`, the
     context composer chooses what to show (`HORIZON_CONTEXT=composer`), and after a compaction (`source`
-    "compact") restates this session's task with its progress."""
+    "compact") restates this session's task with its progress. `refused`: lines naming what the permissions
+    refused in earlier sessions (`HORIZON_DEAD_ENDS=on`)."""
     for task in store.active(team, cwd=project):
         if task.status == "active" and task.session_id and task.session_id != session:
             task.status = "completed"
@@ -199,10 +200,15 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
 
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext":
                                        composer.session_start(store, team, project, LEAN_WORKFLOW, budget,
-                                                              session, reanchor=source == "compact")}}
+                                                              session, reanchor=source == "compact",
+                                                              refused=refused)}}
     out = core_session_start(store, team, project)
     ctx = out["hookSpecificOutput"]
     ctx["additionalContext"] = ctx["additionalContext"].replace(WORKFLOW, LEAN_WORKFLOW)
+    if refused:
+        from horizon.deadends import HEADING
+
+        ctx["additionalContext"] += "\n\n" + "\n".join([HEADING, *refused])
     return out
 
 
@@ -274,17 +280,22 @@ class Local:
     """Local mode: the hooks share the MCP server's database."""
 
     def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None, briefing=None,
-                 context_budget: int | None = None, stall=None):
+                 context_budget: int | None = None, stall=None, dead_ends=None):
         self.store, self.team, self.scorer_factory = store, team, scorer_factory
         self.briefing = briefing  # (project, session, goal) -> context from similar past sessions
         self.context_budget = context_budget  # set: the context composer chooses lean's session-start context
         self.stall = stall  # (store, team, project, session) -> a stall warning or None
+        self.dead_ends = dead_ends  # a DeadEnds: refused commands, within a session and from earlier ones
 
     def session_start(self, project):
         return core_session_start(self.store, self.team, project)
 
     def lean_session_start(self, project, session, source=None):
-        return lean_session_start(self.store, self.team, project, session, self.context_budget, source)
+        refused = self.dead_ends.session_start(project, session) if self.dead_ends else None
+        return lean_session_start(self.store, self.team, project, session, self.context_budget, source, refused)
+
+    def dead_end_check(self, project, session, transcript, command):
+        return self.dead_ends.check(project, session, transcript, command) if self.dead_ends and session else None
 
     def user_prompt(self, project, session, prompt):
         brief = self.briefing
@@ -331,6 +342,9 @@ class Remote:
 
     def stall_check(self, project, session):
         return None  # needs the event log and the forecast, which hosted installs don't have yet
+
+    def dead_end_check(self, project, session, transcript, command):
+        return None  # needs the event log, which hosted installs don't have yet
 
     def lean_session_start(self, project, session, source=None):
         return self._post("lean-session-start", {"project": project, "session_id": session, "source": source})
@@ -416,6 +430,17 @@ def lean_post_tool_use(payload: dict, backend, project: str) -> dict | None:
     return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": warn}} if warn else None
 
 
+def lean_pre_tool_use(payload: dict, backend, project: str) -> dict | None:
+    """Before a shell command: with `HORIZON_DEAD_ENDS=on`, warn once when it is like one already refused twice
+    this session. Horizon's own tools keep the full profile's checkpoint and usage handling."""
+    if payload.get("tool_name") != "Bash":
+        return pre_tool_use(payload, backend, project)
+    command = str((payload.get("tool_input") or {}).get("command") or "")
+    warn = command and backend.dead_end_check(project, payload.get("session_id"), payload.get("transcript_path"),
+                                              command)
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": warn}} if warn else None
+
+
 HANDLERS = {"session-start": session_start, "pre-tool-use": pre_tool_use, "post-tool-use": post_tool_use,
             "stop": stop, "user-prompt": lambda payload, backend, project: None,
             # Observed for the event log only (v2 Phase 0); nothing to say to the host yet.
@@ -426,6 +451,7 @@ LEAN_HANDLERS = {
     "user-prompt": lambda p, b, project: b.user_prompt(project, p.get("session_id"), str(p.get("prompt") or "")),
     # Test runs are still captured; lean asks for no outcome per run and never blocks the stop.
     "post-tool-use": lambda p, b, project: lean_post_tool_use(p, b, project),
+    "pre-tool-use": lambda p, b, project: lean_pre_tool_use(p, b, project),
     "stop": lambda p, b, project: None,
 }
 
@@ -531,6 +557,40 @@ def stall_checker(db, settings: Settings):
     return check
 
 
+class DeadEnds:
+    """Refused commands for lean (`HORIZON_DEAD_ENDS=on`): the session's refusals read from its transcript, and
+    earlier sessions' from the event log."""
+
+    def __init__(self, db, team: str):
+        self.events, self.team = EventStore(db), team
+        self.source = os.environ.get("HORIZON_HOST", "claude-code")
+
+    def check(self, project, session, transcript, command):
+        from horizon import deadends
+
+        known = deadends.ingest(self.events, self.team, project, session, transcript, self.source)
+        found = deadends.warning(known, command, project)
+        if not found:
+            return None
+        text, key = found
+        self.events.append(deadends.warning_event(self.team, project, session, key, text, self.source))
+        return text
+
+    def session_start(self, project, session):
+        from horizon import deadends
+
+        return deadends.lines(deadends.past(self.events, self.team, project, session)) or None
+
+
+def log_refusals(db, team: str, project: str, payload: dict) -> None:
+    """Every lean or observe session's refusals reach the event log at the end of each turn, whatever the setting,
+    so the history exists once the warning is switched on."""
+    from horizon import deadends
+
+    deadends.ingest(EventStore(db), team, project, payload.get("session_id"), payload.get("transcript_path"),
+                    os.environ.get("HORIZON_HOST", "claude-code"))
+
+
 def _episodes_quietly(db, settings: Settings, project: str) -> None:
     try:
         write_session_episodes(db, settings, project)
@@ -569,8 +629,9 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                 brief = past_sessions_briefing(db, settings) if profile == "lean" else None
                 budget = settings.context_budget_chars if settings.context == "composer" else None
                 stalls = stall_checker(db, settings) if profile == "lean" else None
-                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief, budget, stalls),
-                                 project)
+                dead_ends = DeadEnds(db, settings.team_id) if profile == "lean" and settings.dead_ends == "on" else None
+                result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief, budget, stalls,
+                                                dead_ends), project)
                 if name == "session-start" and profile == "lean":
                     # before this start is logged, so a resumed session's idle part still reads as idle
                     _episodes_quietly(db, settings, project)
@@ -578,6 +639,8 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                     warned = name == "post-tool-use" and STALL_HEADER in json.dumps(result or {})
                     log_events(name, payload, EventStore(db), settings.team_id, project, injected_chars(result),
                                {"stall_warning": True} if warned else None)
+                    if name in ("stop", "session-end") and profile in ("lean", "observe"):
+                        log_refusals(db, settings.team_id, project, payload)
                 except Exception as exc:
                     if os.environ.get("HORIZON_DEBUG"):
                         print(f"horizon: event log failed in {name}: {exc!r}", file=sys.stderr)

@@ -18,6 +18,8 @@ import os
 import re
 from dataclasses import dataclass
 
+from horizon.deadends import HEADING as REFUSED_HEADING
+
 MAX_RULE = 500
 MAX_GOAL_SHOWN = 400
 MAX_LABEL = 120
@@ -47,17 +49,20 @@ SESSION_START = (  # display order
     Section("constraints", "Constraints set by earlier tasks here (they still apply unless the user changes them):",
             2),
     Section("earlier", "Recent tasks in this project:", 4),
+    Section("refused", REFUSED_HEADING, 3),
 )
+_HEADING = {s.key: s.heading for s in SESSION_START}
 
 
 # After a compaction the agent keeps only the host's summary, so the task comes back whole, with where it got to.
 REANCHOR = (
     Section("active", "The task this session is working on (restated: the context was just compacted):", 0),
     Section("progress", "Where this session had got to:", 3),
-    Section("constraints", SESSION_START[3].heading, 1),
-    Section("team_rules", SESSION_START[2].heading, 2),
-    Section("pitfalls", SESSION_START[1].heading, 4),
-    Section("earlier", SESSION_START[4].heading, 5),
+    Section("constraints", _HEADING["constraints"], 1),
+    Section("team_rules", _HEADING["team_rules"], 2),
+    Section("pitfalls", _HEADING["pitfalls"], 4),
+    Section("earlier", _HEADING["earlier"], 5),
+    Section("refused", REFUSED_HEADING, 4),
 )
 MAX_GOAL_REANCHOR = 1500
 MAX_NOTES = 5
@@ -151,10 +156,10 @@ def progress_items(store, team: str, project: str, session: str, task) -> list[I
 
 
 def session_start(store, team: str, project: str, preamble: str, budget: int, session: str | None = None,
-                  reanchor: bool = False) -> str:
+                  reanchor: bool = False, refused: list[str] | None = None) -> str:
     """Lean's session-start context. `reanchor` (a start after a compaction): this session's task in full,
-    first, with its progress."""
-    items = session_start_items(store, team, project)
+    first, with its progress. `refused`: lines naming what the permissions refused in earlier sessions."""
+    items = session_start_items(store, team, project) + [Item("refused", line) for line in refused or []]
     task = next((t for t in store.active(team, cwd=project) if t.session_id == session), None) if session else None
     if not (reanchor and task):
         return compose(preamble, SESSION_START, items, budget)[0]

@@ -272,7 +272,8 @@ def test_the_observe_arm_records_events_silently_and_lean_injection_is_measured(
     rows = json.loads((work / "results.json").read_text())["sessions"]
     assert [json.loads((tmp_path / f"player-observe.{n}.json").read_text()) for n in (1, 2)] == [[""] * 4] * 2
     session = {"session_start": 1, "prompt": 1, "turn_end": 1, "session_end": 1}
-    assert [r["horizon"] for r in rows] == [{"events": session, "injected_chars": 0, "stall_warnings": 0}] * 2
+    assert [r["horizon"] for r in rows] == [{"events": session, "injected_chars": 0, "stall_warnings": 0,
+                                                  "dead_end_warnings": 0}] * 2
     exported = [json.loads(line) for line in (work / "events.jsonl").read_text().splitlines()]
     assert [e["session_id"] for e in exported] == ["sess-1"] * 4 + ["sess-2"] * 4
     assert not (work / "repo" / "CLAUDE.md").exists() and not (work / "repo" / ".mcp.json").exists()
@@ -302,7 +303,7 @@ def test_the_candidate_arm_is_lean_with_session_memory_on(tmp_path):
     settings = {arm: json.loads((tmp_path / "out" / f"notes-{arm}" / "results.json").read_text())["settings"]
                 for arm in ("lean", "candidate")}
     assert settings == {"lean": {}, "candidate": {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "composer",
-                                                  "HORIZON_STALL": "on"}}
+                                                  "HORIZON_STALL": "on", "HORIZON_DEAD_ENDS": "on"}}
     assert all(r["horizon"]["stall_warnings"] == 0 for r in rows + lean)
 
 
@@ -312,7 +313,8 @@ def test_set_adds_a_setting_to_an_arm_for_ablations(tmp_path):
               scripted(tmp_path, "player", HOOK_PLAYER, "fires the installed hooks"), "--sessions", "1",
               "--set", "HORIZON_CONTEXT=classic"])
     results = json.loads((tmp_path / "out" / "notes-candidate" / "results.json").read_text())
-    assert results["settings"] == {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "classic", "HORIZON_STALL": "on"}
+    assert results["settings"] == {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "classic", "HORIZON_STALL": "on",
+                                   "HORIZON_DEAD_ENDS": "on"}
     said = json.loads((tmp_path / "player.1.json").read_text())[0]
     assert "Earlier tasks in this project" not in said and "Recent tasks" not in said  # nothing earlier yet
     assert run.EXTRA_ENV == {"HORIZON_CONTEXT": "classic"}
