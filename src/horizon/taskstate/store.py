@@ -136,10 +136,15 @@ class TaskStore:
 
     def project_constraints(self, team_id: str, cwd: str, window: int = 200) -> list[str]:
         """Every constraint set by a task in the project, newest first, each once: a rule given in the first
-        task still holds in the fiftieth."""
-        rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s AND cwd = %s ORDER BY created_at DESC"
-                                " LIMIT %s", (team_id, cwd, window))
-        return list(dict.fromkeys(c for r in rows for c in load_json(r[0]).get("constraints") or []))
+        task still holds in the fiftieth. Not a sentence the latest task's message repeated from an earlier
+        one ("Run ./ci.sh before you finish"): each new message restates it, and listed it pushes out rules
+        nothing restates."""
+        tasks = [load_json(r[0]) for r in self.db.fetchall(
+            "SELECT data FROM tasks WHERE team_id = %s AND cwd = %s ORDER BY created_at DESC LIMIT %s",
+            (team_id, cwd, window))]
+        goals = [t.get("goal") or "" for t in tasks]
+        recurring = lambda c: c in goals[0] and any(c in g for g in goals[1:])  # noqa: E731
+        return [c for c in dict.fromkeys(c for t in tasks for c in t.get("constraints") or []) if not recurring(c)]
 
     def session_task(self, team_id: str, cwd: str, session_id: str) -> str | None:
         """The task a session worked on (lean: the one its first message started), if any."""

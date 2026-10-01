@@ -51,6 +51,25 @@ def test_a_rule_from_the_first_task_still_reaches_the_tenth(settings, composed, 
     assert f"{SESSION_START[3].heading}\n- {RULE}" in now
 
 
+def test_restated_instructions_dont_push_out_a_rule_nothing_restates(settings, project_dir):
+    """Rental: each ticket's specs and its closing "Run ./ci.sh" were kept too, and by ticket 11 the newest
+    constraints had pushed out ticket 2's rule. What every message restates is left out; ticket 1's rule stays
+    after 30 tickets that each set a constraint of their own."""
+    def spec(n: int, ci: bool = True) -> str:
+        return (PREAMBLE + f"Ticket #{n}: feature {n} must always log its id." + (f" {RULE}" if n == 1 else "")
+                + (" Always run ./ci.sh before you finish." if ci else ""))
+    for n in range(1, 31):
+        Session(settings, project_dir, f"t{n}").play(spec(n), runs=[(3, 0)])
+    def start(session: str) -> str:
+        out = json.loads(Session(settings, project_dir, session).hook("session-start", source="startup"))
+        return out["hookSpecificOutput"]["additionalContext"].split("them):\n", 1)[1].split("Earlier tasks")[0]
+    text = start("next")
+    assert f"- {RULE}" in text and "- Ticket #30: feature 30 must always log its id." in text
+    assert "ci.sh" not in text
+    Session(settings, project_dir, "t31").play(spec(31, ci=False), runs=[(3, 0)])
+    assert "- Always run ./ci.sh before you finish." in start("later")  # no longer restated: it's shown again
+
+
 def test_earlier_tasks_are_labelled_by_what_differs(settings, composed, project_dir, tmp_path):
     """Every ticket opens with the same preamble; cut at 200 characters, the lines would be nearly all
     preamble. Both lean's classic context and the composer's say which ticket each was."""

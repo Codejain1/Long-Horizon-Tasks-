@@ -23,7 +23,7 @@ from horizon.deadends import HEADING as REFUSED_HEADING
 MAX_RULE = 500
 MAX_GOAL_SHOWN = 400
 MAX_LABEL = 120
-MAX_CONSTRAINTS = 20
+MAX_CONSTRAINTS = 40  # Jev keeps each ticket's specs too: 20 lasted about ten tickets
 MAX_RULES = 20
 RECENT_SHOWN = 3
 RECENT_WINDOW = 10  # tasks whose goals reveal the project's shared preamble

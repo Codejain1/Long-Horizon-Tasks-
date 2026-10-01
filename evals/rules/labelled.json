@@ -126,5 +126,93 @@
  {
   "sentence": "Rename the function to fetch_orders.",
   "label": "none"
+ },
+ {
+  "sentence": "A note from compliance for later: refunds over 50,000 rupees need a second approver.",
+  "label": "project"
+ },
+ {
+  "sentence": "When we get to notifications, customers must be able to opt out of marketing messages.",
+  "label": "project"
+ },
+ {
+  "sentence": "Shipping is free on orders over 999 rupees; that applies to every checkout we build.",
+  "label": "project"
+ },
+ {
+  "sentence": "Audit asked that every change to a customer's credit limit be logged with who made it.",
+  "label": "project"
+ },
+ {
+  "sentence": "Interest is always computed on actual/365 days, rounded down to the paisa.",
+  "label": "project"
+ },
+ {
+  "sentence": "The warehouse closes on Sundays, so no delivery slot may fall on a Sunday.",
+  "label": "project"
+ },
+ {
+  "sentence": "Legal says customer addresses shown outside the admin panel only show the city.",
+  "label": "project"
+ },
+ {
+  "sentence": "For features later in the backlog: a subscription can be paused at most twice a year.",
+  "label": "project"
+ },
+ {
+  "sentence": "Patients' dates of birth must never appear in any report we generate.",
+  "label": "project"
+ },
+ {
+  "sentence": "Our payment partner charges 2% per transaction, and the merchant always bears it.",
+  "label": "project"
+ },
+ {
+  "sentence": "You are working through the clinic scheduling app's backlog on your own: nobody will answer questions, so make reasonable choices and note them.",
+  "label": "none"
+ },
+ {
+  "sentence": "Ticket #4: appointments.",
+  "label": "none"
+ },
+ {
+  "sentence": "`book(patient_id, slot)` returns the appointment's id and raises `BookingError` if the slot is taken.",
+  "label": "none"
+ },
+ {
+  "sentence": "`get_order(order_id)` returns a dict with at least `id`, `items`, `total_cents` and `status`.",
+  "label": "none"
+ },
+ {
+  "sentence": "It returns `{\"paid_cents\": ..., \"due_cents\": ...}`.",
+  "label": "none"
+ },
+ {
+  "sentence": "Export what you add from the `billing` package.",
+  "label": "none"
+ },
+ {
+  "sentence": "Two decisions from the board came up while planning.",
+  "label": "none"
+ },
+ {
+  "sentence": "Finance also sent some notes.",
+  "label": "none"
+ },
+ {
+  "sentence": "Make `invoice_total` use it.",
+  "label": "none"
+ },
+ {
+  "sentence": "Raise `OrderError` for anything that isn't allowed.",
+  "label": "none"
+ },
+ {
+  "sentence": "`list_slots(day)` lists the free slots, earliest first.",
+  "label": "none"
+ },
+ {
+  "sentence": "An order that's already shipped can't be cancelled; cancelling it raises `OrderError`.",
+  "label": "none"
  }
 ]
