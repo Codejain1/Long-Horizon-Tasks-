@@ -501,12 +501,36 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Marathon, `lean` against `candidate`, tickets 1–12:** both arms hit the usage limit (lean in ticket 7, candidate in ticket 11). On tickets 1–6 both were clean (17/17, 0 violations), and candidate used 10 % fewer tokens, which is within noise. **No signal either way.**
   - **Two bugs the runs exposed, fixed** (`7991b16`): the harness scored a later ticket's correct `BLOCKED.md` reason as wrong once the file passed 2,000 characters; and `split_rules` split after a list number ("1.") and dropped numbered items with no rule keyword under a "these constraints hold:" lead-in.
   - **Tests:** 701 pass on SQLite and Postgres.
+- **v2 session 23: refused-command memory** (`src/horizon/deadends.py`, `HORIZON_DEAD_ENDS=on`, off by default; on in `candidate`). Chosen from the Phase 3 transcripts:
+  - **The finding.** 8 of 54 real sessions had calls refused by the permissions. The waste was retrying them: five tries of the missing `finsign` (stall ticket 5, 1.27 M tokens). In 4 marathon and stall sessions, in both arms, the same dead end appeared: a `python -c` with a `#` comment, a script in /tmp, a `PYTHONPATH=` prefix, a `cp` from /tmp. Each session rediscovered the same way out (write the script in the repo, run plain `python3`). Refused calls never reach `PostToolUse`, so Horizon had never seen any of this.
+  - **What it does:**
+    - Refusals are read from the transcript (the `stream-json` log has the same format) and logged once each as `refused` steps. Only a key is stored: the command's first word with any `NAME=` prefix and without an interpreter's version, or `outside` / `hash`.
+    - Lean now hooks `PreToolUse` for `Bash`. A command matching a key refused twice this session gets one warning (about 0.2 s per call).
+    - Session start lists keys refused twice in earlier sessions (classic and composer, within the budget).
+    - Refusals are logged at every turn's end whatever the setting (also by `observe`).
+    - The warning is a `dead_end_warning` step: counted for injected characters, and excluded from transitions (`HORIZON_ACTIONS`).
+  - **Checked offline on the real transcripts:**
+    - the warning comes before the third `finsign` try and in the marathon loops (4 warnings, 1 on a command that would have run);
+    - seeded with the question 67 lean run, a new session is shown exactly that dead end (`PYTHONPATH=… python`, `#` in `python -c`, paths outside the project), in about 330 characters.
+  - **Harness:**
+    - `refused_calls` per session, from the stream, in every arm;
+    - `horizon.dead_end_warnings`;
+    - seeded history carries refusals.
+  - **Tests:** 719 pass on SQLite and Postgres (18 new in `test_dead_ends.py`). Ruff is clean on the new files.
+  - **Real check queued** (the usage limit resets at 6:20 pm): `stall` `candidate` seeded as before, then `marathon` `candidate` tickets 1–8, into `/tmp/lh-de`.
 
 ## In progress
 
-- Nothing running. Phase 3 found no gain for the gated components (re-anchoring, stall detection, session memory), so all stay off (principle 5). What to do next is the owner's call (questions 76–78).
+- The queued real check of refused-command memory (`/tmp/lh-de`, from 6:25 pm). Compare against the Phase 3 runs: `refused_calls` and tokens on stall ticket 5, and refused calls on marathon tickets 1–8 against today's lean run.
 
 ## Decisions made
+
+**v2 session 23**
+- **Next step chosen by me (owner asked):** refused-command memory. It's the only waste Phase 3 showed, it needs no spend to build, and it fits principle 1 (the environment's quirks, which the agent can't know in advance).
+- **Read refusals from the transcript, not a new hook.** `PermissionDenied` fires only for auto-mode classifier denials, and `PostToolUseFailure` only after a tool ran. `PreToolUse` sees every attempt but not its outcome. The transcript has both.
+- **Warn, don't deny.** The warning is `additionalContext` with no permission decision, so an interactive user can still approve.
+- **Listed after two refusals, in one session or several.** A permission doesn't change between tries, unlike a flaky test; a single refusal may be a one-off.
+- **Stored as a `step` with a new action name**, not a new event kind: no schema change for stored data.
 
 **v2 Phase 3 (session 22)**
 - **The stall run was seeded from the question 67 lean marathon run** (7 session episodes): normal work on the same codebase, and already on disk, so no extra spend.
@@ -963,6 +987,8 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 75 | Should hosted installs get stall detection? | Default: later, with event forwarding (question 60). It needs the event log and the forecast on the server. |
 | 76 | Stall detection watches only failing test runs, but the real stall (candidate's ticket 5) was repeated probing with ordinary commands | Default: don't extend it yet. Options: count repeated failing non-test commands (e.g. the same missing binary) as stuck runs, or redesign the scenario so the dead end shows up as failing tests. Either needs another real run. |
 | 77 | Part 6 of `compaction` fails in every arm, even with the UTC rule restated | Default: keep it as a judgement trap and report it separately. It measures interpreting a rule, not remembering it, so re-anchoring can't fix it. |
+| 79 | Should refused-command memory try to name the way that worked (e.g. "write the script in the repo, run plain `python3`")? | Default: no. Inferring the workaround from the next successful call is guesswork; naming what's refused already rules out the dead end. Revisit if the real check shows the agent still loops. |
+| 80 | Lean now runs a hook before every shell command (about 0.2 s), even with `HORIZON_DEAD_ENDS` off | Default: accept it; lean already runs one after every command. If it matters, the installer could add the `Bash` matcher only when the setting is on. |
 | 78 | Marathon showed no difference on tickets 1–6, where little goes wrong | Default: the informative stretch is later tickets, where CI policies trip (question 67's plan): `--resume` from a lean run at ticket 7, tickets 7–14, one arm at a time so the usage limit doesn't cut both. **Owner** (subscription). |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
 
@@ -971,10 +997,8 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 ## Next step
 
 **v2 (this copy):** Phase 1 of `PROJECT.md` §0 is built: tracks E (session 16), A (17), B (18), C (19) and D (20). Next:
-- **Phase 3 gate runs are done (session 22):** compaction, stall and marathon tickets 1–6. No gated component beat lean, so Phase 4 doesn't start (principle 5). Next, the owner picks one:
-  1. Marathon's later tickets, where trouble happens (question 78), one arm at a time.
-  2. Stall detection for repeated non-test failures, then a re-run (question 76).
-  3. `team` for the composer.
+- **Phase 3 gate runs are done (session 22):** no gated component beat lean, so Phase 4 doesn't start (principle 5).
+- **Refused-command memory is built (session 23).** Its real check is queued (`/tmp/lh-de`). Next: read it against the Phase 3 runs (`refused_calls`, tokens on stall ticket 5, marathon tickets 1–8), and record it in `RESULTS.md`. If it cuts refused calls without costing tokens, run `lean` on the same tickets for a paired comparison. Then marathon's later tickets (question 78).
 
 **Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, the `candidate` against `lean` gate run on `marathon` (question 72).
 
