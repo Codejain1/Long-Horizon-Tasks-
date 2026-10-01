@@ -119,3 +119,16 @@ Both arms start from the no-Horizon run's repo after ticket 3. Lean's memory is 
 | Pitfall warning shown | – | – | – | – | – | ✓ | ✓ | ✓ |
 
 **The whole loop works live.** Horizon recorded the two failing CI runs (tickets 4 and 5) from real `./ci.sh` output. From ticket 6 on, session start warned about the check, and no session broke it again. Across the whole backlog, lean broke the policy in **2 of 8** sessions, against 5 of 8 and 4 of 8 in the two live runs without Horizon. The early sessions pay the discovery price; the rest don't. Hidden tests were 13/13. Cost was $1.25, against $1.20 and $1.14 without Horizon: about +6 % over a backlog this short, where only 3 sessions came after the warning. The replays, which start with the history, came out 12 % cheaper.
+
+## Real codebase: 8 consecutive attrs changes as an unattended backlog (`evals/realrepo/`, 2026-10-01, Sonnet)
+
+Each real change was posed as the issue it solved. Grading used the change's real tests, the whole suite, and attrs' changelog-fragment rule. The usage limit cut both arms at task 8 (no Horizon never ran it; lean's run was aborted early), so tasks 1–7 are compared.
+
+| Tasks 1–7 | Resolved | Changelog fragment | Failed / all CI runs | Turns | Cost |
+|---|---|---|---|---|---|
+| no Horizon | 6/7 (task 6 missed) | 7/7 | 3/24 | 233 | $3.40 |
+| lean | 6/7 (task 6 missed) | 7/7 | 2/20 | 199 | $3.20 (−6 %) |
+
+- **No difference in outcome, and no extra cost.** Both arms solved the same six real issues and missed the same hard one (the converter decorator).
+- **Nothing for Horizon to learn here.** attrs' convention is visible in the repo: `changelog.d/` is full of fragments. Both agents added a fragment every time without being told, and the changelog check never failed. The CI failures were ordinary bugs, each in a different test, so no pitfall recurred and the warning never fired.
+- **It fits the earlier finding:** when the knowledge is in the repo, the agent finds it itself. Horizon's gains came where it wasn't: rules stated once in a prompt, policy failures repeating across sessions, and teammates. And lean costs nothing when it has nothing to add.

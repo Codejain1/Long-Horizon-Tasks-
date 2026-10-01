@@ -14,3 +14,7 @@ Eight consecutive real changes to [attrs](https://github.com/python-attrs/attrs)
 python evals/realrepo/run.py --arm baseline --out /tmp/rr [--source /local/attrs/clone]
 python evals/realrepo/run.py --arm lean --out /tmp/rr [--source /local/attrs/clone]
 ```
+
+## Result, run 1 (2026-10-01)
+
+On tasks 1–7, both arms resolved 6/7 and added changelog fragments 7/7. The changelog check never failed in a CI run, because the convention is visible from the repo's own `changelog.d/`. Lean cost 6 % less. Details are in `evals/longhorizon/RESULTS.md`.
