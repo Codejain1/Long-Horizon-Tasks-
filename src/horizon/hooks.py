@@ -63,7 +63,7 @@ def project_dir(payload: dict) -> str:
 def core_session_start(store: TaskStore, team: str, project: str, lean: bool = False) -> dict:
     """`lean`: the agent makes no Horizon calls, so nothing here asks for one, and goals lose the preamble every
     recent goal opens with (a backlog's shared instructions would otherwise fill the 200 characters shown)."""
-    from horizon.composer import RECENT_WINDOW, label
+    from horizon.composer import MAX_CONSTRAINTS, RECENT_WINDOW, label
 
     lines = [LEAN_WORKFLOW if lean else WORKFLOW]
     active = store.active(team, cwd=project)
@@ -85,11 +85,20 @@ def core_session_start(store: TaskStore, team: str, project: str, lean: bool = F
                      "Team rules for every project (apply them here too; pass the full list as start_task's"
                      " team_rules, with any the user adds or changes):")
         lines += [f"- {r[:MAX_RULE]}" for r in rules[:20]]
-    if done:
+    if lean:
+        # every task's, not only the latest three's: a rule given in ticket 1 for ticket 6 must still be here
+        constraints = store.project_constraints(team, project)[:MAX_CONSTRAINTS]
+        if constraints:
+            lines.append("Constraints set by earlier tasks here (they still apply unless the user changes them):")
+            lines += [f"- {c[:MAX_RULE]}" for c in constraints]
+        if done:
+            lines.append("Earlier tasks in this project:")
+            lines += [f"- {shown(t.goal)}" for t in done]
+    elif done:
         # Multi-session work: each session tends to finish its own task, so earlier sessions' goals and
         # constraints would otherwise never reach the next one (evals/longhorizon/RESULTS.md, run 1).
-        lines.append("Earlier tasks in this project (their constraints still apply unless the user changes them" +
-                     ("):" if lean else "; copy them into start_task's constraints):"))
+        lines.append("Earlier tasks in this project (their constraints still apply unless the user changes them;"
+                     " copy them into start_task's constraints):")
         for t in done:
             lines.append(f"- {shown(t.goal)}")
             lines += [f"  - constraint: {c[:MAX_RULE]}" for c in t.constraints[:10]]

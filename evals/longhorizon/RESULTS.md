@@ -220,3 +220,44 @@ Six runs ran in parallel, and none needed a retry. Values are mean ± standard d
 - **Violations:** lean had none in 3 runs. One baseline run broke the integer-cents rule from ticket 10 on. That fits what lean exists for (it re-states session 1's constraints at each start), but 0 of 3 against 1 of 3 isn't evidence.
 - **Wall time:** lean took 3.6 minutes more per 12 tickets, about 0.6 s per tool call. Cursor waits for each hook, and every Horizon hook starts a new Python process. That cost is certain, and it's ours to remove.
 - **The earlier single run's −8 % tokens for lean** (tickets 1–15) doesn't hold up: over three runs tokens are equal.
+
+## Hook latency fixed (2026-10-01, Cursor, composer-2.5, lean, marathon tickets 1–12, 3 runs)
+
+What changed:
+- **Cheaper hooks:** numpy is imported only when a vector is stored, and model validation is built on first use.
+- **Fewer hooks:** Cursor's post-tool hooks fire only on the tools Horizon reads (shell and edits), as on Claude Code, instead of on every read and search. `preToolUse` is no longer installed on Cursor.
+- **Result:** one hook takes 0.16 s instead of 0.21 s, and hooks fire on about 40 % of tool calls instead of all of them, plus every shell call.
+
+| Tickets 1–12 | Wall time | Tokens | Tool calls | Hidden tests failing at the end |
+|---|---|---|---|---|
+| baseline (earlier) | 16.7 ± 0.9 min | 2.90 M | 330 | 1.33 |
+| lean before | 20.3 ± 0.8 min | 2.88 M | 340 | 1.33 |
+| lean after | **16.1 ± 0.7 min** | 2.82 M | 341 | 2.33 ± 0.58 |
+
+**The 21 % slowdown is gone.** These runs also had the lean session-start fixes from ticket 2 on: no wording that asks for tool calls, and goals without the shared preamble. Hidden failures were 2.33 against 1.33, from the same ticket 4 trap plus UTC-date misses in one run. With 3 runs that's within noise, but worth watching.
+
+## Handoff: rules given early, needed late (2026-10-01, Cursor, composer-2.5, 8 tickets, 3 runs per arm)
+
+A new scenario:
+- **Ticket 1** gives two rules for later features: a fines cap ("must never exceed the replacement cost") and DD/MM/YYYY dates in CSV exports.
+- **Ticket 2** gives one: email masking in anything that leaves the system.
+- **Tickets 6–8** need those rules, and their prompts don't repeat them. Tickets 3–5 are controls.
+
+Keyword capture recognises only the fines rule; Jev recognises all three. The Jev arms didn't actually use Jev, though: Cursor replaces secret-looking environment variables with `...` before running hooks, sandboxed or not. Jev got a 401 and the splitter fell back to keywords, so all four arms below captured only the fines rule.
+
+| Arm (3 runs) | Fines cap | Report masks emails | Export dates DD/MM/YYYY | Export masks emails | Tokens per run | Wall time |
+|---|---|---|---|---|---|---|
+| baseline | 1/3 | 0/3 | 1/3 | 0/3 | 2.21 M | 17.3 min |
+| lean | 1/3 | 1/3 | 1/3 | 1/3 | 1.47 M | 17.1 min |
+| lean (Jev blocked: keywords) | 2/3 | 0/3 | 2/3 | 0/3 | 1.40 M | 17.2 min |
+| candidate (Jev blocked: keywords) | **3/3** | 0/3 | **3/3** | 0/3 | 1.62 M | 17.5 min |
+
+All functional tests passed, and there were 0 violations in every run.
+
+**What decides it is whether the agent writes the rules down in ticket 1.** In all 12 runs, the fines cap and the DD/MM/YYYY dates passed exactly when the agent had recorded the board's rules in `README.md` during ticket 1, and failed otherwise. Every candidate run happened to write the README (6 of the other 9 runs did not), so candidate's 3/3 isn't evidence that its memory worked.
+
+**Plain lean dropped a rule it had captured.** Lean recorded the fines rule in every run but showed constraints only from the last 3 tasks. By ticket 6 the rule was gone, and the three lean runs that hadn't written it down billed uncapped fines. Fixed: lean now lists every constraint the project's tasks set, as the composer does.
+
+**Email masking is the gap memory should close.** Every run wrote a masking helper in ticket 2. In tickets 7 and 8, all but one run didn't use it in the report or the export. No arm captured that rule, since only Jev recognises it.
+
+**Tokens:** lean used 1.40–1.62 M per run against baseline's 2.21 M (−27 % to −37 %). With 3 runs and a 4 % wall-time gap, that's a lead, not a result.

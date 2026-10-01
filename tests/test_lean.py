@@ -61,7 +61,7 @@ def test_lean_captures_the_task_and_rules_without_tool_calls(settings, task_stor
     # Next session, same project: the task is done and shows as earlier work, with its constraint.
     ctx = lean("session-start", {"cwd": project_dir, "session_id": "s2"}, settings)
     assert task_store.active(settings.team_id, cwd=project_dir) == []
-    assert "constraint: Money must never be a float." in ctx and "Our team's rules" in ctx
+    assert "them):\n- Money must never be a float." in ctx and "Our team's rules" in ctx
 
     # Another project of the team: the team rules, not this project's constraints.
     other = str(Path(project_dir).parent / "other")

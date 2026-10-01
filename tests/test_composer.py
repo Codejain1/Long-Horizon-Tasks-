@@ -42,10 +42,10 @@ def test_classic_is_the_default(settings):
 
 
 def test_a_rule_from_the_first_task_still_reaches_the_tenth(settings, composed, project_dir, tmp_path):
-    """Classic lean carries constraints only with the last three tasks, so ticket 1's rule is gone by ticket 5;
-    the composer carries every constraint the project's tasks set."""
+    """Both lean's classic context and the composer carry every constraint the project's tasks set, not only
+    the latest three tasks' (handoff: a rule given in ticket 1 for ticket 6 was gone by then)."""
     classic = backlog(settings, project_dir, 10)
-    assert RULE not in classic
+    assert f"them):\n- {RULE}" in classic
     now = backlog(composed, str(tmp_path / "other"), 10)
     assert now.startswith(LEAN_WORKFLOW)
     assert f"{SESSION_START[3].heading}\n- {RULE}" in now
