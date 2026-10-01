@@ -192,10 +192,16 @@ def seed_test_runs(source: Path, sessions: range, repo: Path, env: dict, python:
     return n
 
 
+SESSION_TIMEOUT = 45 * 60
+RETRIES = 2  # a session that ends with no result (the agent's backend dropped) is rerun from the last commit
+
+
 def aborted(result: dict) -> str | None:
-    if not result:
+    if any(t in str(result.get("result") or "").lower() for t in LIMIT_TEXT):
+        return "usage limit"
+    if not result or (result.get("is_error") and not result.get("session_id")):  # the agent never got going
         return "no result"
-    return "usage limit" if any(t in str(result.get("result") or "").lower() for t in LIMIT_TEXT) else None
+    return None
 
 
 def seed_history(source: Path, repo: Path, env: dict, python: str, profile: str) -> int:
@@ -310,8 +316,12 @@ def run_session(prompts: str | list[str], repo: Path, *, claude: str, model: str
     streams, results, invocations, session_id = [], [], [], None
     for prompt in prompts:
         cmd = agent_command(prompt, claude=claude, model=model, arm=arm, session_id=session_id)
-        proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=45 * 60,
-                              stdin=subprocess.DEVNULL)
+        try:
+            proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=SESSION_TIMEOUT,
+                                  stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired as exc:  # a hung agent (e.g. Cursor stuck reconnecting): no result
+            out = exc.stdout or ""
+            proc = subprocess.CompletedProcess(cmd, -1, out.decode() if isinstance(out, bytes) else out, "timed out")
         stdout = proc.stdout
         if AGENT["host"] == "cursor":
             raw = [e for e in map(_json_or_none, stdout.splitlines()) if e is not None]
@@ -424,6 +434,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--agent-bin", default="agent", help="The Cursor CLI (tests pass a fake).")
     args = ap.parse_args(argv)
     AGENT.update(host=args.agent, bin=args.agent_bin)
+    if args.agent == "cursor":  # its tickets take 2–10 minutes; a hang is a dropped backend, retried sooner
+        global SESSION_TIMEOUT
+        SESSION_TIMEOUT = min(SESSION_TIMEOUT, 25 * 60)
     EXTRA_ENV.clear()
     EXTRA_ENV.update(kv.split("=", 1) for kv in args.set)
 
@@ -459,8 +472,16 @@ def main(argv: list[str] | None = None) -> int:
         if repos:
             repo, env = setup(scenario, args.arm, work, python, repos[i - 1])
         package = repos[i - 1] if repos else scenario["package"]
-        row = {"session": i, **run_session(prompt, repo, claude=args.claude, model=args.model, arm=args.arm, env=env,
-                                           log=work / f"session{i}.jsonl")}
+        for attempt in range(RETRIES + 1):
+            row = {"session": i, **run_session(prompt, repo, claude=args.claude, model=args.model, arm=args.arm,
+                                               env=env, log=work / f"session{i}.jsonl")}
+            if row["aborted"] != "no result" or attempt == RETRIES:
+                break
+            print(f"   no result; retrying session {i} from the last commit", flush=True)
+            git(repo, "reset", "-q", "--hard")
+            git(repo, "clean", "-qfd")
+        if attempt:
+            row["retries"] = attempt  # Horizon's log keeps the dropped attempts' events
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", f"after session {i}", "--allow-empty")
         row["hidden"] = hidden_tests(scenario_dir, range(i, i + 1) if repos else range(1, i + 1), repo, python)

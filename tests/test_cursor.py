@@ -152,3 +152,32 @@ def test_the_harness_drives_the_cursor_cli(tmp_path):
     assert argv[:2] == ["-p", argv[1]] and {"--force", "--trust", "--sandbox", "enabled", "composer-2.5"} <= set(argv)
     assert json.loads((work / "repo" / ".cursor" / "hooks.json").read_text())["hooks"]["sessionStart"]
     assert (work / "session1.cursor.jsonl").exists()
+
+
+HANGS_ONCE = '''#!{python}
+"""Like FAKE_AGENT, but the first call leaves a stray file and hangs, as Cursor does when stuck reconnecting."""
+import pathlib, subprocess, sys, time
+marker = pathlib.Path.cwd().parent / "hung"
+if not marker.exists():
+    marker.write_text("1")
+    (pathlib.Path.cwd() / "half_done.py").write_text("x = 1")
+    print('{{"type": "connection", "subtype": "reconnecting"}}', flush=True)
+    time.sleep(30)
+sys.exit(subprocess.run([sys.executable, {fake!r}, *sys.argv[1:]]).returncode)
+'''
+
+
+def test_the_harness_retries_a_dropped_session_from_the_last_commit(tmp_path, monkeypatch):
+    run = load("run")
+    monkeypatch.setattr(run, "SESSION_TIMEOUT", 3)
+    fake = tmp_path / "fake.py"
+    fake.write_text(FAKE_AGENT.format(python=sys.executable, reference=str(EVAL / "reference" / "ledger")))
+    agent = tmp_path / "agent"
+    agent.write_text(HANGS_ONCE.format(python=sys.executable, fake=str(fake)))
+    agent.chmod(agent.stat().st_mode | stat.S_IEXEC)
+    assert run.main(["--scenario", "ledger", "--arm", "baseline", "--out", str(tmp_path / "out"), "--sessions", "1",
+                     "--agent", "cursor", "--agent-bin", str(agent), "--model", "composer-2.5"]) == 0
+    work = tmp_path / "out" / "ledger-baseline"
+    row = json.loads((work / "results.json").read_text())["sessions"][0]
+    assert row["retries"] == 1 and row["aborted"] is None and row["session_id"] == "cur-1"
+    assert row["hidden"]["failed"] == [] and not (work / "repo" / "half_done.py").exists()
