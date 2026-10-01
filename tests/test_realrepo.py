@@ -1,6 +1,7 @@
 """The real-repo eval's changelog check (evals/realrepo/ci_checks), on a tiny git repo."""
 
 import shutil
+import sys
 import subprocess
 from pathlib import Path
 
@@ -8,7 +9,7 @@ EVAL = Path(__file__).resolve().parents[1] / "evals" / "realrepo"
 
 
 def run_check(repo: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rA", "ci_checks"], cwd=repo,
+    return subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rA", "ci_checks"], cwd=repo,
                           capture_output=True, text=True)
 
 
