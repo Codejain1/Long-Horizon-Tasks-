@@ -163,12 +163,12 @@ def run_cursor_hook(event: str, stdin: str, settings=None, profile: str = "lean"
                 prompts = sum(e.kind == "prompt" for e in known()) if messages else 0
                 for message in messages[prompts:]:
                     out = run_hook("user-prompt", json.dumps({**{k: body[k] for k in ("session_id", "cwd")},
-                                                              "prompt": message}), settings, profile=profile)
+                                                              "prompt": message}), settings, profile=profile, tools=False)
                     context = ((json.loads(out) if out else {}).get("hookSpecificOutput") or {}).get(
                         "additionalContext")
                     if context:
                         extra.append(context)
-        out = run_hook(name, json.dumps(body), settings, profile=profile)
+        out = run_hook(name, json.dumps(body), settings, profile=profile, tools=False)
         result = to_cursor(event, json.loads(out) if out else None, extra)
         return json.dumps(result) if result else ""
     except Exception as exc:  # a hook must never break the host session

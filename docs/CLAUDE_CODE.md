@@ -82,6 +82,14 @@ Lean is the default. Re-running `install-claude-code --profile full` switches to
 
 Each hook call's first event records `injected_chars`: the characters of its output the model reads (added context, a blocked stop's reason, a denial's reason). Summed over a session, it's the context Horizon cost; it's always 0 under observe.
 
+## Cursor (lean and observe)
+
+`horizon install-cursor --dir . [--profile observe]` writes Horizon's hooks to `.cursor/hooks.json`, keeping any other hooks there. Cursor's agent then gets lean's continuity with nothing else installed: no MCP server and no instructions file, because the session-start context says what Horizon does. The hooks run `horizon hook <cursorEvent> --host cursor`, which translates Cursor's payloads to the Claude Code hooks above (`src/horizon/cursor.py`). Notes:
+- **Tool names:** Cursor's `Shell` is treated as `Bash`.
+- **Failing commands:** a command that exits non-zero arrives on `postToolUseFailure`, which is read like a successful call, so failing test runs count.
+- **Prompts:** headless runs (`agent -p`) fire no prompt hook. The user's messages are read from Cursor's transcript at the next tool call (one at a time per session, since Cursor runs tools in parallel), and their context comes with that call's output.
+- **Not available yet:** the full profile, hosted mode and refused-command memory. Headless Cursor applies no permission list, so nothing is refused.
+
 ## Configuration
 
 Everything is set through environment variables (see `src/horizon/config.py`):

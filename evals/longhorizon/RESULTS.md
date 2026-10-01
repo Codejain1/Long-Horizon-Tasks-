@@ -150,3 +150,27 @@ Both arms ran in parallel and both hit the subscription's usage limit: `lean` du
 | candidate | 17/17 | 0 | 169 | 18 (2) | 5.22 M (−10 %) | $2.42 (−9 %) | 0 |
 
 **A wash, within noise.** Both arms were clean on every ticket. Candidate's per-ticket tokens swing from 0.55 M to 1.44 M, and its ticket 1 cost 1.8× lean's with identical context (266 characters injected in both), so a 10 % gap in one run says nothing. Candidate tickets 7–10 were also clean (all hidden tests pass, 0 violations). In ticket 11 it was cut off mid-work with the changelog policy test failing. Unlike the question 67 run, candidate cost no more than lean: the past-sessions note now appears only after trouble, and here there was almost none. No ticket produced a failing-run streak, so stall detection never had a chance to fire.
+
+## Cursor agent: marathon, `baseline`, `lean` and `candidate` (2026-10-01, Cursor CLI with composer-2.5, 1 run each)
+
+The same scenario driven by Cursor's agent (`--agent cursor`), with Horizon installed as Cursor hooks (`install-cursor`). All three arms ran in parallel. `baseline` finished all 24 tickets. `lean` lost its connection to Cursor's backend in ticket 22, and `candidate` hung on a reconnect in ticket 16. Both were cut by the infrastructure, not by the agent. The comparison covers the tickets every arm finished.
+
+| Tickets 1–15 | Hidden tests failing at the end | Tickets ending with a hidden failure | Violations | Test runs failing | Tool calls | Tokens | Wall time |
+|---|---|---|---|---|---|---|---|
+| baseline | 0 | 0 | 0 | 0 | 428 | 3.42 M | 20 min |
+| lean | 1 | 12 | 0 | 3 | 386 (−10 %) | 3.13 M (−8 %) | 22 min |
+| candidate | 2 | 12 | 0 | 3 | 404 (−6 %) | 3.30 M (−4 %) | 24 min |
+
+On tickets 1–21 (baseline against lean): baseline ended with 0 hidden failures, 625 tool calls and 5.18 M tokens; lean ended with 1 failure, 586 calls and 5.09 M tokens.
+
+**Ticket 4 (persistence) decided it, and it looks like single-run noise.** Each Horizon arm got ticket 4 wrong in a different way, and nothing afterwards sent it back:
+- lean broke `open_store(None)` and reset;
+- candidate broke the survives-a-restart test, then fixed it in ticket 16;
+- candidate also broke the monthly statement in ticket 8.
+
+Baseline got every ticket right. Neither mistake touches anything Horizon said. Ticket 4's context was the session-start note (266–1,217 characters) plus, on Cursor, a stray line pointing at an MCP tool Cursor doesn't have. That line is now fixed. With one run per arm this isn't a Horizon effect either way, but it is not a gain. All three arms had 0 violations and 0 refused calls: headless Cursor applies no permission list, so refused-command memory has nothing to act on there.
+
+**What this run shows:**
+- Horizon works on a second agent with no MCP server and no instructions file. The captures were correct: one prompt per session, test runs read from both success and failure hooks, and context grew as tickets accumulated.
+- The efficiency gap is small (lean −8 % tokens and −10 % tool calls), within the noise seen on Claude Code.
+- Hidden tests are the real signal, and here baseline won.

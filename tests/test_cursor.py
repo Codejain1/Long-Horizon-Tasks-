@@ -79,7 +79,8 @@ def test_a_cursor_session_is_captured_like_a_claude_code_one(settings, project_d
     assert LEAN_WORKFLOW in start["additional_context"]
     path = cursor_transcript(tmp_path / "t.jsonl", GOAL)
     shell = {"tool_name": "Shell", "tool_input": {"command": "python -m pytest -q"}, "transcript_path": path}
-    hook(settings, "postToolUseFailure", base(project_dir, error_message=FAILING, **shell))
+    first = hook(settings, "postToolUseFailure", base(project_dir, error_message=FAILING, **shell))
+    assert "evaluate_options" not in json.dumps(first)  # Cursor has no Horizon MCP tools to call
     hook(settings, "postToolUse", base(project_dir, tool_output=json.dumps({"output": "2 passed in 0.01s",
                                                                             "exitCode": 0}), **shell))
     hook(settings, "sessionEnd", base(project_dir, reason="completed", transcript_path=path))

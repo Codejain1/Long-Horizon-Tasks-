@@ -11,6 +11,8 @@ Does Horizon help where it's meant to: across sessions, with constraints stated 
 | `compaction` | **Re-anchoring.** One session over three invocations: the goal, 4 constraints and parts 1–3; then `/compact`; then parts 4–8, which don't restate the constraints and each offer a shortcut (floats, pandas, local time, a rename). |
 | `stall` | **Stall detection.** Six tickets on the marathon codebase; #3 (output the platform's policy forbids) and #5 (a binary only CI has) can't be done, and the right result is `BLOCKED.md` with the reason. Faking them is caught. |
 
+**Agents:** Claude Code by default. `--agent cursor --model composer-2.5` runs the same scenarios with the Cursor CLI (`agent -p … --force --trust --sandbox enabled`), with Horizon installed through `install-cursor`. Its stream is converted to Claude Code's shape, so every metric reads both agents the same way. Turns aren't comparable across agents (Cursor reports few assistant messages); compare tool calls and tokens. Cursor reports no cost.
+
 **Arms:** `baseline` (plain Claude Code), `observe` (plain Claude Code plus Horizon's silent event recorder), `lean` (the default install), `candidate` (lean with the features still behind the gate turned on; now `HORIZON_SESSION_MEMORY=on`, past sessions as context, `HORIZON_CONTEXT=composer`, the context composer with re-anchoring after compaction, `HORIZON_STALL=on`, stall detection, and `HORIZON_DEAD_ENDS=on`, refused-command memory; `--set KEY=VALUE` adds or overrides a setting for ablations, and `results.json` records the arm's settings) and `horizon` (the full workflow).
 
 After every session, **outside the repo, where the agent can't see them**:

@@ -280,8 +280,9 @@ class Local:
     """Local mode: the hooks share the MCP server's database."""
 
     def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None, briefing=None,
-                 context_budget: int | None = None, stall=None, dead_ends=None):
+                 context_budget: int | None = None, stall=None, dead_ends=None, tools: bool = True):
         self.store, self.team, self.scorer_factory = store, team, scorer_factory
+        self.tools = tools  # the host has Horizon's MCP tools (Cursor installs only the hooks)
         self.briefing = briefing  # (project, session, goal) -> context from similar past sessions
         self.context_budget = context_budget  # set: the context composer chooses lean's session-start context
         self.stall = stall  # (store, team, project, session) -> a stall warning or None
@@ -299,8 +300,8 @@ class Local:
 
     def user_prompt(self, project, session, prompt):
         brief = self.briefing
-        return lean_user_prompt(self.store, self.team, project, session, prompt, scorer=self.scorer_factory(),
-                                briefing=(lambda goal: brief(project, session, goal)) if brief else None)
+        return lean_user_prompt(self.store, self.team, project, session, prompt, tools=self.tools,
+                                scorer=self.scorer_factory(), briefing=(lambda goal: brief(project, session, goal)) if brief else None)
 
     def capture(self, project, session, cap):
         return core_capture(self.store, self.team, project, session, cap)
@@ -606,7 +607,7 @@ def pick_handler(name: str, profile: str):
 
 
 def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: str | None = None,
-             profile: str = "full") -> str:
+             profile: str = "full", tools: bool = True) -> str:
     """Run a hook and return what it should print. Swallows all errors.
 
     Local mode writes to the shared database. With `remote` (the hosted server's URL), it sends parsed facts
@@ -631,7 +632,7 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                 stalls = stall_checker(db, settings) if profile == "lean" else None
                 dead_ends = DeadEnds(db, settings.team_id) if profile == "lean" and settings.dead_ends == "on" else None
                 result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief, budget, stalls,
-                                                dead_ends), project)
+                                                dead_ends, tools), project)
                 if name == "session-start" and profile == "lean":
                     # before this start is logged, so a resumed session's idle part still reads as idle
                     _episodes_quietly(db, settings, project)
