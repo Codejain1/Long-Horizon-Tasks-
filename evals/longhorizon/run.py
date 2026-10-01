@@ -56,6 +56,103 @@ MCP_ARMS = ("horizon", "lean", "candidate")  # arms whose agent gets Horizon's M
 TEST_COMMAND = re.compile(r"pytest(?! --version)|ci\.sh")
 
 
+# Real agents read anything on disk (Cursor's sandbox limits writes only), and they follow paths they find: an
+# editable install's path in .cursor/hooks.json led them to this repo's hidden tests. With ISOLATE on, the agent's
+# repo and Horizon's database live alone in temp folders (work/repo and work/horizon.db point at them), and the
+# agent's Horizon is a non-editable install outside this repo.
+ISOLATE = {"on": False}
+RUN: dict[str, Path] = {}
+TEMP_PREFIX = "lhx-"
+
+
+def agent_python() -> str:
+    """The Python the agent's side uses (hooks, CI, PATH): Horizon installed outside this repo, cached by source."""
+    import fcntl
+    import hashlib
+
+    files = sorted(p for p in (REPO_ROOT / "src").rglob("*.py") if "__pycache__" not in p.parts)
+    digest = hashlib.sha256(b"".join(p.read_bytes() for p in [REPO_ROOT / "pyproject.toml", *files])).hexdigest()[:12]
+    home = Path.home() / ".cache" / "horizon-eval"
+    home.mkdir(parents=True, exist_ok=True)
+    env_dir = home / f"env-{digest}"
+    with open(home / f"env-{digest}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # parallel runs build it once
+        if not (env_dir / "ready").exists():
+            shutil.rmtree(env_dir, ignore_errors=True)
+            subprocess.run(["uv", "venv", "-q", "-p", "3.12", str(env_dir)], check=True)
+            subprocess.run(["uv", "pip", "install", "-q", "--python", str(env_dir / "bin" / "python"),
+                            "--refresh-package", "long-horizon-platform", f"{REPO_ROOT}[embeddings,decision]", "pytest"], check=True)
+            for f in env_dir.glob("lib/python*/site-packages/*.dist-info/direct_url.json"):
+                f.unlink()  # it records where the package was installed from
+            (env_dir / "ready").touch()
+    return str(env_dir / "bin" / "python")
+
+
+def agent_env(python: str) -> dict:
+    """The environment the agent runs in: nothing that names this repo (PWD, VIRTUAL_ENV, PATH entries)."""
+    root = str(REPO_ROOT)
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR" and root not in v}
+    path = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p and root not in p]
+    env["PATH"] = os.pathsep.join([str(Path(python).parent), *path])
+    return env
+
+
+_PATH = re.compile(r"(?<![\w.~])/(?:Users|private|tmp|var|home|opt|etc|Volumes)/[^\s\"'`|;&<>()*?]*")
+
+
+def _paths(value) -> list[str]:
+    if isinstance(value, dict):
+        return [p for v in value.values() for p in _paths(v)]
+    if isinstance(value, list):
+        return [p for v in value for p in _paths(v)]
+    return _PATH.findall(value) if isinstance(value, str) else []
+
+
+def outside_reads(log: Path, repo: Path, work: Path, python: str) -> dict:
+    """Paths outside the session's repo that the agent's tools named: `eval` (this repo, where the hidden tests
+    are, or the run's folder, with its results), `other_runs` (another run's temp folder), `agent_memory` (the
+    agent's own transcripts) and `elsewhere`. Any `eval` or `other_runs` read makes the session suspect."""
+    raw = log.with_suffix(".cursor.jsonl")
+    if raw.exists():
+        args = [next(iter(e["tool_call"].values()), {}).get("args") for e in read_log(raw)
+                if e.get("type") == "tool_call" and e.get("subtype") == "started" and e.get("tool_call")]
+    else:
+        args = [b.get("input") for b in blocks(read_log(log)) if b.get("type") == "tool_use"]
+    real = os.path.realpath
+    within = lambda p, d: p == d or p.startswith(d + "/")  # noqa: E731
+    inside, env_dir, work_dir = real(repo), real(Path(python).parents[1]), real(work)
+    counts = {"eval": 0, "other_runs": 0, "agent_memory": 0, "elsewhere": 0}
+    for p in {real(p.rstrip(".,:")) for a in args for p in _paths(a)}:
+        if within(p, inside) or within(p, env_dir):
+            continue
+        if within(p, real(REPO_ROOT)) or within(p, work_dir):
+            counts["eval"] += 1
+        elif f"/{TEMP_PREFIX}" in p or "/lh-" in p:
+            counts["other_runs"] += 1
+        elif "/.cursor/projects" in p or "/.claude/projects" in p:
+            counts["agent_memory"] += 1
+        else:
+            counts["elsewhere"] += 1
+    return counts
+
+
+def horizon_db(work: Path) -> Path:
+    """The run's Horizon database: work/horizon.db, or with ISOLATE a temp file copied there at the end."""
+    if not ISOLATE["on"]:
+        return work / "horizon.db"
+    if "db" not in RUN:
+        RUN["db"] = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX)).resolve() / "horizon.db"
+    return RUN["db"]
+
+
+def keep_db(work: Path) -> None:
+    """Copy an isolated run's database into its folder (sqlite's backup, so the WAL is included)."""
+    db = RUN.get("db")
+    if db and db.exists():
+        with sqlite3.connect(db) as src, sqlite3.connect(work / "horizon.db") as dst:
+            src.backup(dst)
+
+
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", "-c", "user.name=eval", "-c", "user.email=eval@example.invalid", *args], cwd=repo,
                           check=True, capture_output=True, text=True).stdout
@@ -64,15 +161,21 @@ def git(repo: Path, *args: str) -> str:
 def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
           start_dir: Path | None = None, resume: tuple[Path, int] | None = None) -> tuple[Path, dict]:
     repo = work / name
+    work.mkdir(parents=True, exist_ok=True)
+    if ISOLATE["on"]:
+        real = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX)).resolve() / name
+        if not resume:
+            real.mkdir()
+        repo.symlink_to(real)
+        repo = real
     if resume:  # another run's repo as it was after session N-1
         source, first = resume
-        work.mkdir(parents=True)
         subprocess.run(["git", "clone", "-q", str(source / "repo"), str(repo)], check=True)
         commit = git(repo, "log", "--format=%H", f"--grep=^after session {first - 1}$").split()[0]
         git(repo, "checkout", "-q", "-B", "main", commit)
     else:
         if scenario.get("start_from"):  # another scenario's codebase, with this scenario's files laid over it
-            shutil.copytree(HERE / "scenarios" / scenario["start_from"] / "start", repo)
+            shutil.copytree(HERE / "scenarios" / scenario["start_from"] / "start", repo, dirs_exist_ok=True)
         if start_dir and start_dir.is_dir():  # a scenario that starts from an existing codebase
             shutil.copytree(start_dir, repo, dirs_exist_ok=True)
         repo.mkdir(parents=True, exist_ok=True)
@@ -83,12 +186,15 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
         git(repo, "init", "-q")
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", "start", "--allow-empty")
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
-    env["PATH"] = f"{Path(python).parent}:{env.get('PATH', '')}"
+    if ISOLATE["on"]:
+        env = agent_env(python)
+    else:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
+        env["PATH"] = f"{Path(python).parent}:{env.get('PATH', '')}"
     env.update(ARM_ENV.get(arm, {}))
     env.update(EXTRA_ENV)
     if arm in PROFILES:
-        env["HORIZON_DB_URL"] = f"sqlite:///{work / 'horizon.db'}"
+        env["HORIZON_DB_URL"] = f"sqlite:///{horizon_db(work)}"
         if AGENT["host"] == "cursor":
             if PROFILES[arm] == "full":
                 raise SystemExit("the full profile isn't available for Cursor (lean, observe and candidate are)")
@@ -140,7 +246,7 @@ def read_log(path: Path) -> list[dict]:
 def horizon_view(work: Path, session_ids: list[str]) -> dict:
     """What Horizon's event log holds for one session (every id its invocations had): events by kind, and the
     characters it gave the agent."""
-    db = work / "horizon.db"
+    db = horizon_db(work)
     session_ids = [s for s in session_ids if s]
     if not session_ids or not db.exists():
         return {"events": {}, "injected_chars": 0, "stall_warnings": 0, "dead_end_warnings": 0}
@@ -161,7 +267,7 @@ def horizon_view(work: Path, session_ids: list[str]) -> dict:
 
 def export_events(work: Path) -> int:
     """The run's whole event log as JSON Lines (world-model training data), in write order."""
-    db = work / "horizon.db"
+    db = horizon_db(work)
     if not db.exists():
         return 0
     with sqlite3.connect(db) as conn:
@@ -432,6 +538,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="The coding agent: Claude Code (`--claude`), or the Cursor CLI (`--agent-bin`, with a model "
                          "from `agent --list-models`, e.g. composer-2.5).")
     ap.add_argument("--agent-bin", default="agent", help="The Cursor CLI (tests pass a fake).")
+    ap.add_argument("--isolate", action=argparse.BooleanOptionalAction, default=None,
+                    help="Keep the agent's repo, database and Horizon outside this repo (default: on for the real "
+                         "`claude` and `agent` CLIs, off for fakes).")
     args = ap.parse_args(argv)
     AGENT.update(host=args.agent, bin=args.agent_bin)
     if args.agent == "cursor":  # its tickets take 2–10 minutes; a hang is a dropped backend, retried sooner
@@ -445,18 +554,22 @@ def main(argv: list[str] | None = None) -> int:
     work = Path(args.out) / f"{args.scenario}-{args.arm}"
     if work.exists():
         raise SystemExit(f"{work} exists; pick a fresh --out")
-    python = sys.executable
+    python = sys.executable  # the harness's: hidden tests and constraint checks, never seen by the agent
+    ISOLATE["on"] = args.isolate if args.isolate is not None \
+        else (args.claude if args.agent == "claude" else args.agent_bin) in ("claude", "agent")
+    RUN.clear()
+    apy = agent_python() if ISOLATE["on"] else python  # the agent's: hooks, CI, PATH
     # "repos": one fresh repo per session (a new project for the same team), sharing only Horizon's memory.
     # Then each session's hidden tests run on its own repo; otherwise they accumulate on the one repo.
     repos = scenario.get("repos")
     resume = (Path(args.resume), args.from_session) if args.resume else None
     if not repos:
-        repo, env = setup(scenario, args.arm, work, python, start_dir=scenario_dir / "start", resume=resume)
+        repo, env = setup(scenario, args.arm, work, apy, start_dir=scenario_dir / "start", resume=resume)
     if resume and args.arm in MCP_ARMS:
-        seeded = seed_test_runs(resume[0], range(1, args.from_session), repo, env, python)
+        seeded = seed_test_runs(resume[0], range(1, args.from_session), repo, env, apy)
         print(f"[{args.scenario}/{args.arm}] seeded {seeded} test runs from {resume[0]}", flush=True)
     if args.seed and args.arm in PROFILES and not repos:
-        calls = seed_history(Path(args.seed), repo, env, python, PROFILES[args.arm])
+        calls = seed_history(Path(args.seed), repo, env, apy, PROFILES[args.arm])
         print(f"[{args.scenario}/{args.arm}] replayed {calls} hook calls from {args.seed}", flush=True)
     # Checks that already failed before this run's first session: every arm of a replay starts with the same history.
     seen = {c for i in range(1, args.from_session) if resume
@@ -470,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         print(f"[{args.scenario}/{args.arm}] session {i}", flush=True)
         if repos:
-            repo, env = setup(scenario, args.arm, work, python, repos[i - 1])
+            repo, env = setup(scenario, args.arm, work, apy, repos[i - 1])
         package = repos[i - 1] if repos else scenario["package"]
         for attempt in range(RETRIES + 1):
             row = {"session": i, **run_session(prompt, repo, claude=args.claude, model=args.model, arm=args.arm,
@@ -482,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
             git(repo, "clean", "-qfd")
         if attempt:
             row["retries"] = attempt  # Horizon's log keeps the dropped attempts' events
+        row["outside_reads"] = outside_reads(work / f"session{i}.jsonl", repo, work, apy)
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", f"after session {i}", "--allow-empty")
         row["hidden"] = hidden_tests(scenario_dir, range(i, i + 1) if repos else range(1, i + 1), repo, python)
@@ -508,6 +622,7 @@ def main(argv: list[str] | None = None) -> int:
             break
     if args.arm in PROFILES:
         print(f"[{args.scenario}/{args.arm}] exported {export_events(work)} events", flush=True)
+        keep_db(work)
     return 0
 
 

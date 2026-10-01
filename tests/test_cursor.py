@@ -1,6 +1,7 @@
 """Cursor as a host: its hooks translated to Horizon's lean hooks, and the eval harness driving the Cursor CLI."""
 
 import json
+import sqlite3
 import stat
 import sys
 import threading
@@ -155,6 +156,62 @@ def test_the_harness_drives_the_cursor_cli(tmp_path):
     assert argv[:2] == ["-p", argv[1]] and {"--force", "--trust", "--sandbox", "enabled", "composer-2.5"} <= set(argv)
     assert json.loads((work / "repo" / ".cursor" / "hooks.json").read_text())["hooks"]["sessionStart"]
     assert (work / "session1.cursor.jsonl").exists()
+
+
+PEEKS = '''#!{python}
+"""Like FAKE_AGENT, but it also looks outside its repo: the eval tree's hidden tests and another run's repo."""
+import json, os, pathlib, shutil, sys
+repo = pathlib.Path.cwd()
+shutil.copytree({reference!r}, repo / "ledger", dirs_exist_ok=True)
+(repo.parent / "env.json").write_text(json.dumps(dict(os.environ)))
+import sqlite3
+with sqlite3.connect(os.environ["HORIZON_DB_URL"].removeprefix("sqlite:///")) as db:  # what a hook would write
+    db.execute("CREATE TABLE IF NOT EXISTS events (n INTEGER PRIMARY KEY, session_id TEXT, kind TEXT, data TEXT)")
+    db.execute("INSERT INTO events (session_id, kind, data) VALUES ('cur-1', 'session_start', '{{}}')")
+calls = [{{"readToolCall": {{"args": {{"path": {hidden!r}}}}}}},
+         {{"globToolCall": {{"args": {{"targetDirectory": str(repo), "globPattern": "*.py"}}}}}},
+         {{"shellToolCall": {{"args": {{"command": "cat /tmp/lhx-other/repo/ledger/core.py"}}}}}}]
+out = [{{"type": "system", "subtype": "init", "session_id": "cur-1"}}]
+out += [{{"type": "tool_call", "subtype": "started", "call_id": f"t{{i}}", "tool_call": c}} for i, c in enumerate(calls)]
+out += [{{"type": "result", "subtype": "success", "result": "done", "session_id": "cur-1", "usage": {{}}}}]
+print("\\n".join(json.dumps(e) for e in out))
+'''
+
+
+def test_an_isolated_run_keeps_the_agent_out_of_the_eval_tree_and_counts_its_peeks(tmp_path, monkeypatch):
+    run = load("run")
+    monkeypatch.setattr(run, "agent_python", lambda: sys.executable)  # the real one builds a cached env
+    monkeypatch.setattr(run.tempfile, "tempdir", str(tmp_path / "t"))
+    (tmp_path / "t").mkdir()
+    agent = tmp_path / "agent"
+    agent.write_text(PEEKS.format(python=sys.executable, reference=str(EVAL / "reference" / "ledger"),
+                                  hidden=str(EVAL / "scenarios" / "ledger" / "hidden")))
+    agent.chmod(agent.stat().st_mode | stat.S_IEXEC)
+    assert run.main(["--scenario", "ledger", "--arm", "lean", "--out", str(tmp_path / "out"), "--sessions", "1",
+                     "--agent", "cursor", "--agent-bin", str(agent), "--isolate"]) == 0
+    work = tmp_path / "out" / "ledger-lean"
+    repo = (work / "repo").resolve()
+    assert (work / "repo").is_symlink() and repo.parent.name.startswith("lhx-") and work not in repo.parents
+    row = json.loads((work / "results.json").read_text())["sessions"][0]
+    assert row["outside_reads"] == {"eval": 1, "other_runs": 1, "agent_memory": 0, "elsewhere": 0}
+    seen = json.loads((repo.parent / "env.json").read_text())
+    root = str(run.REPO_ROOT)
+    assert not [k for k, v in seen.items() if root in v and k != "PATH"]
+    assert seen["HORIZON_DB_URL"].endswith("/horizon.db") and str(work) not in seen["HORIZON_DB_URL"]
+    with sqlite3.connect(work / "horizon.db") as conn:  # the isolated database, copied into the run folder
+        assert conn.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+    assert row["horizon"]["events"] == {"session_start": 1} and len((work / "events.jsonl").read_text().split()) == 1
+
+
+def test_the_agents_environment_names_nothing_in_this_repo(monkeypatch):
+    run = load("run")
+    root = str(run.REPO_ROOT)
+    monkeypatch.setenv("PATH", f"{root}/.venv/bin:/usr/bin")
+    monkeypatch.setenv("VIRTUAL_ENV", f"{root}/.venv")
+    monkeypatch.setenv("PWD", root)
+    env = run.agent_env("/opt/horizon-env/bin/python")
+    assert env["PATH"] == "/opt/horizon-env/bin:/usr/bin"
+    assert "VIRTUAL_ENV" not in env and "PWD" not in env
 
 
 HANGS_ONCE = '''#!{python}
