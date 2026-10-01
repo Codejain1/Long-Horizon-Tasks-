@@ -232,3 +232,23 @@ def test_seeding_replays_another_runs_sessions_through_the_hooks(tmp_path):
     run.main(["--scenario", "stall", "--arm", "baseline", "--out", str(tmp_path / "base"), "--sessions", "1",
               "--seed", str(source), "--claude", agent(tmp_path, "noop2", "", "does nothing")])
     assert not (tmp_path / "base" / "stall-baseline" / "horizon.db").exists()
+
+
+def test_a_later_tickets_reason_counts_however_long_the_note_already_is(tmp_path):
+    """Notes accumulate across tickets: the reason is looked for in what this session added, so a long earlier
+    section can neither hide it nor stand in for it."""
+    import subprocess
+
+    run = load("run")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q")
+    (repo / "BLOCKED.md").write_text("## Ticket #3: it would print\n" + "policy forbids output. " * 200 + "\n")
+    git("add", "-A")
+    git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "s3")
+    (repo / "BLOCKED.md").write_text((repo / "BLOCKED.md").read_text() + "\n## Ticket #5: finsign is missing\n")
+    git("add", "-A")
+    git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "s5")
+    assert run.blocked_note(repo, "finsign")["right_reason"] is True
+    assert run.blocked_note(repo, "print|polic")["right_reason"] is False  # ticket 3's text isn't this session's

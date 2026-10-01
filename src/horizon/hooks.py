@@ -132,6 +132,8 @@ MAX_GOAL = 4000
 _TEAM_RULE = re.compile(r"\b(all (of )?(our|my|the team'?s?) (projects|services|repos)|every (project|service|repo)"
                         r"|future projects|team'?s? rules?|rules? for (all|every))\b", re.I)
 _PROJECT_RULE = re.compile(r"\b(from now on|constraints?|must (always|never)|always|never)\b", re.I)
+_LIST_START = re.compile(r":\s*\n?\s*1[.)]\s")  # a lead-in that opens a numbered list
+_LIST_ITEM = re.compile(r"\s*\d+[.)]\s")
 
 
 MAX_SENTENCES = 30
@@ -154,7 +156,8 @@ def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
 
     With a scorer (Jev), two yes/no questions per sentence in one request: 10/10 on a probe set where the
     keyword fallback got 8/10 ("Never mind…" isn't a rule; "Always… everywhere" is a team rule)."""
-    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()][:MAX_SENTENCES]
+    # not after a list number ("1."), which would leave "…these constraints hold: 1." as a rule of its own
+    sentences = [s for s in re.split(r"(?<=[.!?])(?<!\b\d\.)\s+", text) if s.strip()][:MAX_SENTENCES]
     team, project = [], []
     if scorer is not None and sentences:
         try:
@@ -168,11 +171,16 @@ def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
         except Exception as exc:  # the scorer is down or unconfigured: fall back to keywords
             if os.environ.get("HORIZON_DEBUG"):
                 print(f"horizon: rule scorer failed, using keywords: {exc!r}", file=sys.stderr)
+    listing = None  # the numbered items after "these constraints hold:" are rules even without a keyword
     for sentence in sentences:
-        if _TEAM_RULE.search(sentence):
+        if listing is not None and not _LIST_ITEM.match(sentence):
+            listing = None
+        if _TEAM_RULE.search(sentence) or listing is team:
             team.append(sentence[:MAX_RULE])
-        elif _PROJECT_RULE.search(sentence):
+            listing = team if _LIST_START.search(sentence) else listing
+        elif _PROJECT_RULE.search(sentence) or listing is project:
             project.append(sentence[:MAX_RULE])
+            listing = project if _LIST_START.search(sentence) else listing
     return team, project
 
 

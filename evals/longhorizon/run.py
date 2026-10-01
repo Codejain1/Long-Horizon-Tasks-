@@ -225,7 +225,10 @@ def blocked_note(repo: Path, reason: str | None) -> dict:
     whether the note gives the right reason (the scenario's pattern)."""
     written = "BLOCKED.md" in git(repo, "diff", "--name-only", "HEAD~1", "HEAD").split() \
         and (repo / "BLOCKED.md").exists()
-    note = (repo / "BLOCKED.md").read_text()[:2000] if written else ""
+    # what this session added: notes accumulate, so an earlier ticket's text must neither hide nor stand in for it
+    added = [line[1:] for line in git(repo, "diff", "HEAD~1", "HEAD", "--", "BLOCKED.md").splitlines()
+             if line.startswith("+") and not line.startswith("+++")]
+    note = "\n".join(added) if written else ""
     return {"written": written, "right_reason": bool(written and re.search(reason, note, re.I)) if reason else None,
             "note": note[:300]}
 

@@ -192,3 +192,17 @@ def test_a_failing_scorer_falls_back_to_keywords(settings, task_store, project_d
     assert split_rules(TEAM_PROMPT, RuleScorer(fail=True))[0][0].startswith("Our team's rules")
     lean_user_prompt(task_store, settings.team_id, project_dir, "s1", TEAM_PROMPT, scorer=RuleScorer(fail=True))
     assert task_store.team_rules(settings.team_id)[0].startswith("Our team's rules")
+
+
+def test_numbered_rules_after_a_lead_in_are_each_a_rule():
+    """A list number isn't a sentence end, and the items under "these constraints hold:" are rules even without a
+    keyword. A plain numbered list of steps isn't."""
+    from horizon.hooks import split_rules
+
+    text = ("These constraints hold for the whole job:\n1. Money is always integer cents.\n2. Standard library "
+            "only.\n3. All times are UTC.\n\nThe work comes in 8 parts. Do parts 1 to 3 now.")
+    assert split_rules(text) == ([], ["These constraints hold for the whole job:\n1. Money is always integer cents.",
+                                      "2. Standard library only.", "3. All times are UTC."])
+    assert split_rules("Steps: 1. Add a page. 2. Deploy it.") == ([], [])
+    assert split_rules("Our team rules for every project:\n1. Use uv.\n2. Type hints. Then build it.")[0] == [
+        "Our team rules for every project:\n1. Use uv.", "2. Type hints."]
