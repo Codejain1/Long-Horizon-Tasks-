@@ -60,12 +60,20 @@ def project_dir(payload: dict) -> str:
 # --- the shared core: task matching and storage, run locally or by the hosted server ------------------
 # `project` is the local project directory (local mode) or its hashed project key (hosted mode).
 
-def core_session_start(store: TaskStore, team: str, project: str) -> dict:
-    lines = [WORKFLOW]
+def core_session_start(store: TaskStore, team: str, project: str, lean: bool = False) -> dict:
+    """`lean`: the agent makes no Horizon calls, so nothing here asks for one, and goals lose the preamble every
+    recent goal opens with (a backlog's shared instructions would otherwise fill the 200 characters shown)."""
+    from horizon.composer import RECENT_WINDOW, label
+
+    lines = [LEAN_WORKFLOW if lean else WORKFLOW]
     active = store.active(team, cwd=project)
+    done = store.recent_completed(team, project)
+    goals = [t.goal for t in store.recent_completed(team, project, limit=RECENT_WINDOW) + active] if lean else []
+    shown = (lambda goal: label(goal, goals, 200)) if lean else (lambda goal: goal[:200])
     if active:
-        lines.append("Active tasks in this project (continue with recall_context; do not start_task again):")
-        lines += [f"- {t.id}: {t.goal[:200]}" + (" [escalated: ask the user how to proceed]"
+        lines.append("Active tasks in this project (continue them):" if lean else
+                     "Active tasks in this project (continue with recall_context; do not start_task again):")
+        lines += [f"- {t.id}: {shown(t.goal)}" + (" [escalated: ask the user how to proceed]"
                                                   if t.status == "escalated" else "") for t in active[:3]]
     pitfalls = store.recurring_failures(project)
     if pitfalls:
@@ -73,17 +81,17 @@ def core_session_start(store: TaskStore, team: str, project: str) -> dict:
         lines += [f"- {test[:200]} (failed in {n} sessions)" for test, n in pitfalls]
     rules = store.team_rules(team)
     if rules:
-        lines.append("Team rules for every project (apply them here too; pass the full list as start_task's"
+        lines.append("Team rules for every project (apply them here too):" if lean else
+                     "Team rules for every project (apply them here too; pass the full list as start_task's"
                      " team_rules, with any the user adds or changes):")
         lines += [f"- {r[:MAX_RULE]}" for r in rules[:20]]
-    done = store.recent_completed(team, project)
     if done:
         # Multi-session work: each session tends to finish its own task, so earlier sessions' goals and
         # constraints would otherwise never reach the next one (evals/longhorizon/RESULTS.md, run 1).
-        lines.append("Earlier tasks in this project (their constraints still apply unless the user changes them;"
-                     " copy them into start_task's constraints):")
+        lines.append("Earlier tasks in this project (their constraints still apply unless the user changes them" +
+                     ("):" if lean else "; copy them into start_task's constraints):"))
         for t in done:
-            lines.append(f"- {t.goal[:200]}")
+            lines.append(f"- {shown(t.goal)}")
             lines += [f"  - constraint: {c[:MAX_RULE]}" for c in t.constraints[:10]]
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}}
 
@@ -202,9 +210,8 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
                                        composer.session_start(store, team, project, LEAN_WORKFLOW, budget,
                                                               session, reanchor=source == "compact",
                                                               refused=refused)}}
-    out = core_session_start(store, team, project)
+    out = core_session_start(store, team, project, lean=True)
     ctx = out["hookSpecificOutput"]
-    ctx["additionalContext"] = ctx["additionalContext"].replace(WORKFLOW, LEAN_WORKFLOW)
     if refused:
         from horizon.deadends import HEADING
 

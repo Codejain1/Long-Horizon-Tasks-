@@ -52,15 +52,16 @@ def test_a_rule_from_the_first_task_still_reaches_the_tenth(settings, composed, 
 
 
 def test_earlier_tasks_are_labelled_by_what_differs(settings, composed, project_dir, tmp_path):
-    """Every ticket opens with the same preamble; cut at 200 characters, classic's lines are nearly all
-    preamble. The composer's say which ticket each was, in fewer characters."""
+    """Every ticket opens with the same preamble; cut at 200 characters, the lines would be nearly all
+    preamble. Both lean's classic context and the composer's say which ticket each was."""
     classic = backlog(settings, project_dir, 4)
     now = backlog(composed, str(tmp_path / "other"), 4)
     recent = now.split(SESSION_START[4].heading + "\n", 1)[1].splitlines()
     assert recent == ["- …Ticket #4: add feature 4 to the invoices.", "- …Ticket #3: add feature 3 to the invoices.",
                       "- …Ticket #2: add feature 2 to the invoices."]
-    assert classic.count(PREAMBLE.strip()) == 3 and PREAMBLE.strip() not in now
-    assert len(now) < len(classic)
+    assert "- …Ticket #3: add feature 3 to the invoices." in classic.splitlines()
+    assert PREAMBLE.strip() not in classic and PREAMBLE.strip() not in now
+    assert "start_task" not in classic and "recall_context" not in classic
 
 
 def test_labels_cut_only_what_every_goal_shares():

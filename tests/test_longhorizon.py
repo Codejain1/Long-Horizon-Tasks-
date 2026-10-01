@@ -154,6 +154,29 @@ def remove_item(name, qty):
     assert row["test_runs"] == 0 and row["failed_test_runs"] == 0
 
 
+HANDOFF_RULES = {"test_fines_never_exceed_the_replacement_cost", "test_the_overdue_report_masks_emails",
+                 "test_the_export_uses_dd_mm_yyyy_dates", "test_the_export_masks_emails"}
+
+
+def test_handoff_checks_the_rules_given_early_in_the_tickets_that_need_them(tmp_path):
+    """The reference passes all 8 tickets; the same code without tickets 1–2's rules fails exactly their checks."""
+    run = load("run")
+    ref = EVAL / "reference" / "handoff"
+    good = fake(tmp_path, "good", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)", "writes the reference")
+    run.main(["--scenario", "handoff", "--arm", "baseline", "--out", str(tmp_path / "ok"), "--claude", good])
+    rows = json.loads((tmp_path / "ok" / "handoff-baseline" / "results.json").read_text())["sessions"]
+    assert len(rows) == 8 and all(r["hidden"]["failed"] == [] and r["violations"] == [] for r in rows)
+    assert len(rows[-1]["hidden"]["passed"]) == 15
+    forgot = ('(repo / "lending" / "rules.py").write_text("def cap_fine(f, r):\\n    return f\\n'
+              'def export_date(d):\\n    return d.isoformat()\\ndef masked(e):\\n    return e\\n")')
+    naive = fake(tmp_path, "naive", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)\n{forgot}",
+                 "writes the reference without the early rules")
+    run.main(["--scenario", "handoff", "--arm", "baseline", "--out", str(tmp_path / "bad"), "--claude", naive,
+              "--from-session", "8", "--resume", str(tmp_path / "ok" / "handoff-baseline")])
+    [row] = json.loads((tmp_path / "bad" / "handoff-baseline" / "results.json").read_text())["sessions"]
+    assert set(row["hidden"]["failed"]) == HANDOFF_RULES and len(row["hidden"]["passed"]) == 11
+
+
 def test_failed_test_runs_are_counted_from_the_transcript():
     run = load("run")
     events = [
