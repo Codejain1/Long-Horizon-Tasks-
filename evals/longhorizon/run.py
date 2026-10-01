@@ -651,7 +651,9 @@ def main(argv: list[str] | None = None) -> int:
                                                        "settings": {**ARM_ENV.get(args.arm, {}), **EXTRA_ENV},
                                                        "sessions": rows}, indent=2))
         print(f"   hidden {len(row['hidden']['passed'])} passed / {len(row['hidden']['failed'])} failed, "
-              f"violations {len(row['violations'])}, turns {row['turns']}, tools {row['tool_calls']}"
+              f"violations {len(row['violations'])}, turns {row['turns']}, tools {row['tool_calls']}, "
+              f"{row.get('wall_s', 0):.0f} s, {row.get('tokens', 0) / 1e6:.2f} M tokens"
+              + (f", ${row['cost_usd']:.2f}" if row.get("cost_usd") else "")
               + (f", ABORTED ({row['aborted']})" if row["aborted"] else ""), flush=True)
         if row["aborted"]:
             break
