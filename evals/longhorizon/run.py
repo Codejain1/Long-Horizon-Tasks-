@@ -111,8 +111,14 @@ def read_guard(cmd: list[str], repo: Path) -> list[str]:
     tmp = os.path.realpath(tempfile.gettempdir())
     deny = " ".join(f"(subpath {q(p)})" for p in DENY_READ)
     allow = " ".join(f"(subpath {q(p)})" for p in {Path(repo).resolve().parent, *(d.parent for d in RUN.values())})
-    profile = (f'(version 1)(allow default)(deny file-read* {deny} (regex #"^{tmp}/{TEMP_PREFIX}"))'
-               f"(allow file-read* {allow})")
+    # the agents' own per-project folders (transcripts, tool output) are named after the repo's path, with
+    # runs of non-alphanumerics as "-" (Cursor) or "/" and "." as "-" (Claude Code). Every other project's folder
+    # is denied, the owner's own chats included: they name the hidden tests
+    home, own = os.path.realpath(Path.home()), Path(repo).resolve().parent.name.replace("_", "[-_]")
+    projects = f"^{home}/\\.(cursor|claude)/projects/[^/]*"
+    profile = (f'(version 1)(allow default)(deny file-read* {deny} (regex #"^{tmp}/{TEMP_PREFIX}") '
+               f'(regex #"^{home}/\\.(cursor|claude)/projects/[^/]+/"))'
+               f'(allow file-read* {allow} (regex #"{projects}{own}-repo(/|$)"))')
     return ["sandbox-exec", "-p", profile, *cmd]
 
 
@@ -140,6 +146,7 @@ def outside_reads(log: Path, repo: Path, work: Path, python: str) -> dict:
     real = os.path.realpath
     within = lambda p, d: p == d or p.startswith(d + "/")  # noqa: E731
     inside, work_dir = real(repo), real(work)
+    own_slug = re.sub(r"[^A-Za-z0-9]+", "-", f"{Path(inside).parent.name}-repo")
     if Path(inside).parent.name.startswith(TEMP_PREFIX):  # an isolated repo's own temp folder holds only the repo
         inside = str(Path(inside).parent)
     own = [real(Path(python).parents[1]), str(Path(real(python)).parents[1])]  # the agent's env and its base Python
@@ -149,7 +156,8 @@ def outside_reads(log: Path, repo: Path, work: Path, python: str) -> dict:
             continue
         if within(p, real(REPO_ROOT)) or within(p, work_dir):
             counts["eval"] += 1
-        elif "/.cursor/projects" in p or "/.claude/projects" in p:  # named after the repo's path, so before lhx-
+        elif ("/.cursor/projects" in p or "/.claude/projects" in p) and (
+                TEMP_PREFIX not in p or own_slug in re.sub(r"[^A-Za-z0-9]+", "-", p)):  # named after a repo's path
             counts["agent_memory"] += 1
         elif f"/{TEMP_PREFIX}" in p or "/lh-" in p:
             counts["other_runs"] += 1

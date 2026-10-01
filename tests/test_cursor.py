@@ -163,7 +163,7 @@ def test_the_harness_drives_the_cursor_cli(tmp_path):
 
 PEEKS = '''#!{python}
 """Like FAKE_AGENT, but it also looks outside its repo: the eval tree's hidden tests and another run's repo."""
-import json, os, pathlib, shutil, sys
+import json, os, pathlib, re, shutil, sys
 repo = pathlib.Path.cwd()
 shutil.copytree({reference!r}, repo / "ledger", dirs_exist_ok=True)
 (repo.parent / "env.json").write_text(json.dumps(dict(os.environ)))
@@ -174,7 +174,7 @@ with sqlite3.connect(os.environ["HORIZON_DB_URL"].removeprefix("sqlite:///")) as
 calls = [{{"readToolCall": {{"args": {{"path": {hidden!r}}}}}}},
          {{"globToolCall": {{"args": {{"targetDirectory": str(repo), "globPattern": "*.py"}}}}}},
          {{"lsToolCall": {{"args": {{"path": str(repo.parent)}}}}}},
-         {{"globToolCall": {{"args": {{"targetDirectory": str(pathlib.Path.home() / ".cursor/projects/T-lhx-x-repo/agent-transcripts")}}}}}},
+         {{"globToolCall": {{"args": {{"targetDirectory": str(pathlib.Path.home() / ".cursor/projects" / re.sub(r"[^A-Za-z0-9]+", "-", str(repo.resolve())).strip("-") / "agent-transcripts")}}}}}},
          {{"shellToolCall": {{"args": {{"command": os.path.realpath(sys.executable) + " -m pytest -q"}}}}}},
          {{"shellToolCall": {{"args": {{"command": "cat /tmp/lhx-other/repo/ledger/core.py"}}}}}}]
 out = [{{"type": "system", "subtype": "init", "session_id": "cur-1"}}]
@@ -216,7 +216,11 @@ def test_the_read_guard_keeps_the_agent_out_of_denied_folders_and_other_runs(tmp
     temp = tmp_path / "t"
     monkeypatch.setattr(run.tempfile, "tempdir", str(temp))
     mine, other, db, secret = temp / "lhx-mine" / "repo", temp / "lhx-other" / "repo", temp / "lhx-db", tmp_path / "eval"
-    for d in (mine, other, db, secret):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    projects = tmp_path / "home" / ".cursor" / "projects"
+    my_notes, their_notes = projects / "private-T-lhx-mine-repo", projects / "private-T-lhx-other-repo"
+    owners = projects / "Users-me-Desktop-Long-Horizon-Tasks"
+    for d in (mine, other, db, secret, my_notes, their_notes, owners):
         d.mkdir(parents=True)
         (d / "f.txt").write_text(d.name)
     monkeypatch.setitem(run.ISOLATE, "on", True)
@@ -224,7 +228,9 @@ def test_the_read_guard_keeps_the_agent_out_of_denied_folders_and_other_runs(tmp
     monkeypatch.setattr(run, "RUN", {"db": db / "horizon.db"})
     read = lambda p: subprocess.run(run.read_guard(["cat", str(p)], mine), capture_output=True, text=True)  # noqa: E731
     assert read(mine / "f.txt").stdout == "repo" and read(db / "f.txt").stdout == "lhx-db"
+    assert read(my_notes / "f.txt").stdout == my_notes.name
     assert read(other / "f.txt").returncode and read(secret / "f.txt").returncode
+    assert read(their_notes / "f.txt").returncode and read(owners / "f.txt").returncode
     monkeypatch.setitem(run.ISOLATE, "on", False)
     assert run.read_guard(["cat"], mine) == ["cat"]
 
