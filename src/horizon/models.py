@@ -252,6 +252,10 @@ class TaskState(Model):
     baseline_failing: list[str] = Field(default_factory=list)
     # The latest evaluate_options result (PROJECT.md §5), so record_outcome can store what the scorer predicted.
     last_evaluation: dict | None = None
+    # HORIZON_DECIDE (lean): Jev found a crucial choice in the task's message; the first edit before an
+    # evaluation was denied once (`decision_nudged`).
+    decision_due: bool = False
+    decision_nudged: bool = False
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 

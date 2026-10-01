@@ -114,6 +114,7 @@ class Settings:
     # "on": lean warns before a command like one the permissions already refused twice, and lists at session start
     # what earlier sessions had refused (`horizon.deadends`). Refusals are logged either way. Off until the gate.
     dead_ends: str = "off"
+    decide: str = "off"  # "on": lean triggers evaluate_options itself on tasks with a crucial choice
     # What a session episode's surprise is measured against (v2 Phase 2): "forecast" (the session forecast),
     # "fallback" (similar episodes' success, MEMROUTER.md §5), or "auto": the forecast once its replay is clearly
     # better than the fallback over `world_model_min_pairs` sessions.
@@ -166,6 +167,7 @@ class Settings:
             stall=get("STALL", base.stall),
             stall_min_runs=get("STALL_MIN_RUNS", base.stall_min_runs, int),
             dead_ends=get("DEAD_ENDS", base.dead_ends),
+            decide=get("DECIDE", base.decide),
             session_surprise=get("SESSION_SURPRISE", base.session_surprise),
             scorer=get("SCORER", base.scorer),
             jev_model=get("JEV_MODEL", base.jev_model),

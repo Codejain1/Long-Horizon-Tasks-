@@ -229,7 +229,7 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
 
 
 def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | None, prompt: str,
-                     tools: bool = True, scorer=None, briefing=None) -> dict | None:
+                     tools: bool = True, scorer=None, briefing=None, decide: bool = False) -> dict | None:
     """The session's first message starts its task (the goal, code removed); later ones are progress notes.
     Sentences that set lasting rules become the task's constraints or the team's rules. `briefing(goal)`, when
     given, is what similar past sessions taught, shown as the task starts."""
@@ -252,6 +252,13 @@ def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | N
     if not created:
         return None
     lines = [f"Horizon task id: {task.id} (only needed if you call evaluate_options)."] if tools else []
+    if decide and tools:
+        from horizon.decide import crucial_ahead, instruction
+
+        if crucial_ahead(scorer, text):
+            task.decision_due = True
+            store.save(task)
+            lines = [instruction(task.id)]
     if briefing is not None:
         try:
             lines += [b for b in [briefing(text)] if b]
@@ -296,8 +303,10 @@ class Local:
     """Local mode: the hooks share the MCP server's database."""
 
     def __init__(self, store: TaskStore, team: str, scorer_factory=lambda: None, briefing=None,
-                 context_budget: int | None = None, stall=None, dead_ends=None, tools: bool = True):
+                 context_budget: int | None = None, stall=None, dead_ends=None, tools: bool = True,
+                 decide: bool = False):
         self.store, self.team, self.scorer_factory = store, team, scorer_factory
+        self.decide = decide  # HORIZON_DECIDE: trigger evaluate_options on tasks with a crucial choice
         self.tools = tools  # the host has Horizon's MCP tools (Cursor installs only the hooks)
         self.briefing = briefing  # (project, session, goal) -> context from similar past sessions
         self.context_budget = context_budget  # set: the context composer chooses lean's session-start context
@@ -317,7 +326,18 @@ class Local:
     def user_prompt(self, project, session, prompt):
         brief = self.briefing
         return lean_user_prompt(self.store, self.team, project, session, prompt, tools=self.tools,
-                                scorer=self.scorer_factory(), briefing=(lambda goal: brief(project, session, goal)) if brief else None)
+                                scorer=self.scorer_factory(), briefing=(lambda goal: brief(project, session, goal)) if brief else None,
+                                decide=self.decide)
+
+    def decision_check(self, project, session, tool):
+        """The denial reason for an edit made before this session's crucial choice was evaluated, once."""
+        from horizon.decide import edit_check
+
+        task = next((t for t in self.store.active(self.team, cwd=project) if t.session_id == session), None)
+        reason = edit_check(task, tool) if self.decide and task else None
+        if reason:
+            self.store.save(task)
+        return reason
 
     def capture(self, project, session, cap):
         return core_capture(self.store, self.team, project, session, cap)
@@ -450,7 +470,12 @@ def lean_post_tool_use(payload: dict, backend, project: str) -> dict | None:
 def lean_pre_tool_use(payload: dict, backend, project: str) -> dict | None:
     """Before a shell command: with `HORIZON_DEAD_ENDS=on`, warn once when it is like one already refused twice
     this session. Horizon's own tools keep the full profile's checkpoint and usage handling."""
-    if payload.get("tool_name") != "Bash":
+    tool = payload.get("tool_name")
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        reason = getattr(backend, "decision_check", lambda *a: None)(project, payload.get("session_id"), tool)
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                       "permissionDecisionReason": reason}} if reason else None
+    if tool != "Bash":
         return pre_tool_use(payload, backend, project)
     command = str((payload.get("tool_input") or {}).get("command") or "")
     warn = command and backend.dead_end_check(project, payload.get("session_id"), payload.get("transcript_path"),
@@ -648,7 +673,7 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
                 stalls = stall_checker(db, settings) if profile == "lean" else None
                 dead_ends = DeadEnds(db, settings.team_id) if profile == "lean" and settings.dead_ends == "on" else None
                 result = handler(payload, Local(TaskStore(db), settings.team_id, scorer, brief, budget, stalls,
-                                                dead_ends, tools), project)
+                                                dead_ends, tools, decide=settings.decide == "on"), project)
                 if name == "session-start" and profile == "lean":
                     # before this start is logged, so a resumed session's idle part still reads as idle
                     _episodes_quietly(db, settings, project)

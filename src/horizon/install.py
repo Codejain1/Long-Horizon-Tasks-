@@ -33,7 +33,9 @@ EVENT_LOG_ONLY = {"PreCompact", "SessionEnd"}  # hosted hooks don't forward even
 # Lean records file edits too (the event log's steps); full keeps Bash only (the reliability demo pins full).
 LEAN_MATCHERS = {"PostToolUse": "Bash|Edit|Write|MultiEdit|NotebookEdit",
                  # Bash too: a refused command never reaches PostToolUse, so PreToolUse is where lean can warn.
-                 "PreToolUse": "Bash|mcp__horizon__recall_context|mcp__horizon__record_outcome"}
+                 # Edits too: with HORIZON_DECIDE, an edit before a crucial choice was evaluated is held once.
+                 "PreToolUse": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__horizon__recall_context|"
+                               "mcp__horizon__record_outcome"}
 # `observe` installs lean's hooks and nothing else: they log events and print nothing (evaluation baselines).
 LEAN_HOOKS = {"lean", "observe"}
 
