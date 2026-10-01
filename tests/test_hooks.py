@@ -37,6 +37,29 @@ def test_session_start_injects_workflow_and_active_task(platform, settings, proj
     assert task_id in ctx and "Ship the export feature" in ctx
 
 
+def test_session_start_carries_finished_tasks_constraints(platform, settings, task_store, project_dir):
+    """Multi-session work: a later session sees the goal and constraints of the session that finished."""
+    task_id = platform.start_task("Build the ledger", constraints=["amounts are integer cents"])["task_id"]
+    task = task_store.get(task_id, settings.team_id)
+    task.status = "completed"
+    task_store.save(task)
+    ctx = hook("session-start", {"cwd": project_dir}, settings)["hookSpecificOutput"]["additionalContext"]
+    assert "Active tasks" not in ctx
+    assert "Build the ledger" in ctx and "constraint: amounts are integer cents" in ctx
+
+
+def test_team_rules_reach_every_project(platform, settings, project_dir, tmp_path):
+    """Rules the user set for all projects show up at session start in a different project, and the latest
+    task that sets them is the current set."""
+    platform.start_task("Build invoices", team_rules=["ids are uuid4 hex", "stamps end in Z"], cwd="/elsewhere")
+    ctx = hook("session-start", {"cwd": project_dir}, settings)["hookSpecificOutput"]["additionalContext"]
+    assert "Team rules" in ctx and "- ids are uuid4 hex" in ctx and "Build invoices" not in ctx
+    started = platform.start_task("Build payouts")
+    assert started["team_rules"] == ["ids are uuid4 hex", "stamps end in Z"]
+    platform.start_task("Build refunds", team_rules=["stamps end in Z"])
+    ctx = hook("session-start", {"cwd": project_dir}, settings)["hookSpecificOutput"]["additionalContext"]
+    assert "stamps end in Z" in ctx and "uuid4" not in ctx
+
 def test_post_tool_use_captures_counts_not_output(platform, settings, task_store, project_dir):
     platform.start_task("x")
     out = hook("post-tool-use", bash_payload(project_dir), settings)
@@ -204,3 +227,15 @@ def test_hosted_teams_with_the_same_project_path_stay_isolated(settings):
     # A client naming another team's scope gets it re-scoped under its own team.
     assert store.take_checkpoint(hosted_scope(b, "prj_same"), datetime(2000, 1, 1, tzinfo=UTC), "t") is None
     assert store.take_checkpoint(f"{a}/{b}/prj_same", datetime(2000, 1, 1, tzinfo=UTC), "t") is not None
+
+
+def test_failing_test_runs_are_captured_from_post_tool_use_failure(platform, settings, task_store, project_dir):
+    """A test run that exits non-zero fires PostToolUseFailure, with the output in `error` (payload seen live)."""
+    platform.start_task("x")
+    payload = {"session_id": "s1", "cwd": project_dir, "hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+               "tool_input": {"command": "./ci.sh"}, "is_interrupt": False,
+               "error": "Exit code 1\nF..\nFAILED tests/test_x.py::test_y - AssertionError\n1 failed, 2 passed in 0.10s"}
+    out = hook("post-tool-use", payload, settings)
+    assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUseFailure"
+    [cap] = task_store.pending_captures(project_dir)
+    assert (cap.passed, cap.failed, cap.failing) == (2, 1, ["tests/test_x.py::test_y"])

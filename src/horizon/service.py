@@ -183,6 +183,7 @@ class Platform:
         project_id: str | None = None,
         target_tests: list[str] | None = None,
         cwd: str | None = None,
+        team_rules: list[str] | None = None,
     ) -> dict:
         """`cwd` identifies the project for hook matching: the hosted server gets the client's hashed project
         key from a header; locally it's this server's working directory."""
@@ -195,6 +196,7 @@ class Platform:
                 project_id=(project_id or "").strip()[:100] or None,
                 goal=goal,  # verbatim (PROJECT.md §8); everything else is redacted
                 constraints=redact_list(constraints, MAX_NOTE) or [],
+                team_rules=redact_list(team_rules, MAX_NOTE) or [],
                 plan=redact_list(plan, MAX_NOTE) or [],
                 open_issues=redact_list(open_issues, MAX_NOTE) or [],
                 cwd=cwd or self.cwd,
@@ -204,6 +206,7 @@ class Platform:
             return {
                 "task_id": task.id,
                 "task_state": self._compact(task),
+                "team_rules": task.team_rules or self.tasks.team_rules(self.settings.team_id),
                 "next": ("Run the project's full test suite once now, before any edit, so Horizon records which "
                          "tests already fail (they won't count against you). Then call recall_context with this "
                          "task_id before your first decision or edit."),

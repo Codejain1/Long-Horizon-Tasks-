@@ -10,9 +10,9 @@ Horizon is an MCP server. Claude Code decides when to call it, so reliable calli
 
 | Hook | Event | What it does |
 |---|---|---|
-| `horizon hook session-start` | `SessionStart` | Injects the workflow rules and lists active tasks for this project, so a resumed session continues the same task. |
+| `horizon hook session-start` | `SessionStart` | Injects the workflow rules, the team's rules for every project (`start_task(team_rules=…)`), active tasks for this project (so a resumed session continues the same task), and the goals and constraints of its recently finished tasks (so the next session keeps them). |
 | `horizon hook pre-tool-use` | `PreToolUse` (matcher `mcp__horizon__recall_context\|mcp__horizon__record_outcome`) | Just before each `recall_context`, records a **checkpoint reference**: a git commit of the working tree (`git stash create`, or `HEAD` when clean; nothing in the repo changes) and the latest user prompt, which is the Claude Code checkpoint to pick in `/rewind`. The recall attaches it to the task, and the next decision records it. Silent, except right after a rollback: if the working tree doesn't match the rollback target, it **denies that one recall** with the restore command. It does this at most once per rollback, so it never loops. Just before each `record_outcome`, it sums the **token usage and elapsed time** of the model turns since the last `recall_context` from the transcript (counts only), and `record_outcome` records them as the attempt's actual tokens and latency unless the host passed its own. |
-| `horizon hook post-tool-use` | `PostToolUse` (matcher `Bash`) | When the command is a test run (pytest, unittest, jest, vitest, go, cargo, rspec, …), it parses the pass/fail **counts** and stores them. `record_outcome` then uses these real counts instead of the model's summary (`PROJECT.md` §9). It also nudges the model to call `record_outcome`. Raw output is never stored. |
+| `horizon hook post-tool-use` | `PostToolUse` and `PostToolUseFailure` (matcher `Bash`; a command that exits non-zero, like a failing test run, only fires the second) | When the command is a test run (pytest, unittest, jest, vitest, go, cargo, rspec, …, or a wrapper like `./ci.sh` whose output parses as one), it parses the pass/fail **counts** and stores them. `record_outcome` then uses these real counts instead of the model's summary (`PROJECT.md` §9). It also nudges the model to call `record_outcome`. Raw output is never stored. |
 | `horizon hook stop` | `Stop` | Quiet by default. It speaks only when an active task has an **unrecorded outcome**: a test run from this session that no `record_outcome` has used. Then it blocks the stop once and asks for `record_outcome`. It nudges at most once per test run and never loops. |
 
 Hooks never break the session: any internal error exits 0 with no output. Set `HORIZON_DEBUG=1` to print errors to stderr.
@@ -37,6 +37,24 @@ claude mcp add -s local horizon -- "$(which python)" -m horizon serve
 ```
 
 Check the connection with `claude mcp list`. It should show `horizon: … √ Connected`.
+
+## Lean profile: continuity without tool calls
+
+`horizon install-claude-code --profile lean` installs Horizon for **task continuity** only. That is the part the long-horizon evals show paying off (`evals/longhorizon/RESULTS.md`). The agent makes **no Horizon calls**; the hooks do the work:
+
+| Hook | Lean behaviour |
+|---|---|
+| `UserPromptSubmit` (lean only) | The session's first message becomes its task: the goal, with code removed. Later messages become progress notes. Sentences that set lasting rules become **team rules** or **constraints** for this project. With a scorer (`HORIZON_SCORER=jev`), Jev answers two yes/no questions per sentence in one request (about 1 s). Without one, or if it fails, keywords are used ("for every project", "from now on", "never"). On `evals/rules/labelled.json`, Jev scored 97 % and keywords 62 %. |
+| `SessionStart` | Marks the previous session's task done. A resumed or compacted session keeps its own. Then it shows the team's rules and the recent tasks' goals and constraints. |
+| `PostToolUse` | Still captures test counts, but doesn't ask for `record_outcome`. |
+| `Stop` | Never blocks. |
+
+In lean, the server leaves out `start_task`, `recall_context` and `record_outcome`: the hooks capture the task, and those tools' "call this every time" descriptions only drew extra calls. It keeps `evaluate_options` (the prompt hook gives the task id), `submit_consequences`, `show_memories`, `explain_decision`, `delete_memory` and `clear_fear`. **Hosted lean** (`install-claude-code --hosted URL --profile lean`) is hooks only:
+- The hooks send the prompt to the team's server, with code removed on your machine first.
+- **Team rules are shared by everyone using the team's API keys,** across machines and projects.
+- It writes no MCP entry, and removes an earlier one. The hosted MCP endpoint serves the full tool list, whose descriptions draw extra calls, so hosted lean has no optional tools yet.
+
+Re-running `install-claude-code` without `--profile` switches back to the full workflow.
 
 ## Configuration
 

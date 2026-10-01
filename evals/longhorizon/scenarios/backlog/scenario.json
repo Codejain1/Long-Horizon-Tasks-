@@ -1,0 +1,19 @@
+{
+  "id": "backlog",
+  "package": "shop",
+  "about": "An existing codebase with CI policy checks, worked through as 8 tickets by unattended sessions. Each fresh session rediscovers the policies by breaking them, unless something tells it.",
+  "constraints": {
+    "stdlib_only": true,
+    "python39": false
+  },
+  "sessions": [
+    "You are working through the shop's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #1: add `remove_item(name, qty)` to the inventory, which takes units out of stock and raises ValueError if there aren't enough (or qty isn't positive). Export it from the `shop` package. Run ./ci.sh before you finish.",
+    "You are working through the shop's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #2: add `apply_discount(order, percent)` returning the order's total after a whole-number percentage discount (0 to 100), in cents, rounded half up to the nearest cent; anything outside 0 to 100 raises ValueError. Export it from `shop`. Run ./ci.sh before you finish.",
+    "You are working through the shop's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #3: add `cancel_order(order_id)`: it puts the order's units back in stock and sets its status to \"cancelled\"; cancelling an order that is already cancelled raises ValueError. Export it from `shop`. Run ./ci.sh before you finish.",
+    "You are working through the shop's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #4: add `low_stock(threshold)` returning the names of items with fewer than `threshold` units in stock, sorted alphabetically. Export it from `shop`. Run ./ci.sh before you finish.",
+    "You are working through the shop's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #5: add `export_orders_csv(path)` writing every order to a CSV file with the header `id,status,total_cents,placed_at`, where `placed_at` is an ISO-8601 UTC time ending in `Z`. Export it from `shop`. Run ./ci.sh before you finish.",
+    "You are working through the shop's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #6: add `orders_placed_on(day)` returning the orders placed on the given `datetime.date`, where days are UTC days, oldest first. Export it from `shop`. Run ./ci.sh before you finish.",
+    "You are working through the shop's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #7: add `refund(order_id, cents)` for partial refunds: it adds to the order's `refunded_cents` (0 for orders without refunds), and raises ValueError if the total refunded would exceed the order's total or `cents` isn't positive. Export it from `shop`. Run ./ci.sh before you finish.",
+    "You are working through the shop's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #8: add `daily_revenue(day)`: the total in cents of the orders placed on that UTC day, minus their refunds, leaving out cancelled orders. Export it from `shop`. Run ./ci.sh before you finish."
+  ]
+}

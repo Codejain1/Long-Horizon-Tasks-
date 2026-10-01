@@ -219,11 +219,34 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Reliability** with the finished platform and live Jev, including the new long multi-step task 7: a full Sonnet run passed all 7 tasks with every workflow metric at 1.0 (`demo/reliability/RESULTS.md`). Two earlier runs were cut short by the Claude Code usage limit, and `report.py` now marks those `aborted`. One hook was cancelled at its 10 s timeout under machine load, so the installer now uses 30 s.
   - **Tests:** 427 pass on SQLite and Postgres 14 + pgvector.
 
+- **Session 13 — long-horizon A/B** (branch `claude/longhorizon-eval`).
+  - **Built:** `evals/longhorizon/`, 2 scenarios × 4 fresh Claude Code sessions each, with hidden acceptance tests and constraint checks run outside the repo. Reference solutions prove the tests are fair; a naive store proves the concurrency test discriminates. 5 tests in `tests/test_longhorizon.py`.
+  - **Run 1** (Sonnet, live Jev; `evals/longhorizon/RESULTS.md`): **both arms were perfect** on the hidden tests and constraints. **Horizon cost +33 % (ledger) and +140 % (notes).** The baseline kept its own `NOTES.md`.
+  - **Team scenario** (3 projects, fresh repos, the team's rules stated once): without Horizon, project 2 lost the rules (dashed ids, `+00:00` stamps). With Horizon it kept the timestamp rule, only because a past episode's situation matched, and lost the id rule. So **`start_task(team_rules=…)`**: the rules the user sets for every project are shown at session start in any project of the team. Run 1 was cut short in project 3 by the usage limit. **Run 2, with team rules:** projects 2–3 got 8/8 with Horizon against 5/8 without, at +39 % cost (`evals/longhorizon/RESULTS.md`).
+  - **Lean profile** (`install-claude-code --profile lean`): continuity only, meaning `start_task` with constraints and team rules, one `record_outcome`, `evaluate_options` only for hard-to-reverse choices, no baseline run and no per-run nudges. **Ablation, 3 repeats:** projects 2–3 got 24/24 with lean, 24/24 with full, and 15/24 without Horizon. Cost was +55 % for lean and +78 % for full.
+  - **Hook-based lean** (session 14): the agent makes no Horizon calls. `UserPromptSubmit` captures the task and rule sentences, a new session completes the last one, the lean server leaves out `start_task`/`recall_context`/`record_outcome`, and session start lists **recurring pitfalls**: checks that failed in 2 or more earlier sessions. Team ablation, 3 repeats: 24/24 against 15/24, at +40 % cost, mostly from doing the rules' extra work. Also fixed `redact` pairing the wrong backticks.
+  - **Backlog scenario** (unattended, 8 tickets, CI policy checks): both arms 13/13; sessions with a failed test run, 6/8 without Horizon against 2/8 with lean, at +13 % cost. The pitfall warning never fired, so the gain isn't attributable to it yet.
+  - **Pitfall warning, tested directly** (backlog tickets 4–8 replayed from the no-Horizon state, lean seeded with the real test history): 0 of 5 sessions broke the recurring changelog policy with the warning, against 3 of 5 without, at **17 % lower cost**. The first result where Horizon is both better and cheaper. It also found that CI through `./ci.sh` was never captured (fixed).
+  - **Pitfall warning confirmed:** 3 replays gave 0 of 15 sessions breaking the recurring policy with the warning, against 7 of 15 without, 12 % cheaper overall. Live, from scratch: the warning fired after 2 real failures, and none followed (2 of 8 against 5 and 4 of 8 without).
+  - **Critical capture bug fixed:** failing commands fire `PostToolUseFailure`, which Horizon didn't listen to, so it never saw a failing test run in any profile. Both events are now captured.
+  - **Lean is the default install** (owner go-ahead). README and PROJECT.md §0 lead with the evidence.
+  - **Real codebase (8 consecutive attrs changes, unattended):** no Horizon and lean resolved the same 6 of 7, with changelog fragments 7/7 each, at −6 % cost for lean. attrs' convention is visible in the repo, so nothing recurred and Horizon had nothing to add, but cost nothing either.
+  - **Jev picks out rules** (two yes/no questions per sentence, one request): 97 % against keywords' 62 % on 32 labelled sentences (`evals/rules/`). Keywords remain the fallback.
+  - **Hosted lean** (`--hosted URL --profile lean`, hooks only): team rules stated by one person reach teammates' sessions on other machines and projects. Tested over real HTTP with two keys on one team, and a second team that never sees them.
+  - **Gap found and fixed:** every Horizon session finished its own task, so session 1's constraints never reached later sessions. SessionStart now lists the project's recently completed tasks and their constraints.
+
 ## In progress
 
 - Nothing. Phases 1–8 are built. What remains needs the owner: real benchmark runs, the go-ahead to publish, hosting and pricing.
 
 ## Decisions made
+
+**Long-horizon eval (session 13)**
+- The hidden tests and checks run outside the repo, so neither arm can see or overfit them.
+- One run per arm to start; repeat before believing a difference.
+- Lean is the default for Claude Code (owner go-ahead). The reliability demo pins `--profile full`, since it measures the full workflow's tool calls. The benchmark's `--with-horizon` uses the default, the product as shipped.
+- Team rules: the latest task that sets `team_rules` holds the current set, so the user can drop a rule. It's read from the last 50 tasks' data, with no new table and no schema change.
+- SessionStart shows the last 3 completed tasks in the project (goal plus up to 10 constraints). Cheaper than resuming tasks automatically, and it keeps "one task per request" intact.
 
 **Repo conventions**
 - Project docs live in `docs/`. The two docs refer to each other by bare filename, and that still works because they sit in the same folder.
@@ -556,6 +579,8 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 53 | Should `auto` switch the world model on by itself, or should the owner flip it after reading `horizon eval-world-model`? | Default: `auto` (it switches on only after the gate passes, and the scorer still decides). Set `HORIZON_WORLD_MODEL=shadow` to keep it manual. |
 | 54 | Codex's transcript format differs, so attempt usage isn't captured there | Default: Claude Code only. Codex outcomes keep host-reported tokens (usually none). |
 | 55 | When to build the Dreamer-style model | Default: once there are a few thousand real episodes with outcomes (after the benchmark runs), trained on the exports, and plugged in through `HORIZON_WORLD_MODEL_CLASS` behind the same gate. |
+
+| 56 | Make `--profile lean` the default install? | **Done, owner-approved (2026-09-30):** lean is the default for Claude Code; `--profile full` keeps the whole workflow. Codex stays full until its `UserPromptSubmit` support is checked. See PROJECT.md §0. |
 
 **Needs the owner** (credentials, money or an irreversible decision): 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 

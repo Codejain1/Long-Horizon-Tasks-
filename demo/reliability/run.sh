@@ -31,7 +31,7 @@ mkdir -p "$OUT/logs"
 cp -r "$HERE/project" "$OUT/project"
 cd "$OUT/project"
 git init -q
-"$PY" -m horizon install-claude-code --dir . >/dev/null
+"$PY" -m horizon install-claude-code --dir . --profile full >/dev/null  # measures the full workflow's tool calls
 git -c user.name=demo -c user.email=demo@example.invalid add -A
 git -c user.name=demo -c user.email=demo@example.invalid commit -qm "demo project with Horizon"
 echo "Project ready: $OUT/project (Horizon store: $OUT/horizon.db)"

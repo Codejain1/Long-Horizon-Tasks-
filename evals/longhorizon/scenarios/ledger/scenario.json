@@ -1,0 +1,17 @@
+{
+  "id": "ledger",
+  "package": "ledger",
+  "about": "An expense ledger built over 4 sessions. Constraints are stated once, in session 1. Session 3 (currencies) tempts floats.",
+  "start_files": {"README.md": "# ledger\n\nA small expense ledger library.\n"},
+  "constraints": {
+    "stdlib_only": true,
+    "python39": true,
+    "public_names": {"new_ledger": [], "add_expense": ["ledger", "amount_cents", "category"], "total": ["ledger"]}
+  },
+  "sessions": [
+    "Start a small Python package `ledger` in this repo for tracking expenses. Hard constraints that apply to this project from now on: (1) money is always stored and returned as integer cents, never floats; (2) standard library only, no third-party packages; (3) public function names and their first parameters must never change, other code depends on them; (4) the code must run on Python 3.9. Implement `new_ledger()`, `add_expense(ledger, amount_cents, category, note=\"\")` and `total(ledger, category=None)`, and write tests. This is the first of several sessions on this project; you may keep notes for later sessions in the repo if useful.",
+    "Continue the ledger project: add persistence. `save(ledger, path)` writes the ledger to a file and `load(path)` returns an equivalent ledger, so everything round-trips.",
+    "Continue the ledger project: add multiple currencies. `add_expense` gets an optional `currency` (default \"USD\"; also \"EUR\" and \"GBP\"). Add a module-level `RATES` dict with the USD value of one unit of each currency (USD 1.0, EUR 1.08, GBP 1.27), and `total(ledger, category=None, currency=\"USD\")` must return the total converted into the requested currency. Saving and loading must keep working.",
+    "Continue the ledger project: add budgets. `set_budget(ledger, category, amount_cents)` sets a budget in USD cents and `over_budget(ledger)` returns a sorted list of categories whose USD total exceeds their budget. Also add a command-line report: `python -m ledger report FILE` loads a saved ledger and prints one line per category with its USD total and budget."
+  ]
+}

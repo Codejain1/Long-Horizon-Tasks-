@@ -52,6 +52,11 @@ Horizon keeps task state and learns from outcomes across sessions. Use it on eve
 5. When the user asks what Horizon knows or why something was chosen: show_memories, explain_decision.
 Never skip record_outcome after a test run: it is how the memory learns what works."""
 
+LEAN_INSTRUCTIONS = """\
+Horizon records each task from the user's messages and carries its goal, constraints and the team's rules to
+later sessions and projects; you don't need to call it. Optional: evaluate_options before a hard-to-reverse
+choice (the task id is in the context), and show_memories or explain_decision when the user asks."""
+
 START_TASK = """\
 Create the task state for a new coding task. Call this FIRST, once per task, before any edits:
 whenever the user asks for a feature, fix, refactor or other multi-step change.
@@ -194,14 +199,21 @@ def _call(fn, *args, **kwargs) -> dict:
         raise ToolError(str(exc)) from exc
 
 
-def create_server(target: "Platform | Gateway") -> MCPServer:
+def create_server(target: "Platform | Gateway", lean: bool | None = None) -> MCPServer:
+    """`lean` (default: HORIZON_PROFILE=lean) leaves out start_task, recall_context and record_outcome: the hooks
+    capture the task, and those tools' "call this every time" descriptions only drew extra calls."""
     gw = target if isinstance(target, Gateway) else Gateway(lambda team: target)
-    server = MCPServer(name="horizon", instructions=INSTRUCTIONS)
+    lean = os.environ.get("HORIZON_PROFILE") == "lean" if lean is None else lean
+    server = MCPServer(name="horizon", instructions=LEAN_INSTRUCTIONS if lean else INSTRUCTIONS)
+    full_only = (lambda **_: lambda fn: fn) if lean else server.tool
 
-    @server.tool(description=START_TASK)
+    @full_only(description=START_TASK)
     async def start_task(
         goal: Annotated[str, Field(description="The user's request, verbatim.")],
         constraints: Annotated[list[str] | None, Field(description="Hard requirements and limits.")] = None,
+        team_rules: Annotated[list[str] | None, Field(description="Rules the user set for all their projects "
+                                                                  "(the current full set, as listed at session "
+                                                                  "start plus any new ones).")] = None,
         plan: Annotated[list[str] | None, Field(description="Initial plan as short steps.")] = None,
         open_issues: Annotated[list[str] | None, Field(description="Known unknowns or blockers.")] = None,
         project_id: Annotated[str | None, Field(description="Stable project name, e.g. the repo name.")] = None,
@@ -210,9 +222,10 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
         ctx: Context | None = None,
     ) -> dict[str, Any] | InputRequiredResult:
         return await gw.run(ctx, "start_task", lambda p: p.start_task(goal, constraints, plan, open_issues, project_id,
-                                                                      target_tests, cwd=gw.project_scope(ctx)))
+                                                                      target_tests, cwd=gw.project_scope(ctx),
+                                                                      team_rules=team_rules))
 
-    @server.tool(description=RECALL_CONTEXT)
+    @full_only(description=RECALL_CONTEXT)
     async def recall_context(
         task_id: Annotated[str, Field(description="From start_task.")],
         situation: Annotated[str, Field(description="The decision point, in one or two sentences.")],
@@ -261,7 +274,7 @@ def create_server(target: "Platform | Gateway") -> MCPServer:
                             lambda p: p.submit_consequences(task_id, decision_id, [r.model_dump() for r in results]),
                             signals=_decision_signals, approval=HUMAN_CHOICE)
 
-    @server.tool(description=RECORD_OUTCOME)
+    @full_only(description=RECORD_OUTCOME)
     async def record_outcome(
         task_id: Annotated[str, Field(description="From start_task.")],
         situation: Annotated[str, Field(description="The decision point, as given to recall_context.")],
@@ -592,7 +605,8 @@ def http_app(settings: Settings, cwd: str | None = None):
         return platforms[team]
 
     mcp_app = create_server(Gateway(platform_for, accounts, settings.dev_api_key)).streamable_http_app()
-    web = create_web_app(accounts, base.tasks, lifespan=lambda app: mcp_app.router.lifespan_context(mcp_app))
+    web = create_web_app(accounts, base.tasks, lifespan=lambda app: mcp_app.router.lifespan_context(mcp_app),
+                         scorer_factory=base._scorer_factory)
     web.mount("/", APIKeyMiddleware(mcp_app, settings.dev_api_key, accounts, prefix="/mcp"))
     return web
 

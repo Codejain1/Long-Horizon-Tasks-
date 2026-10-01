@@ -9,6 +9,7 @@ This page lists exactly what is stored, where, and who else sees it. It's served
 | Data | Example | Notes |
 |---|---|---|
 | **Task goal** | "Add CSV export to the reports page" | Kept **verbatim** (the one exception to redaction), because staying on the user's exact goal is the point of task state (§8). Don't paste secrets or code into the request if you don't want them stored. |
+| **Your messages (lean profile)** | the session's first message as the task goal; later messages as progress notes; sentences that set rules ("for every project…") as team rules or constraints | Captured by the `UserPromptSubmit` hook on your machine. Code blocks and long inline code are removed, the goal is capped at 4,000 characters, and notes at 300. Team rules are shown at session start in **every project of the team**. In hosted lean, the prompt is redacted on your machine, then sent to your team's server, which redacts it again. Everyone using the team's keys then sees its team rules. |
 | **Decision summaries** | situation "choose a CSV writer", option "stdlib csv", reason, plan, constraints, progress notes, open issues | **Redacted before storage:** code blocks, code-like lines and stack traces are removed, and each field is capped (situation 500 characters, option 200, notes 300). |
 | **Outcomes** | tests 9/10 passed; tokens, cost, latency if reported; surprise | Numbers only. |
 | **Test results** | runner, counts, the **ids** of failing tests (e.g. `tests/test_api.py::test_login`) | Captured by the hook from your test runs: counts and test names only, **never the output**. The command is stored as its first line with quoted strings replaced (`python -c "…"`). |
@@ -26,13 +27,13 @@ This page lists exactly what is stored, where, and who else sees it. It's served
 
 - **Local use** (stdio, the default): a SQLite file on your machine (`~/.horizon/horizon.db`, or `HORIZON_DB_URL`). Nothing leaves your machine unless you enable a scorer (below).
 - **Hosted:** the operator's Postgres database. **Each team's data is isolated**: every query is scoped to the team resolved from the API key.
-  - The hooks still run on your machine. They parse test output and snapshot git locally, and send the server only test counts, failing test names, token counts and durations, the command's first line with quoted strings elided, commit ids, and a **hash** of the project path (`X-Horizon-Project`). No paths, output or code are sent. In Claude Code, a checkpoint also carries a redacted 120-character snippet of your latest prompt, so `/rewind` can find it.
+  - The hooks still run on your machine. They parse test output and snapshot git locally, and send the server only test counts, failing test names, token counts and durations, the command's first line with quoted strings elided, commit ids, and a **hash** of the project path (`X-Horizon-Project`). No paths, output or code are sent. With the lean profile, they also send your message, with code removed on your machine. In Claude Code, a checkpoint also carries a redacted 120-character snippet of your latest prompt, so `/rewind` can find it.
 - **World-model exports** (Parquet and JSONL) are written where the operator points `HORIZON_EXPORT_DIR`. They hold the same records, never code.
 
 ## Who else sees it
 
 - **Nobody, by default.** `HORIZON_SCORER=none` and the default local embedder (`BAAI/bge-small-en-v1.5`, running on your machine) send nothing out.
-- **With `HORIZON_SCORER=jev`**, each decision's scoring request goes to **TypeSafe** (`api.typesafe.ai`). It contains the goal, constraints, situation, option labels and descriptions, and recalled past outcomes (all redacted, apart from the goal). The same applies to the memory attention filter (situation plus memory summaries).
+- **With `HORIZON_SCORER=jev`**, each decision's scoring request goes to **TypeSafe** (`api.typesafe.ai`). It contains the goal, constraints, situation, option labels and descriptions, and recalled past outcomes (all redacted, apart from the goal). The same applies to the memory attention filter (situation plus memory summaries). With the lean profile, the sentences of each message, with code removed, go there too, to pick out rules.
 - **With `HORIZON_SCORER=llm`**, the same questions go to **Anthropic's Claude API**.
 - **The colony layer** (sharing anonymous lesson strengths across teams) doesn't exist yet. It will be opt-in and share only anonymous, generic trail strengths (§7, MEMROUTER §10).
 

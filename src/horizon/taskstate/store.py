@@ -128,6 +128,23 @@ class TaskStore:
         rows = self.db.fetchall(sql + " ORDER BY updated_at DESC", params)
         return [TaskState.model_validate(load_json(r[0])) for r in rows]
 
+    def recent_completed(self, team_id: str, cwd: str, limit: int = 3) -> list[TaskState]:
+        """The project's latest finished tasks: their goals and constraints carry over to the next session."""
+        rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s AND cwd = %s AND status = 'completed'"
+                                " ORDER BY updated_at DESC LIMIT %s", (team_id, cwd, limit))
+        return [TaskState.model_validate(load_json(r[0])) for r in rows]
+
+    def team_rules(self, team_id: str) -> list[str]:
+        """The team's rules for every project: those of its latest task that set any."""
+        # ponytail: scans the latest 50 tasks' JSON; a team_rules table if teams outgrow that window.
+        rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s ORDER BY created_at DESC LIMIT 50",
+                                (team_id,))
+        for row in rows:
+            rules = load_json(row[0]).get("team_rules")
+            if rules:
+                return rules
+        return []
+
     # --- test captures (PostToolUse hook) --------------------------------------
 
     def add_capture(self, cap: TestCapture) -> TestCapture:
@@ -152,6 +169,19 @@ class TaskStore:
         keys = ("id", "session_id", "cwd", "command", "runner", "passed", "failed", "total",
                 "created_at", "consumed_by", "nudged_at")
         return [TestCapture.model_validate({**dict(zip(keys, r)), "failing": load_json(r[-1])}) for r in rows]
+
+    def recurring_failures(self, cwd: str, min_sessions: int = 2, limit: int = 5) -> list[tuple[str, int]]:
+        """Tests that failed in at least `min_sessions` different sessions of this project, most sessions first.
+        A test failing once is usually test-first work in progress; failing again and again, it's a pitfall."""
+        # ponytail: scans the latest 500 captures in Python; aggregate in SQL if projects outgrow that.
+        rows = self.db.fetchall("SELECT session_id, failing FROM test_captures WHERE cwd = %s AND failing IS NOT NULL"
+                                " ORDER BY created_at DESC LIMIT 500", (cwd,))
+        sessions: dict[str, set] = {}
+        for session, failing in rows:
+            for test in load_json(failing) or []:
+                sessions.setdefault(test, set()).add(session)
+        counts = sorted(((t, len(s)) for t, s in sessions.items() if len(s) >= min_sessions), key=lambda x: (-x[1], x[0]))
+        return counts[:limit]
 
     def consume_captures(self, capture_ids: list[str], episode_id: str) -> None:
         for cid in capture_ids:

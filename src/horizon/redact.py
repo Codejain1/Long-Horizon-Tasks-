@@ -19,7 +19,10 @@ MAX_NOTE = 300
 MAX_CONDITION_VALUE = 100
 
 _FENCED = re.compile(r"(```|~~~).*?(\1|\Z)", re.S)
-_LONG_INLINE = re.compile(r"`[^`\n]{41,}`")  # short inline code (names like `httpx`) is kept
+# Every inline span is matched, left to right, so backticks pair up correctly; only long ones are removed.
+# (Matching only long spans paired the closing backtick of one span with the next span's opening one,
+# and removed the prose between them.) Short inline code (names like `httpx`) is kept.
+_INLINE = re.compile(r"`[^`\n]*`")
 _CODE_START = re.compile(
     r"""^\s*(
         def\s+\w+\s*\( | class\s+\w+[\s(:] | import\s+[\w.]+ | from\s+[\w.]+\s+import\b |
@@ -60,7 +63,7 @@ def redact(text: str | None, max_len: int = MAX_NOTE) -> str | None:
     if text is None:
         return None
     out = _FENCED.sub(f" {CODE_REMOVED} ", text)
-    out = _LONG_INLINE.sub(CODE_REMOVED, out)
+    out = _INLINE.sub(lambda m: CODE_REMOVED if len(m.group()) > 42 else m.group(), out)
     lines = [CODE_REMOVED if _code_like(line) else line.strip() for line in out.splitlines()]
     out = re.sub(r"\s+", " ", " ".join(ln for ln in lines if ln)).strip()
     out = re.sub(rf"(\s*{re.escape(CODE_REMOVED)})+", f" {CODE_REMOVED}", out).strip()

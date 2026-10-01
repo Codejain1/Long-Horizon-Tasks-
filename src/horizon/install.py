@@ -23,7 +23,11 @@ HOOK_EVENTS = {
     "SessionStart": (None, "session-start"),
     "PreToolUse": ("mcp__horizon__recall_context|mcp__horizon__record_outcome", "pre-tool-use"),
     "PostToolUse": ("Bash", "post-tool-use"),
+    # A command that exits non-zero (a failing test run) fires this instead of PostToolUse: without it, Horizon
+    # only ever saw passing runs (found live: no pitfall could ever be learned).
+    "PostToolUseFailure": ("Bash", "post-tool-use"),
     "Stop": (None, "stop"),
+    "UserPromptSubmit": (None, "user-prompt"),  # lean only: Horizon captures the task from the prompt
 }
 
 
@@ -32,8 +36,9 @@ def default_command() -> list[str]:
     return [sys.executable, "-m", "horizon"]
 
 
-def snippet() -> str:
-    return resources.files("horizon").joinpath("data/agent.snippet.md").read_text()
+def snippet(profile: str = "full") -> str:
+    name = "agent.snippet.lean.md" if profile == "lean" else "agent.snippet.md"
+    return resources.files("horizon").joinpath(f"data/{name}").read_text()
 
 
 def _load(path: Path) -> dict:
@@ -45,7 +50,7 @@ def _dump(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def install_mcp_json(project: Path, command: list[str], hosted: str | None = None) -> None:
+def install_mcp_json(project: Path, command: list[str], hosted: str | None = None, profile: str = "full") -> None:
     path = project / ".mcp.json"
     data = _load(path)
     if hosted:  # Claude Code expands ${HORIZON_API_KEY} from the environment: the key isn't written here
@@ -53,21 +58,35 @@ def install_mcp_json(project: Path, command: list[str], hosted: str | None = Non
                  "headers": {"Authorization": "Bearer ${HORIZON_API_KEY}", "X-Horizon-Project": project_key(str(project))}}
     else:
         entry = {"command": command[0], "args": command[1:] + ["serve"]}
+        if profile != "full":
+            entry["env"] = {"HORIZON_PROFILE": profile}
     data.setdefault("mcpServers", {})["horizon"] = entry
     _dump(path, data)
 
 
-def merge_hooks(data: dict, command: list[str], hosted: str | None = None) -> dict:
+def remove_mcp_entry(project: Path) -> None:
+    path = project / ".mcp.json"
+    data = _load(path)
+    if data.get("mcpServers", {}).pop("horizon", None) is not None:
+        _dump(path, data)
+
+
+def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profile: str = "full") -> dict:
     """Add Horizon's hooks to a Claude-format `{"hooks": {...}}` document, replacing earlier Horizon entries."""
     hooks = data.setdefault("hooks", {})
     for event, (matcher, name) in HOOK_EVENTS.items():
-        cmd = shlex.join(command + ["hook", name] + (["--remote", hosted.rstrip("/")] if hosted else []))
+        cmd = shlex.join(command + ["hook", name] + (["--remote", hosted.rstrip("/")] if hosted else [])
+                             + (["--profile", profile] if profile != "full" else []))
         groups = hooks.setdefault(event, [])
         # Drop any earlier Horizon hook for this event (e.g. from an old interpreter path).
         for group in groups:
             group["hooks"] = [h for h in group.get("hooks", [])
                               if not re.search(rf"horizon hook {name}( |$)", h.get("command", ""))]
         groups[:] = [g for g in groups if g.get("hooks")]
+        if event == "UserPromptSubmit" and profile != "lean":
+            if not groups:
+                del hooks[event]
+            continue
         # 30 s: hooks take well under a second, but a loaded machine once pushed one past a 10 s limit.
         group = {"hooks": [{"type": "command", "command": cmd, "timeout": 30}]}
         if matcher:
@@ -76,19 +95,19 @@ def merge_hooks(data: dict, command: list[str], hosted: str | None = None) -> di
     return data
 
 
-def install_settings(project: Path, command: list[str], hosted: str | None = None) -> None:
+def install_settings(project: Path, command: list[str], hosted: str | None = None, profile: str = "full") -> None:
     path = project / ".claude" / "settings.json"
-    data = merge_hooks(_load(path), command, hosted)
+    data = merge_hooks(_load(path), command, hosted, profile)
     enabled = data.setdefault("enabledMcpjsonServers", [])
     if "horizon" not in enabled:
         enabled.append("horizon")
     _dump(path, data)
 
 
-def install_claude_md(project: Path, filename: str = "CLAUDE.md") -> None:
+def install_claude_md(project: Path, filename: str = "CLAUDE.md", profile: str = "full") -> None:
     path = project / filename
     text = path.read_text() if path.exists() else ""
-    block = snippet().strip()
+    block = snippet(profile).strip()
     pattern = re.compile(re.escape(MARK_START) + r".*?" + re.escape(MARK_END), re.S)
     if pattern.search(text):
         text = pattern.sub(lambda _: block, text)
@@ -164,14 +183,20 @@ def install_codex(project: Path, command: list[str] | None = None, agents_md: bo
 
 
 def install(project: Path, command: list[str] | None = None, claude_md: bool = True,
-            hosted: str | None = None) -> list[str]:
+            hosted: str | None = None, profile: str = "lean") -> list[str]:
     command = command or default_command()
     project = project.resolve()
-    install_mcp_json(project, command, hosted)
-    install_settings(project, command, hosted)
+    if hosted and profile == "lean":
+        # Lean's value is in the hooks. The hosted MCP endpoint serves every team the full tool list, whose
+        # "call this every time" descriptions only draw extra calls.
+        # ponytail: a lean MCP endpoint when a team wants the optional tools (evaluate_options, show_memories).
+        remove_mcp_entry(project)
+    else:
+        install_mcp_json(project, command, hosted, profile)
+    install_settings(project, command, hosted, profile)
     install_gitignore(project)
     changed = [".mcp.json", ".claude/settings.json", ".gitignore"]
     if claude_md:
-        install_claude_md(project)
+        install_claude_md(project, profile=profile)
         changed.append("CLAUDE.md")
     return changed

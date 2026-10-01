@@ -8,7 +8,7 @@ def read(p):
 
 
 def test_install_writes_mcp_hooks_and_snippet(tmp_path):
-    changed = install(tmp_path, command=["/venv/bin/python", "-m", "horizon"])
+    changed = install(tmp_path, command=["/venv/bin/python", "-m", "horizon"], profile="full")
     assert changed == [".mcp.json", ".claude/settings.json", ".gitignore", "CLAUDE.md"]
     assert (tmp_path / ".gitignore").read_text() == ".horizon/\n"
 
@@ -38,9 +38,9 @@ def test_install_is_idempotent_and_preserves_existing_config(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("# My project\n\nExisting rules.\n")
     (tmp_path / ".gitignore").write_text("node_modules/")  # no trailing newline
 
-    install(tmp_path, command=["/old/python", "-m", "horizon"])
-    install(tmp_path, command=["/new/python", "-m", "horizon"])
-    install(tmp_path, command=["/new/python", "-m", "horizon"])
+    install(tmp_path, command=["/old/python", "-m", "horizon"], profile="full")
+    install(tmp_path, command=["/new/python", "-m", "horizon"], profile="full")
+    install(tmp_path, command=["/new/python", "-m", "horizon"], profile="full")
 
     settings = read(tmp_path / ".claude" / "settings.json")
     assert settings["permissions"] == {"allow": ["Bash(ls:*)"]}

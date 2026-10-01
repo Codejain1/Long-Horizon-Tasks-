@@ -102,3 +102,8 @@ def test_platform_never_stores_code(platform, memrouter, task_store):
                                    "diskcache (third-party)", "requests + urllib3 Retry", "Redis (v7)"])
 def test_short_option_labels_are_not_code(label):
     assert redact(label) == label  # "dbm (stdlib)" used to come back as "[code removed]"
+
+
+def test_inline_code_spans_pair_up_and_prose_between_them_is_kept():
+    text = "Use `ids` everywhere. Prose between two code names must survive, all of it. Then `ValueError` too."
+    assert redact(text, 500) == text

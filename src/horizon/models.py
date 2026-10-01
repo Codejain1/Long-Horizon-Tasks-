@@ -222,6 +222,8 @@ class TaskState(BaseModel):
     project_id: str | None = None
     goal: str  # verbatim, never rewritten
     constraints: list[str] = Field(default_factory=list)
+    # Rules the user set for every project of the team; the latest task that sets them is the current set.
+    team_rules: list[str] = Field(default_factory=list)
     plan: list[str] = Field(default_factory=list)
     progress: list[ProgressEntry] = Field(default_factory=list)
     decisions: list[DecisionEntry] = Field(default_factory=list)
@@ -229,6 +231,7 @@ class TaskState(BaseModel):
     # "escalated": the retry limit was hit and the task waits for a human (PROJECT.md §8).
     status: Literal["active", "escalated", "completed"] = "active"
     cwd: str | None = None
+    session_id: str | None = None  # lean profile: the host session whose prompts this task captured
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     attempts: int = 0  # consecutive failed outcomes; reset by a success or by human guidance
     failures: list[FailureEntry] = Field(default_factory=list)  # the current failure streak

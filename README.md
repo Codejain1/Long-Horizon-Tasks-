@@ -1,19 +1,27 @@
 # Horizon
 
-**Experience for coding agents.** Horizon is an MCP server that plugs into Claude Code or Codex. It keeps long tasks on track, scores crucial decisions before your agent commits to them, rolls back cleanly when a change breaks something, and remembers what actually worked, so the next task starts smarter.
+**Memory that carries across sessions, projects and teammates, for coding agents.** Horizon plugs into Claude Code through hooks. It captures what you tell your agent and what actually happens when tests run. Then every later session, in any project and on any teammate's machine, starts with what it needs to know. The agent doesn't have to call anything.
 
-> Other tools give agents a better notebook. Horizon gives them experience.
+Your agent still does all the coding with your own subscription. Horizon never needs your code: see [Data and privacy](docs/PRIVACY.md).
 
-Your agent still does all the coding with your own subscription. Horizon decides, remembers and learns. It never needs your code: see [Data and privacy](docs/PRIVACY.md).
+## What it does (the default, lean profile)
 
-## What it does
+- **Team rules:** say once "for every service we build, ids are uuid4 hex", and every later session in every project of the team is told. Hosted, that includes your teammates' sessions.
+- **Project continuity:** each session's goal and constraints are shown to the next one, so work spread over days doesn't drift.
+- **Recurring pitfalls:** checks that failed in several earlier sessions are flagged up front ("get them right the first time"). This is learned from real test runs, including `./ci.sh`-style wrappers.
+- **Rules picked out by [Jev](https://typesafe.ai)** when configured (97 % on our labelled set, against 62 % for keywords), with keywords as the fallback.
 
-- **Task state:** the goal verbatim, constraints, plan, decisions and progress, sent back to the agent at every step so it doesn't drift.
-- **Decisions:** at a crucial choice (framework, database, architecture), `evaluate_options` scores the options on success, compatibility, fit and cost. It uses [Jev](https://typesafe.ai) or a small LLM, plus your estimates.
-- **Consequence checks:** close calls get cheap checks, then small throwaway spikes built on your machine. Past results are reused instead of re-spiking.
-- **Rollback:** before each decision, hooks snapshot git. When a change breaks tests that used to pass, the agent is told to restore and retry differently. After 3 failed attempts it asks you. Tests that were already failing when the task started don't count against it.
-- **Memory that learns:** outcomes strengthen or weaken what's remembered, a nightly sleep job distils lessons and strategies, and severe failures become warnings that always surface.
-- **You stay in charge:** high-stakes ties, clearing a warning and deleting a memory are asked of **you** in the client. The agent can't approve on your behalf. `explain_decision` and `show_memories` show why and what.
+## Does it help? (`evals/longhorizon/RESULTS.md`)
+
+| Situation | Claude Code alone | With Horizon |
+|---|---|---|
+| Team rules had to carry into new projects (3 repeats) | 15/24 hidden checks | **24/24** |
+| A CI policy kept breaking across unattended sessions (replay) | broken in 3 of 5 sessions | **0 of 5, at 17 % lower cost** |
+| One interactive session, or rules written in the repo | – | no gain, so don't expect one |
+
+Following rules costs more work: about +40 % on the team scenario, mostly writing the validation and tests the rules demand. Avoiding repeat failures saves it back. Horizon helps most where no human carries the context: **unattended agents and teams.**
+
+The **full profile** (`--profile full`) adds the original workflow: decision scoring with Jev, consequence checks and spikes, recall before each step, outcomes per test run, and rollback. In our evals it didn't improve outcomes and cost more, so it's opt-in.
 
 ## Set up in under 5 minutes
 
@@ -26,15 +34,15 @@ uv venv -p 3.12 && uv pip install -e ".[embeddings]"
 
 # 2. Wire it into your project (pick your agent)
 cd /path/to/your/project
-/path/to/horizon/.venv/bin/horizon install-claude-code     # Claude Code
-/path/to/horizon/.venv/bin/horizon install-codex           # Codex
+/path/to/horizon/.venv/bin/horizon install-claude-code     # Claude Code (lean: hooks do the work)
+/path/to/horizon/.venv/bin/horizon install-codex           # Codex (the full workflow; lean isn't supported there yet)
 ```
 
 **3. Start your agent in the project.**
 - **Claude Code:** run `claude`, then approve the `horizon` server once when asked. `claude mcp list` should show `horizon … ✓ Connected`.
 - **Codex:** run `codex`, then trust the project and its hooks once (`/hooks`). `codex mcp list` should show `horizon`.
 
-**4. Give it a task as usual.** The installed instructions tell the agent when to call Horizon, and the hooks capture real test results, checkpoints and missing outcomes on their own. Check it's working with:
+**4. Give it a task as usual.** With the default lean profile, the hooks capture the task, rules and test runs, and the agent doesn't call Horizon. With `--profile full` (and in Codex), the installed instructions tell the agent when to call Horizon's tools. Check it's working with:
 
 ```bash
 /path/to/horizon/.venv/bin/horizon stats
@@ -47,15 +55,15 @@ That's the whole setup. Everything runs locally, in a SQLite file at `~/.horizon
 | | Claude Code (`install-claude-code`) | Codex (`install-codex`) |
 |---|---|---|
 | MCP server | `.mcp.json` | `.codex/config.toml` (`[mcp_servers.horizon]`, tools pre-approved) |
-| Hooks | `.claude/settings.json` | `.codex/hooks.json` (same format) |
+| Hooks | `.claude/settings.json` (lean adds `UserPromptSubmit`) | `.codex/hooks.json` (same format) |
 | Instructions | a snippet in `CLAUDE.md` | the same snippet in `AGENTS.md` |
 | Spike scratch space | `.horizon/` added to `.gitignore` | same |
 
 Both installers are idempotent and keep your existing settings. The snippet lives between `<!-- horizon:start -->` and `<!-- horizon:end -->`: see [`src/horizon/data/agent.snippet.md`](src/horizon/data/agent.snippet.md).
 
-## Optional: score decisions with Jev
+## Optional: Jev
 
-Horizon works without a scorer: decisions come back `unscored`, and the rest still works. To score them:
+Horizon works without a scorer. With Jev, the lean profile picks out rules from your messages much more accurately (97 % against 62 % for keywords), and the full profile scores decisions. To enable it:
 
 ```bash
 export HORIZON_SCORER=jev TYPESAFE_API_KEY=...        # Jev by TypeSafe (console.typesafe.ai)
@@ -63,7 +71,7 @@ export HORIZON_SCORER=jev TYPESAFE_API_KEY=...        # Jev by TypeSafe (console
 uv pip install -e ".[embeddings,decision]"
 ```
 
-Set these in the environment you start your agent from. Enabling a scorer sends decision summaries (never code) to that provider; see [privacy](docs/PRIVACY.md#who-else-sees-it).
+Set these in the environment you start your agent from, because the hooks run there. Enabling a scorer sends message sentences and decision summaries (code removed) to that provider; see [privacy](docs/PRIVACY.md#who-else-sees-it).
 
 ## Hosted mode
 
@@ -71,10 +79,10 @@ Teams can run one shared Horizon: `docker compose up` gives you Postgres, the se
 
 ```bash
 export HORIZON_API_KEY=hzn_...        # from `horizon create-team` or the account page
-horizon install-claude-code --hosted https://horizon.example.com    # or install-codex --hosted …
+horizon install-claude-code --hosted https://horizon.example.com    # lean: team rules reach every teammate
 ```
 
-Hooks still run on your machine and send only parsed facts (test counts, failing test names, commit ids, a hashed project key). See [docs/HOSTING.md](docs/HOSTING.md).
+Hooks still run on your machine and send only parsed facts (test counts, failing test names, commit ids, a hashed project key) and, in lean, your messages with code removed. See [docs/HOSTING.md](docs/HOSTING.md).
 
 ## Documentation
 

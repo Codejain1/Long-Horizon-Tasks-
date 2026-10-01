@@ -40,8 +40,30 @@ class TestCounts:
         return len(self.failing) >= self.failed
 
 
+# Wrappers: a project's own script (./ci.sh, sh scripts/test.sh) or a task runner's test target. They count as
+# test runs only when their output parses as one (seen live: CI through ./ci.sh was never captured).
+WRAPPER_COMMAND = re.compile(
+    r"""(^|[\s;&|(])(
+        \.{0,2}/\S+ | (ba|z)?sh\s+\S+\.sh | \S+\.sh | [\w.-]+/[\w./-]+ |
+        (just|task|hatch|bazel|nx|mise\s+run|poe|invoke|nox\s+-s)\s+\S*(test|check|ci)\S*
+    )(?=$|[\s;&|)])""",
+    re.X,
+)
+_VIEWER = re.compile(r"^\s*(cat|less|more|head|tail|grep|rg|sed|awk|echo|printf|ls|git|cd\s+\S+\s*$)\b")
+
+
 def is_test_command(command: str) -> bool:
     return bool(TEST_COMMAND.search(command or ""))
+
+
+def may_run_tests(command: str) -> bool:
+    """A known test command, or a wrapper that may run one (its output decides)."""
+    command = command or ""
+    if is_test_command(command):
+        return True
+    # Only the last step of a `cd x && …` chain matters; a command that just displays files never counts.
+    last = re.split(r"&&|;|\|\|", command)[-1]
+    return not _VIEWER.match(last) and bool(WRAPPER_COMMAND.search(last))
 
 
 def _num(pattern: str, text: str) -> int:
