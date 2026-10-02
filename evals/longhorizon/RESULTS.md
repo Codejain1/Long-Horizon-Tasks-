@@ -347,3 +347,19 @@ The new, harder scenario: 9 rules given in tickets 1–3 and 9, needed in 5–14
 - **With Horizon, every ticket ended with every hidden test passing.** Without Horizon, failures began at ticket 5 (cross-reactive allergies), and one more came almost every ticket after. It kept only the rolling 24-hour window and the append-only audit trail, two rules a careful engineer might pick by default anyway.
 - **Without Horizon was cheaper by doing less.** Its tickets 5, 6, 7 and 10 took 4–5 turns each (about 0.08 M tokens), against 11–13 for lean. Those are the tickets where the forgotten rules (allergies, weight scaling, witnesses, kidney function) were the work. On this scenario, the extra 20 % of cost is the price of building the rules the tickets needed.
 - One run each. Over all side-by-side runs so far (ward and rental), Horizon kept 46 of 47 rule checks, against 11 of 47 without.
+
+## Decision traps: boxoffice, three ways (2026-10-03, Claude Code + Sonnet, 1 run each)
+
+Arms: without Horizon; lean (memory only); lean with `HORIZON_DECIDE=on` (Jev flags crucial tickets, and the agent puts its options through `evaluate_options`, now scored on future fit and efficiency too). Jev was on for both Horizon arms.
+
+| | Hidden tests (5 trap checks) | Time | Tokens | Cost | Choices at tickets 2 / 3 / 4 |
+|---|---|---|---|---|---|
+| without Horizon | 12/12 | 5.0 min | 1.08 M | $1.01 | JSON with an `fcntl` file lock / `Decimal` / uuid4 |
+| lean | 12/12 | 5.7 min | 1.10 M | $0.98 | SQLite with `BEGIN IMMEDIATE` / exact / uuid4 |
+| lean + decisions | 12/12 | 5.5 min | 1.18 M | $1.06 | SQLite (Jev: `clear_winner`) / `Decimal` / uuid4 |
+
+**No arm fell into a trap, so the decision layer had nothing to save.** Sonnet, alone, chose a locked store, exact decimals and random references. The plans in ticket 1 were enough, and it saw them in time: the decision came one ticket later.
+- **The trigger** fired on tickets 1 and 2 (Jev 0.81 and 0.79), and Jev's pick for ticket 2 matched what the agent would have done. It missed tickets 3 and 4 (0.32 and 0.43), whose messages specify the interface but leave the representation open: the crucial-choice question under-reads them.
+- **Cost:** decisions +5 % over without, within noise.
+
+**What this says:** on choices a strong model already gets right, Jev's judgement agrees with it and adds a little cost. The decision layer can only show its value on choices the agent gets wrong, which this scenario didn't produce. The next test needs a weaker model (where traps do bite), or traps whose right answer depends on information the agent can't see at decision time but Horizon holds, such as a past project's failure.
