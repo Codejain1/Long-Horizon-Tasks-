@@ -458,3 +458,30 @@ def test_ward_checks_the_rules_given_early_in_the_tickets_that_need_them(tmp_pat
     [row] = json.loads((tmp_path / "bad" / "ward-baseline" / "results.json").read_text())["sessions"]
     assert {t.split("::")[-1] for t in row["hidden"]["failed"]} == WARD_RULES
     assert len(row["hidden"]["passed"]) == 31 - len(WARD_RULES) and row["violations"] == []
+
+
+BOXOFFICE_TRAPS = {"test_concurrent_counters_never_double_sell", "test_concurrent_counters_lose_no_booking",
+                   "test_jpy_and_kwd_use_their_own_decimals", "test_merged_references_never_change",
+                   "test_merging_keeps_both_venues_sales"}
+
+
+def test_boxoffice_catches_the_tempting_choices_only_where_they_break(tmp_path):
+    """The reference passes all 9 tickets. With the tempting choices (a JSON file store, sequential references,
+    two-decimal cents) the same code passes every other ticket and fails exactly the five trap checks."""
+    run = load("run")
+    ref = EVAL / "reference" / "boxoffice"
+    good = fake(tmp_path, "good", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)", "writes the reference")
+    run.main(["--scenario", "boxoffice", "--arm", "baseline", "--out", str(tmp_path / "ok"), "--claude", good])
+    rows = json.loads((tmp_path / "ok" / "boxoffice-baseline" / "results.json").read_text())["sessions"]
+    assert len(rows) == 9 and all(r["hidden"]["failed"] == [] and r["violations"] == [] for r in rows)
+    assert len(rows[-1]["hidden"]["passed"]) == 12
+    tempting = EVAL / "reference" / "boxoffice-tempting"
+    naive = fake(tmp_path, "naive", f"shutil.copytree({str(ref)!r}, repo, dirs_exist_ok=True)\n"
+                                    f"for f in ('store.py', 'refs.py', 'money.py'):\n"
+                                    f"    shutil.copy({str(tempting)!r} + '/' + f, repo / 'boxoffice' / f)",
+                 "writes the reference with the tempting choices")
+    run.main(["--scenario", "boxoffice", "--arm", "baseline", "--out", str(tmp_path / "bad"), "--claude", naive])
+    rows = json.loads((tmp_path / "bad" / "boxoffice-baseline" / "results.json").read_text())["sessions"]
+    assert all(r["hidden"]["failed"] == [] for r in rows[:5]) and rows[6]["hidden"]["failed"] != []
+    assert {t.split("::")[-1] for t in rows[-1]["hidden"]["failed"]} == BOXOFFICE_TRAPS
+    assert len(rows[-1]["hidden"]["passed"]) == 12 - len(BOXOFFICE_TRAPS)
