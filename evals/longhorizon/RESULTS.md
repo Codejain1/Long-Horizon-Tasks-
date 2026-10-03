@@ -363,3 +363,18 @@ Arms: without Horizon; lean (memory only); lean with `HORIZON_DECIDE=on` (Jev fl
 - **Cost:** decisions +5 % over without, within noise.
 
 **What this says:** on choices a strong model already gets right, Jev's judgement agrees with it and adds a little cost. The decision layer can only show its value on choices the agent gets wrong, which this scenario didn't produce. The next test needs a weaker model (where traps do bite), or traps whose right answer depends on information the agent can't see at decision time but Horizon holds, such as a past project's failure.
+
+## Decision traps on Haiku, three ways (2026-10-03, Claude Code + Haiku, 1 run each, trigger reworded)
+
+| | Hidden tests at the end | Trap checks kept | First ticket with a failing hidden test | Time | Tokens | Cost |
+|---|---|---|---|---|---|---|
+| without Horizon | 11/12 (sales report) | 5/5 | 6 | 9.1 min | 4.67 M | $0.96 |
+| lean | 10/12 (cancel; merged venue's sales) | 4/5 | 5 | 11.7 min | 5.32 M | $1.08 |
+| lean + decisions | 11/12 (sales report) | 5/5 | 7 | 21.5 min | 10.07 M | **$2.01** |
+
+- **Haiku didn't fall into the traps either.** Alone it chose a JSON store with an `fcntl` file lock, `Decimal` and uuid4: unusual, but correct. With decisions, Jev steered it to SQLite with transactions, also correct. **The decision layer changed the choice, not the outcome.**
+- **The trigger now fires where it should:** tickets 1, 2, 3, 4, 6 and 8, the three decision tickets plus the plans and two traps, and never on 5, 7 or 9. Every evaluation came back `clear_winner` except one `routine`; no close call needed spikes after ticket 1.
+- **It cost twice as much** ($2.01 against $0.96) and 2.4× the time, for the same end result. It did keep the run clean longer (first failure at ticket 7, against 6 and 5), but ended the same.
+- Lean's extra miss (a merged venue's sales) is one run's slip in a feature ticket, not memory.
+
+**Verdict, after Sonnet and Haiku:** on these decisions, both models chose well, and Jev agreed or picked an equally good option at extra cost. Decision scoring stays off by default (`HORIZON_DECIDE=off`). It needs a scenario where the agent can't see the right answer at decision time, but Horizon can, such as another project's failure with the same choice.
