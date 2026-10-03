@@ -14,14 +14,17 @@ from horizon.decision.scorers import noul
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 THRESHOLD = 0.5
 
+# Reworded after the first boxoffice run, where tickets that fixed the function names but left the representation
+# open (money 0.32, booking references 0.43) went under. A false alarm costs one evaluation; a miss, the point.
 QUESTION = noul({
-    "question": "Does the task in `message` require choosing between technical approaches that will be hard or "
-                "expensive to change once later work builds on them?",
-    "counts": "How data is stored or persisted, the data model or identifiers, how money, time or units are "
-              "represented, concurrency or process model, a framework, key library or external service, or the "
-              "shape of a public interface other code will depend on.",
-    "not_counted": "Routine features on top of choices already made, bug fixes, renames, tests, docs, or an "
-                   "approach the message already prescribes.",
+    "question": "Will doing the task in `message` force the developer to choose how something is represented or "
+                "built that later work will depend on and that would be costly to change afterwards, even if the "
+                "message already fixes the function names and inputs?",
+    "counts": "How data is stored or persisted; how money, amounts, time or units are represented; how ids or "
+              "references are generated; concurrency or process model; a framework, key library or external "
+              "service; the shape of data other code or other systems will rely on.",
+    "not_counted": "A small feature built on choices already made, a query or listing over existing data, bug "
+                   "fixes, renames, tests or docs, or a task whose message already prescribes the representation.",
 })
 
 
