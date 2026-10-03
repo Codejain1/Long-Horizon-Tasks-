@@ -178,8 +178,12 @@ class TaskStore:
                 after = {f for c in self.db.fetchall(
                     "SELECT failing FROM test_captures WHERE cwd = %s AND created_at >= %s AND failing IS NOT NULL",
                     (cwd, since)) for f in (load_json(c[0]) or [])}
+                from horizon.composer import label
+
+                goals = [x.get("goal") or "" for x in tasks]
                 out.append({"situation": (ev.get("situation") or "")[:300], "chosen": ev["chosen"],
-                            "later_tasks": [(x.get("goal") or "")[:300] for x in later],
+                            # without the preamble every ticket shares, which filled the 300 characters (seen live)
+                            "later_tasks": [label(x.get("goal") or "", goals, 400) for x in later],
                             "later_failures": sorted(after - before)[:10]})
         return out[-limit:]
 

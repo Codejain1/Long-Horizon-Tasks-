@@ -30,7 +30,7 @@ class FakeScorer:
     def __init__(self, crucial=0.9, high_stakes=0.1, success=(0.8, 0.5), fit=(0.75, 0.5), reversible=(0.5, 0.5),
                  confidence=0.9, breaks_tests=(0.1, 0.1), costlier=(0.5, 0.5), second=None):
         self.values = {"success": success, "compatibility": fit, "architecture_fit": fit, "future_fit": fit,
-                       "efficiency": fit, "reversible": reversible,
+                       "efficiency": fit, "reversible": reversible, "relevant": (0.9,) * 6, "repeats": (0.1,) * 6,
                        "breaks_tests": breaks_tests, "costlier": costlier}
         self.crucial, self.high_stakes, self.confidence, self.second = crucial, high_stakes, confidence, second or {}
         self.calls = []
@@ -358,3 +358,24 @@ def test_a_preferred_pick_that_holds_up_skips_the_consequence_checks(platform, s
     assert agreed["decision"] == "agree" and agreed["chosen"] == "JSON file" and "consequence_plan" not in agreed
     overruled = platform.evaluate_options(task_id, "how to store bookings", opts, preferred="pickle file")
     assert overruled["decision"] != "agree" and overruled["chosen"] != "pickle file"
+
+
+def test_history_lessons_reach_the_agent_and_a_pick_that_would_repeat_them_is_overruled(platform, settings,
+                                                                                         task_store, monkeypatch):
+    """Another project chose a JSON file and then had an incident under several worker processes. Here, the
+    agent's JSON pick (which would repeat it) is overruled, and the lesson is passed on with the decision."""
+    from horizon.models import TaskState
+
+    other = task_store.create(TaskState(team_id=settings.team_id, goal="Ticket 1: store notes on disk", cwd="/other"))
+    other.last_evaluation = {"situation": "how to persist notes", "chosen": "JSON file"}
+    task_store.save(other)
+    task_store.create(TaskState(team_id=settings.team_id, goal="Ticket 2: incident, notes lost with 4 workers",
+                                cwd="/other"))
+    task_id = platform.start_task("Store stock levels")["task_id"]
+    scorer = FakeScorer(success=(0.8, 0.8), fit=(0.7, 0.7))
+    scorer.values["repeats"] = (0.9, 0.1)  # the JSON option would repeat the incident; SQLite wouldn't
+    monkeypatch.setattr(platform, "_scorer", lambda: (scorer, False))
+    out = platform.evaluate_options(task_id, "how to store stock", [Option("JSON file"), Option("SQLite")],
+                                    preferred="JSON file")
+    assert out["decision"] != "agree" and out["chosen"] == "SQLite"
+    assert out["lessons"][0]["chosen"] == "JSON file" and "incident" in out["next"]

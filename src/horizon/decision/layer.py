@@ -105,7 +105,20 @@ def _option_questions(i: int, evidence: bool) -> dict[str, dict]:
     }
 
 
-def build_questions(n_options: int) -> dict[str, dict]:
+def history_questions(n_options: int, n_history: int) -> dict[str, dict]:
+    """With other projects' decisions in `decision_history`: which past entries bear on this choice, and whether
+    each option would run into the same trouble. The lesson is often a requirement ("services run as several
+    worker processes"), not "avoid that option": an option that handles it is fine."""
+    qs = {f"h{j}.relevant": noul(f"Would the trouble that followed `decision_history[{j}]` (its `later_tasks` and "
+                                 f"`later_failures`) also matter for the choice in `situation` in this project?")
+          for j in range(n_history)}
+    for i in range(n_options):
+        qs[f"o{i}.repeats"] = noul(f"Would `options[{i}]`, as described, run into the same trouble that followed "
+                                   f"the relevant entries of `decision_history`?")
+    return qs
+
+
+def build_questions(n_options: int, n_history: int = 0) -> dict[str, dict]:
     """Pass 1."""
     qs = {
         "crucial.irreversible": noul("Would the choice in `situation` be hard or expensive to reverse later?"),
@@ -122,6 +135,8 @@ def build_questions(n_options: int) -> dict[str, dict]:
     }
     for i in range(n_options):
         qs.update(_option_questions(i, evidence=False))
+    if n_history:
+        qs.update(history_questions(n_options, n_history))
     return qs
 
 
@@ -176,6 +191,8 @@ def _rows(options: list[Option], answers: dict[str, Answer] | None, settings, se
             dims["success"] = round(min(1.0, max(0.0, raw - bias)), 3)
             for d in JUDGED:
                 dims[d] = round(answers[f"o{i}.{d}"].value, 3)
+            if f"o{i}.repeats" in answers:
+                dims["no_repeat"] = round(1 - answers[f"o{i}.repeats"].value, 3)
             if second_pass:
                 dims["no_regressions"] = round(1 - answers[f"o{i}.breaks_tests"].value, 3)
                 dims["relative_cost"] = round(1 - answers[f"o{i}.costlier"].value, 3)
@@ -221,11 +238,16 @@ def _result(out: dict, kind: str, row: dict | None, reason: str, next_: str) -> 
 def first_pass(state: dict, options: list[Option], scorer: Scorer | None, settings, *,
                crucial_hint: bool | None = None, fear_warnings: int = 0, bias: float = 0.0) -> dict:
     """Returns a final decision, or `decision: "close"` with the close options for consequence checking."""
-    answers, status = _ask(scorer, state, build_questions(len(options)))
+    history = state.get("decision_history") or []
+    answers, status = _ask(scorer, state, build_questions(len(options), len(history)))
     rows = _rows(options, answers, settings, second_pass=False, bias=bias)
     ranked = sorted((r for r in rows if r["composite"] is not None), key=lambda r: -r["composite"])
     out = {"scorer": scorer.name if scorer else None, "scorer_status": status, "options": rows,
            "answers": _raw(answers), "calibration_bias": round(bias, 3)}
+    if answers and history:
+        # Knowledge only Horizon holds: what went wrong after similar choices elsewhere. Passed to the agent with
+        # whatever is decided, so it designs for it even when its own pick stands.
+        out["lessons"] = [h for j, h in enumerate(history) if answers[f"h{j}.relevant"].value >= 0.5]
 
     if not answers:
         # Estimates alone only say what is cheap, not what works, so nothing is chosen (seen in a real run: the

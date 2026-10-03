@@ -400,6 +400,12 @@ class Platform:
                               "next": ("Run the static_checks, then one spike per option in consequence_plan.spikes "
                                        "(never in the working tree). Skip an option's spike if its static checks "
                                        "fail. Then call submit_consequences with the decision_id and the results.")}
+            if first.get("lessons"):
+                result["lessons"] = first["lessons"]
+                lines = "; ".join(f"after choosing {h['chosen']!r} for {h['situation'][:120]!r}: "
+                                  + " / ".join(h["later_tasks"][:2] + h["later_failures"][:3]) for h in first["lessons"])
+                result["next"] = (result.get("next") or "") + (f" Lessons from the team's other projects: {lines}. "
+                                                               "Make sure your implementation handles this.")
             record["stage"] = "awaiting_consequences" if result["decision"] == "check_consequences" else "decided"
             return {**self._finish_decision(task, record, result), "memory_status": memory_status}
 

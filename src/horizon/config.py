@@ -19,6 +19,7 @@ def default_db_url() -> str:
 # Measured in code from the host's estimates: cost_usd, tokens, latency_ms. Renormalised over what's available.
 DEFAULT_DECISION_WEIGHTS = {"success": 0.25, "compatibility": 0.15, "architecture_fit": 0.10,
                             "future_fit": 0.20, "efficiency": 0.10,  # Jev's view of the work to come, and of cost
+                            "no_repeat": 0.30,  # with decision_history: won't hit what followed similar choices
                             "cost_usd": 0.10, "tokens": 0.05, "latency_ms": 0.05,  # the host's estimates, if any
                             # Second pass only (consequences as evidence, PROJECT.md §6 step 4):
                             "no_regressions": 0.20, "relative_cost": 0.10}
