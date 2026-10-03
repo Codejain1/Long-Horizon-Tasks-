@@ -289,9 +289,15 @@ class Platform:
         options: list[Option],
         conditions: list[Condition] | None = None,
         crucial: bool | None = None,
+        preferred: str | None = None,
     ) -> dict:
         """Decision layer (PROJECT.md §5-6): score the host's options before it commits to a crucial choice.
-        A close call returns a consequence plan; the host runs it and calls submit_consequences."""
+        A close call returns a consequence plan; the host runs it and calls submit_consequences.
+
+        `preferred`, the host's own pick: Horizon only spends more (consequence checks) when the scorer clearly
+        prefers another option. If the pick is the best, or within the clear-winner margin of it, the decision is
+        `agree` and the host goes ahead (seen on Haiku: spikes on calls the host already had right doubled the
+        cost and changed nothing)."""
         situation = redact(situation, MAX_SITUATION)
         conditions = redact_conditions(conditions)
         options = [Option(label=redact(o.label, MAX_OPTION), description=redact(o.description, MAX_NOTE) or "",
@@ -336,6 +342,19 @@ class Platform:
             first = first_pass(state, opts, scorer, self.settings, crucial_hint=crucial, fear_warnings=fear, bias=bias)
             if broken:
                 first["scorer_status"] = "unavailable"
+            if preferred and first.get("decision") in ("clear_winner", "close"):
+                rows = [r for r in first["options"] if r["composite"] is not None]
+                pick = next((r for r in rows if same_option(r["label"], preferred)
+                             or same_option(r["label"], redact(preferred, MAX_OPTION))), None)
+                best = max(rows, key=lambda r: r["composite"]) if rows else None
+                if pick and best and best["composite"] - pick["composite"] < self.settings.clear_margin:
+                    first = {**first, "decision": "agree", "chosen": pick["label"],
+                             "predicted_success": pick["dimensions"].get("success"),
+                             "predicted_success_raw": pick.get("success_raw"),
+                             "reason": (f"Your pick, {pick['label']}, scores "
+                                        + ("best." if best is pick else
+                                           f"within {self.settings.clear_margin:.2f} of the best ({best['label']}).")),
+                             "next": f"Implement {pick['label']}."}
             record = new_record(team_id=self.settings.team_id, project_id=task.project_id, task_id=task.id,
                                 state=state, options=[asdict(o) for o in opts],
                                 scorer={"name": first["scorer"], "status": first["scorer_status"]})

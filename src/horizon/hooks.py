@@ -253,9 +253,10 @@ def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | N
         return None
     lines = [f"Horizon task id: {task.id} (only needed if you call evaluate_options)."] if tools else []
     if decide and tools:
-        from horizon.decide import crucial_ahead, instruction
+        from horizon.decide import crucial_ahead, earlier_decisions, instruction
 
-        if crucial_ahead(scorer, text):
+        done = store.recent_completed(team, project, limit=30)
+        if crucial_ahead(scorer, text, earlier_decisions(done)):
             task.decision_due = True
             store.save(task)
             lines = [instruction(task.id)]

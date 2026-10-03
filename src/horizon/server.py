@@ -81,7 +81,7 @@ Score your options before committing to a crucial decision. Call this BEFORE cho
 architecture, key library, data model or anything else that is hard to reverse, affects many later steps, or
 has real cost. Routine steps don't need it. Pass the decision point as `situation` and 2-4 realistic options,
 with your cost/token/latency estimates where you have them. Returns a `decision`:
-- "routine" or "clear_winner": implement `chosen`.
+- "routine", "clear_winner" or "agree" (your `preferred` pick holds up): implement `chosen`.
 - "check_consequences": a close call. Run the `consequence_plan` (static checks, then one small spike per
   option, outside the working tree) and call submit_consequences with the results.
 - "try_and_rollback": a close call where every option is cheap to undo: implement `chosen`; if tests
@@ -264,11 +264,13 @@ def create_server(target: "Platform | Gateway", lean: bool | None = None) -> MCP
         conditions: Annotated[list[Condition] | None, Field(description="Same shape as recall_context.")] = None,
         crucial: Annotated[bool | None, Field(description="Set true/false only if you are sure; by default "
                                                           "Horizon decides whether this is crucial.")] = None,
+        preferred: Annotated[str | None, Field(description="The label of the option you would pick yourself. If "
+                                                           "Horizon agrees, you go ahead with no further checks.")] = None,
         ctx: Context | None = None,
     ) -> dict[str, Any] | InputRequiredResult:
         return await gw.run(ctx, "evaluate_options",
                             lambda p: p.evaluate_options(task_id, situation, [Option(**o.model_dump()) for o in options],
-                                                         conditions, crucial),
+                                                         conditions, crucial, preferred),
                             signals=_decision_signals, approval=HUMAN_CHOICE)
 
     @server.tool(description=SUBMIT_CONSEQUENCES)

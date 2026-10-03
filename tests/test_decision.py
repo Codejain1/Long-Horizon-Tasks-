@@ -345,3 +345,16 @@ def test_the_typesafe_key_comes_from_the_keychain_when_cursor_hides_the_variable
     monkeypatch.delenv("TYPESAFE_API_KEY")
     monkeypatch.setattr("subprocess.run", lambda cmd, **_: type("Missing", (), {"returncode": 44, "stdout": ""})())
     assert scorers.typesafe_key() is None
+
+
+def test_a_preferred_pick_that_holds_up_skips_the_consequence_checks(platform, settings, monkeypatch):
+    """The host's own pick within the clear-winner margin of the best: `agree`, no spikes. Clearly worse: the
+    scorer's choice stands."""
+    task_id = platform.start_task("Store bookings")["task_id"]
+    opts = [Option("SQLite"), Option("JSON file"), Option("pickle file")]
+    monkeypatch.setattr(platform, "_scorer", lambda: (FakeScorer(success=(0.8, 0.78, 0.2), fit=(0.7, 0.68, 0.2), reversible=(0.5,) * 3, breaks_tests=(0.1,) * 3,
+                                                                  costlier=(0.5,) * 3), False))
+    agreed = platform.evaluate_options(task_id, "how to store bookings", opts, preferred="JSON file")
+    assert agreed["decision"] == "agree" and agreed["chosen"] == "JSON file" and "consequence_plan" not in agreed
+    overruled = platform.evaluate_options(task_id, "how to store bookings", opts, preferred="pickle file")
+    assert overruled["decision"] != "agree" and overruled["chosen"] != "pickle file"

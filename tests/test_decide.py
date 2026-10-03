@@ -7,10 +7,14 @@ from horizon.hooks import Local, lean_pre_tool_use, lean_user_prompt
 
 
 class Crucial:
-    """A stand-in for Jev: the message is crucial when it mentions storage."""
+    """A stand-in for Jev: the message is crucial when it mentions storage; settled when an earlier decision
+    was about storage too."""
 
     def ask(self, state, questions):
-        return {"crucial": Answer(0.9 if "storage" in state["message"] else 0.1)}
+        out = {"crucial": Answer(0.9 if "storage" in state["message"] else 0.1)}
+        if "settled" in questions:
+            out["settled"] = Answer(0.9 if any("storage" in d for d in state["earlier_decisions"]) else 0.1)
+        return out
 
 
 def edit(backend, project, session="s1", tool="Write"):
@@ -50,3 +54,15 @@ def test_off_by_default_and_without_a_scorer(settings, task_store, project_dir):
                                scorer=scorer, decide=decide)
         assert "crucial choice" not in json.dumps(out)
     assert not any(t.decision_due for t in task_store.active(settings.team_id, cwd=project_dir))
+
+
+def test_a_choice_an_earlier_task_settled_doesnt_trigger_again(settings, task_store, project_dir):
+    lean_user_prompt(task_store, settings.team_id, project_dir, "s1", "Ticket 2: choose the storage.",
+                     scorer=Crucial(), decide=True)
+    [task] = task_store.active(settings.team_id, cwd=project_dir)
+    task.last_evaluation = {"situation": "how to persist the storage", "chosen": "SQLite"}
+    task.status = "completed"
+    task_store.save(task)
+    out = lean_user_prompt(task_store, settings.team_id, project_dir, "s2", "Ticket 6: the storage now has more "
+                           "users.", scorer=Crucial(), decide=True)
+    assert "crucial choice" not in json.dumps(out)

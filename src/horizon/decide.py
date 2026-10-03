@@ -28,19 +28,33 @@ QUESTION = noul({
 })
 
 
-def crucial_ahead(scorer, message: str) -> bool:
-    """Jev's read of whether a task's message hides a crucial choice; False when there is no scorer."""
+SETTLED = noul("Is the choice the task in `message` needs already made by one of `earlier_decisions` (the same "
+               "kind of choice for the same part of the system), so it only has to follow it?")
+
+
+def earlier_decisions(tasks) -> list[str]:
+    """The project's decisions so far, as "situation -> chosen" lines."""
+    return [f"{t.last_evaluation.get('situation', '')[:200]} -> {t.last_evaluation.get('chosen')}"
+            for t in tasks if t.last_evaluation and t.last_evaluation.get("chosen")][:20]
+
+
+def crucial_ahead(scorer, message: str, earlier: list[str] | None = None) -> bool:
+    """Jev's read of whether a task's message hides a crucial choice not already settled by an earlier decision
+    (seen on Haiku: tickets 6 and 8 re-ran the storage decision ticket 2 had made). False without a scorer."""
     if scorer is None or not message.strip():
         return False
+    questions = {"crucial": QUESTION, **({"settled": SETTLED} if earlier else {})}
     try:
-        return scorer.ask({"message": message}, {"crucial": QUESTION})["crucial"].value >= THRESHOLD
+        a = scorer.ask({"message": message, "earlier_decisions": earlier or []}, questions)
     except Exception:  # the scorer is down: no trigger, the task goes on as usual
         return False
+    return a["crucial"].value >= THRESHOLD and (not earlier or a["settled"].value < THRESHOLD)
 
 
 def instruction(task_id: str) -> str:
     return (f"Horizon: this task involves a crucial choice that later work will build on. Before writing code, list "
-            f"2-4 realistic approaches and call evaluate_options (task_id {task_id}) with them, then follow its "
+            f"2-4 realistic approaches, including the one you would pick, and call evaluate_options (task_id "
+            f"{task_id}) with them and your pick as `preferred`. If Horizon agrees, go ahead; otherwise follow its "
             "decision: implement `chosen`, or run its consequence plan and call submit_consequences on a close "
             "call.")
 
