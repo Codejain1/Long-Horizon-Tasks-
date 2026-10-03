@@ -378,3 +378,19 @@ Arms: without Horizon; lean (memory only); lean with `HORIZON_DECIDE=on` (Jev fl
 - Lean's extra miss (a merged venue's sales) is one run's slip in a feature ticket, not memory.
 
 **Verdict, after Sonnet and Haiku:** on these decisions, both models chose well, and Jev agreed or picked an equally good option at extra cost. Decision scoring stays off by default (`HORIZON_DECIDE=off`). It needs a scenario where the agent can't see the right answer at decision time, but Horizon can, such as another project's failure with the same choice.
+
+## After the decision fixes: lessons on Sonnet, three ways (2026-10-03, 1 run each)
+
+Fixes since the Haiku boxoffice run:
+- the agent names its `preferred` pick, and Horizon only adds checks when Jev clearly prefers another option;
+- the trigger stays quiet once an earlier decision settled the choice;
+- Jev sees `decision_history`: other projects' decisions and what went wrong after them.
+
+| | Hidden tests (5 tickets, 2 projects) | Time | Tokens | Cost |
+|---|---|---|---|---|
+| without Horizon | all pass | 2.5 min | 0.57 M | $0.42 |
+| lean | all pass | 2.9 min | 0.43 M | $0.37 |
+| lean + decisions | all pass | 2.8 min | 0.41 M | $0.38 |
+
+- **The cost penalty is gone.** Decisions triggered twice (tickets 1 and 3, the two storage choices), both came back `agree` at no extra checks, and the arm cost the same as lean and 10 % less than without Horizon.
+- **No trap:** Sonnet picked SQLite in both projects from the start, so the notes incident had nothing to teach it. The test that matters is a model that picks the tempting store (Haiku chose a JSON file in boxoffice).
