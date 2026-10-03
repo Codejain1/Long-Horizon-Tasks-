@@ -357,6 +357,15 @@ class Platform:
                                         + ("best." if best is pick else
                                            f"within {self.settings.clear_margin:.2f} of the best ({best['label']}).")),
                              "next": f"Implement {pick['label']}."}
+            if first.get("lessons") and first.get("decision") in ("agree", "clear_winner", "routine") and first["chosen"]:
+                # Jev is in the middle on whether the pick repeats another project's trouble: check it first
+                # (seen on Haiku: no_repeat 0.53, agreed, and the stock store failed the same way).
+                rows = {r["label"]: r for r in first["options"]}
+                if (rows[first["chosen"]]["dimensions"].get("no_repeat") or 0) < self.settings.lesson_safe:
+                    others = [r for r in first["options"] if r["label"] != first["chosen"] and r["composite"] is not None]
+                    alt = max(others, key=lambda r: r["dimensions"].get("no_repeat") or 0, default=None)
+                    first = {**first, "decision": "close", "chosen": None, "lesson_check": True,
+                             "close": [first["chosen"]] + ([alt["label"]] if alt else [])}
             record = new_record(team_id=self.settings.team_id, project_id=task.project_id, task_id=task.id,
                                 state=state, options=[asdict(o) for o in opts],
                                 scorer={"name": first["scorer"], "status": first["scorer_status"]})
@@ -367,9 +376,11 @@ class Platform:
             if first["decision"] == "close":
                 past, _ = self._call_memory(lambda m: m.lookup_simulation(
                     team_id=self.settings.team_id, situation=situation, options=first["close"]))
+                focus = "; ".join(" / ".join(h["later_tasks"][:2] + h["later_failures"][:3])
+                                  for h in first.get("lessons") or []) if first.get("lesson_check") else None
                 plan = plan_consequences(first, situation, past or {}, self.settings,
-                                         can_roll_back=any(c.git for c in task.checkpoints),
-                                         forecasts=world["forecasts"] if active else None)
+                                         can_roll_back=any(c.git for c in task.checkpoints) and not focus,
+                                         forecasts=world["forecasts"] if active else None, focus=focus)
                 record["consequences"] = {"plan": plan, "submitted": None}
                 if plan["mode"] in ("memory", "world_model"):
                     # Every close option was tested before, or the rest are confidently forecast: no spikes.

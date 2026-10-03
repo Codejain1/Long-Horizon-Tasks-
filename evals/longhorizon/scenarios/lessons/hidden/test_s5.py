@@ -5,10 +5,11 @@ import stock
 WORKERS, EACH = 4, 25
 
 
-def _worker(path, w, out):
+def _worker(path, w, start, out):
     done = 0
     try:
         stock.open_warehouse(path)
+        start.wait(60)
         for _ in range(EACH):
             stock.add_stock("A1", 2)
             stock.remove_stock("A1", 1)

@@ -7,10 +7,11 @@ import boxoffice
 COUNTERS, EACH, SEATS = 8, 20, 100
 
 
-def _counter(path, event_id, out):
+def _counter(path, event_id, start, out):
     refs = []
     try:
         boxoffice.open_box_office(path)
+        start.wait(60)
         for i in range(EACH):
             try:
                 refs.append(boxoffice.book(event_id, f"guest {i}", 1))
@@ -27,8 +28,8 @@ def _run(office):
     e = event(seats=SEATS, price="100.00")
     boxoffice.close_box_office()
     ctx = mp.get_context("spawn")
-    out = ctx.Queue()
-    procs = [ctx.Process(target=_counter, args=(office, e, out)) for _ in range(COUNTERS)]
+    out, start = ctx.Queue(), ctx.Barrier(COUNTERS)  # start together: overlap is what's being tested
+    procs = [ctx.Process(target=_counter, args=(office, e, start, out)) for _ in range(COUNTERS)]
     for p in procs:
         p.start()
     refs = []

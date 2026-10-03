@@ -5,10 +5,11 @@ import notes
 WORKERS, EACH = 4, 30
 
 
-def _worker(path, w, out):
+def _worker(path, w, start, out):
     ids = []
     try:
         notes.open_notes(path)
+        start.wait(60)
         for i in range(EACH):
             ids.append(notes.add_note(f"note {w}-{i}"))
         notes.close_notes()

@@ -140,7 +140,7 @@ def build_questions(n_options: int, n_history: int = 0) -> dict[str, dict]:
     return qs
 
 
-def consequence_questions(n_options: int) -> dict[str, dict]:
+def consequence_questions(n_options: int, n_history: int = 0) -> dict[str, dict]:
     """Pass 2: the same per-option questions with `consequences` as evidence, plus the §6 step 4 questions."""
     qs = {}
     for i in range(n_options):
@@ -150,6 +150,8 @@ def consequence_questions(n_options: int) -> dict[str, dict]:
                                         f"or behaviour of the project?")
         qs[f"o{i}.costlier"] = noul(f"Given `consequences`, will {ref} cost noticeably more than the other "
                                     f"`options` to finish: tokens, money, time or added complexity?")
+    if n_history:
+        qs.update(history_questions(n_options, n_history))
     return qs
 
 
@@ -275,7 +277,7 @@ def first_pass(state: dict, options: list[Option], scorer: Scorer | None, settin
 
 
 def plan_consequences(first: dict, situation: str, from_memory: dict[str, dict], settings, *,
-                      can_roll_back: bool, forecasts: dict[str, dict] | None = None) -> dict:
+                      can_roll_back: bool, forecasts: dict[str, dict] | None = None, focus: str | None = None) -> dict:
     """What to check for the close options, cheapest first (§6). Returns the plan; `mode` is one of
     "memory" (everything already tested before), "world_model" (the rest confidently forecast),
     "try_and_rollback" or "spikes". `forecasts` are the world model's, passed only when it is active."""
@@ -298,7 +300,9 @@ def plan_consequences(first: dict, situation: str, from_memory: dict[str, dict],
         "spikes": [{
             "option": label,
             "build": (f"The smallest proof of concept of \"{label}\" for: {situation}. Exercise only the one or "
-                      f"two behaviours this decision depends on. Build it under {SPIKE_DIR}/ in the project "
+                      f"two behaviours this decision depends on"
+                      + (f", and reproduce what went wrong after a similar choice elsewhere: {focus}" if focus else "")
+                      + f". Build it under {SPIKE_DIR}/ in the project "
                       f"(git-ignored, so it is never part of the working tree or a checkpoint), not in the "
                       f"project's own files, and delete it afterwards."),
             "measure": ["passed: did it do what the decision needs (true/false)",
@@ -323,7 +327,7 @@ def second_pass(state: dict, options: list[Option], evidence: dict[str, dict], s
     state = {**state, "options": [{"label": o.label, "description": o.description} for o in close],
              "consequences": [{"option": o.label, **(evidence.get(o.label) or {"tested": False})} for o in close]}
 
-    answers, status = _ask(scorer, state, consequence_questions(len(close)))
+    answers, status = _ask(scorer, state, consequence_questions(len(close), len(state.get("decision_history") or [])))
     rows = _rows(close, answers, settings, second_pass=True, bias=bias)
     if answers is None:  # keep pass 1's judgement, now with the measured values
         by_label = {r["label"]: r for r in first["options"]}

@@ -379,3 +379,24 @@ def test_history_lessons_reach_the_agent_and_a_pick_that_would_repeat_them_is_ov
                                     preferred="JSON file")
     assert out["decision"] != "agree" and out["chosen"] == "SQLite"
     assert out["lessons"][0]["chosen"] == "JSON file" and "incident" in out["next"]
+
+
+def test_a_pick_jev_is_unsure_would_repeat_a_lesson_is_spiked_against_it(platform, settings, task_store, monkeypatch):
+    """Jev in the middle on repeating another project's trouble (0.5): no `agree`; the pick and the safest
+    alternative are spiked, each told to reproduce the lesson's trouble."""
+    from horizon.models import TaskState
+
+    other = task_store.create(TaskState(team_id=settings.team_id, goal="Ticket 1: store notes on disk", cwd="/other"))
+    other.last_evaluation = {"situation": "how to persist notes", "chosen": "JSON file"}
+    task_store.save(other)
+    task_store.create(TaskState(team_id=settings.team_id, goal="Ticket 2: incident, notes lost with 4 workers",
+                                cwd="/other"))
+    task_id = platform.start_task("Store stock levels")["task_id"]
+    scorer = FakeScorer(success=(0.8, 0.7), fit=(0.7, 0.6))
+    scorer.values["repeats"] = (0.5, 0.2)
+    monkeypatch.setattr(platform, "_scorer", lambda: (scorer, False))
+    out = platform.evaluate_options(task_id, "how to store stock", [Option("JSON file"), Option("SQLite")],
+                                    preferred="JSON file")
+    assert out["decision"] == "check_consequences"
+    spikes = out["consequence_plan"]["spikes"]
+    assert [s["option"] for s in spikes] == ["JSON file", "SQLite"] and all("4 workers" in s["build"] for s in spikes)

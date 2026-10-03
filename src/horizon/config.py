@@ -85,6 +85,9 @@ class Settings:
     high_stakes_threshold: float = 0.5  # spending money, messaging people, deleting data: ask a human
     # Consequence checking (PROJECT.md §6).
     spike_reuse_similarity: float = 0.85  # a past spike this similar (same option label) is reused
+    # With a relevant lesson from another project, a pick is only taken without a check when Jev is this sure it
+    # won't repeat it (no_repeat); in between, the agent spikes the lesson's trouble first.
+    lesson_safe: float = 0.7
     try_reversible_threshold: float = 0.7  # every close option at least this reversible: try and roll back
     spike_budget_minutes: int = 10  # per spike, told to the host
     # World model (PROJECT.md §6). "auto": forecasts are logged with every decision and used only once the
