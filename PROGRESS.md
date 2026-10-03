@@ -553,6 +553,11 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **Over-capture fixed:** lean's session start leaves out sentences that the latest message repeated from an earlier one, and shows up to 40 constraints. Rental rerun, lean + Jev: **26 of 27 rule checks** (was 22; baseline 8), 2.85 M tokens, 14.5 min, 0 suspect sessions.
   - **Tests:** 737 (490 pass on SQLite; the 247 Postgres variants were skipped this time).
 
+- **Session 25: the decision layer, rebuilt and tested on decision traps** (owner's direction: decisions on quality, compatibility, cost and the future).
+  - Jev scores options on future fit and efficiency, and on repeating another project's trouble (`decision_history`); `HORIZON_DECIDE=on` triggers `evaluate_options` itself on crucial tickets; the agent's `preferred` pick is agreed when it holds up; settled choices don't re-trigger; when Jev is unsure a pick repeats a past lesson, both it and the safest alternative are spiked against that trouble.
+  - Scenarios `boxoffice` (decision traps) and `lessons` (two projects, knowledge only Horizon holds). Concurrency hidden tests start workers on a barrier (they were flaky; every run re-graded).
+  - **Results:** on Sonnet, no arm fell into a trap, and decisions now cost the same as lean. **On Haiku, decisions were the only arm to pass every trap**: boxoffice 5/5 trap checks against 4/5 and 3/5; lessons project 2, 3/3 against 2/3 for both others, at +44 % cost.
+
 ## In progress
 
 - Nothing running.

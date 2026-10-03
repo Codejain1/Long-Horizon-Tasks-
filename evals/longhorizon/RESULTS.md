@@ -410,3 +410,18 @@ Fixes since the Haiku boxoffice run:
 **This changes the boxoffice verdict.** On Haiku, Jev steered the storage choice to SQLite with transactions, and that was the only arm whose bookings survived 8 counters at once. Haiku's own choice, a JSON file with an `fcntl` lock, lost bookings. That is the decision layer's first measured win, at 2× the cost (before the cost fixes).
 
 On lessons, the lesson reached the agent (`lessons` in the decision) but Haiku still agreed its JSON store: Jev rated its repeat risk 0.53. Since then, a pick Jev is unsure about is spiked against the lesson's trouble first (`lesson_safe`, 0.7).
+
+## Lessons on Haiku with the lesson check (2026-10-03, 1 run each, re-graded 3× with identical results)
+
+| | Project 2 (stock) hidden tests | Stock store | Time | Tokens | Cost |
+|---|---|---|---|---|---|
+| without Horizon | 2/3: **lost stock under the team's workers** | JSON file | 5.4 min | 2.57 M | $0.54 |
+| lean | 2/3: **lost stock under the team's workers** | JSON file | 5.2 min | 1.71 M | $0.41 |
+| lean + decisions | **3/3** | SQLite | 8.7 min | 3.84 M | $0.78 |
+
+**What happened in the decisions arm at ticket 3**, the stock storage choice in a fresh repo with nothing said about workers:
+1. Haiku listed its options. Jev found project 1's incident relevant (notes lost with 4 worker processes) and was unsure whether the JSON pick would repeat it.
+2. The lesson check turned that into a close call. Haiku spiked JSON and SQLite against the incident (several workers at once) and submitted the results.
+3. Jev's second pass gave SQLite the `clear_winner`, and the stock service survived the team's workers in ticket 5.
+
+All three arms failed project 1's own incident fix in ticket 2 (notes workers), which is Haiku's implementation, not memory. **This is the decision layer doing the job it was designed for:** knowledge only Horizon held (another project's incident), weighed by Jev, checked by a spike when Jev was unsure, and it changed the outcome. It cost +44 % over without Horizon. On Sonnet, which picked SQLite unprompted, the same machinery agreed and cost nothing extra.
