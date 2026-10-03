@@ -394,3 +394,19 @@ Fixes since the Haiku boxoffice run:
 
 - **The cost penalty is gone.** Decisions triggered twice (tickets 1 and 3, the two storage choices), both came back `agree` at no extra checks, and the arm cost the same as lean and 10 % less than without Horizon.
 - **No trap:** Sonnet picked SQLite in both projects from the start, so the notes incident had nothing to teach it. The test that matters is a model that picks the tempting store (Haiku chose a JSON file in boxoffice).
+
+## Correction: the concurrency hidden tests were flaky (2026-10-03)
+
+`lessons` tickets 2 and 5 and `boxoffice` ticket 6 ran their worker processes without a common start. When process start-up was slow (the full hidden suite imports more), the workers ran one after another, so an unsafe store could pass by luck. They now start together on a barrier. Every earlier run was re-graded on its final code, 3 times each, with identical results every time:
+
+| Run | Without Horizon | Lean | Lean + decisions |
+|---|---|---|---|
+| boxoffice, Sonnet | 12/12 | 12/12 | 12/12 |
+| **boxoffice, Haiku** (was "all equal") | 10/12; **lost bookings under concurrency** | 9/12; lost bookings, merge | **11/12; every trap check passed** |
+| lessons, Sonnet | all pass | all pass | all pass |
+| lessons, Haiku, run 1 | stock workers fail | stock workers fail (+ notes workers) | stock workers fail |
+| lessons, Haiku, run 2 (lessons passed to the agent) | stock workers fail | stock workers fail | stock workers fail (+ notes workers) |
+
+**This changes the boxoffice verdict.** On Haiku, Jev steered the storage choice to SQLite with transactions, and that was the only arm whose bookings survived 8 counters at once. Haiku's own choice, a JSON file with an `fcntl` lock, lost bookings. That is the decision layer's first measured win, at 2× the cost (before the cost fixes).
+
+On lessons, the lesson reached the agent (`lessons` in the decision) but Haiku still agreed its JSON store: Jev rated its repeat risk 0.53. Since then, a pick Jev is unsure about is spiked against the lesson's trouble first (`lesson_safe`, 0.7).
