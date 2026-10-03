@@ -485,3 +485,24 @@ def test_boxoffice_catches_the_tempting_choices_only_where_they_break(tmp_path):
     assert all(r["hidden"]["failed"] == [] for r in rows[:5]) and rows[6]["hidden"]["failed"] != []
     assert {t.split("::")[-1] for t in rows[-1]["hidden"]["failed"]} == BOXOFFICE_TRAPS
     assert len(rows[-1]["hidden"]["passed"]) == 12 - len(BOXOFFICE_TRAPS)
+
+
+def test_lessons_runs_two_projects_and_catches_a_store_unsafe_for_the_teams_workers(tmp_path):
+    """Two projects in one run (notes for tickets 1-2, stock for 3-5), each with its own repo and accumulating
+    hidden tests. The reference passes all five; a JSON stock store fails exactly the worker-processes check."""
+    run = load("run")
+    ref = EVAL / "reference" / "lessons"
+    good = fake(tmp_path, "good", f"shutil.copytree({str(ref)!r} + '/' + repo.name, repo, dirs_exist_ok=True)",
+                "writes the reference for this project")
+    run.main(["--scenario", "lessons", "--arm", "baseline", "--out", str(tmp_path / "ok"), "--claude", good])
+    rows = json.loads((tmp_path / "ok" / "lessons-baseline" / "results.json").read_text())["sessions"]
+    assert [len(r["hidden"]["passed"]) for r in rows] == [1, 2, 1, 2, 3]
+    assert all(r["hidden"]["failed"] == [] and r["violations"] == [] for r in rows)
+    tempting = EVAL / "reference" / "lessons-tempting" / "store.py"
+    naive = fake(tmp_path, "naive", f"shutil.copytree({str(ref)!r} + '/' + repo.name, repo, dirs_exist_ok=True)\n"
+                                    f"if repo.name == 'stock':\n    shutil.copy({str(tempting)!r}, repo / 'stock' / 'store.py')",
+                 "writes the reference with a JSON stock store")
+    run.main(["--scenario", "lessons", "--arm", "baseline", "--out", str(tmp_path / "bad"), "--claude", naive])
+    rows = json.loads((tmp_path / "bad" / "lessons-baseline" / "results.json").read_text())["sessions"]
+    assert [r["hidden"]["failed"] for r in rows[:4]] == [[]] * 4
+    assert [t.split("::")[-1] for t in rows[4]["hidden"]["failed"]] == ["test_the_teams_workers_lose_no_stock_movement"]

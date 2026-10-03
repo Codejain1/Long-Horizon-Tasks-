@@ -1,0 +1,25 @@
+{
+ "id": "lessons",
+ "about": "Two projects for one team, no roadmap given. In notes (tickets 1-2) the agent picks a storage design, then an incident shows ops runs services as several worker processes. In stock (tickets 3-5, a fresh repo) the same choice comes up with nothing said about workers; ticket 5 deploys it 'like our other services', and the hidden test runs several worker processes. Only knowledge carried from the first project can inform the second project's decision.",
+ "repos": [
+  "notes",
+  "notes",
+  "stock",
+  "stock",
+  "stock"
+ ],
+ "constraints": {
+  "stdlib_only": true,
+  "python39": false
+ },
+ "rule_checks": {
+  "test_the_teams_workers_lose_no_stock_movement": "stock safe under the team's worker processes"
+ },
+ "sessions": [
+  "You are working through the team's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #1 (notes service): notes are kept on disk. `open_notes(path)` opens the notes stored at `path` (creating them if needed) and makes them the current ones; `close_notes()` closes them. `add_note(text)` stores a note and returns its id (a string), `get_note(note_id)` returns its text, and `list_notes()` returns every id. Everything survives closing and reopening. Unknown ids raise `NotesError`. Export these from the `notes` package. Run ./ci.sh before you finish.",
+  "You are working through the team's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #2 (notes service): incident report. Last night ops started running the notes service as 4 worker processes on the same notes, and notes went missing. Fix it, so no note is ever lost. Run ./ci.sh before you finish.",
+  "You are working through the team's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #3 (stock service, a new project): stock levels are kept on disk. `open_warehouse(path)` opens the warehouse stored at `path` (creating it if needed) and makes it the current one; `close_warehouse()` closes it. `add_stock(sku, qty)` adds `qty` units (a positive whole number) and `level(sku)` returns the units in stock (0 for an unknown sku). Everything survives closing and reopening. Export these from the `stock` package. Run ./ci.sh before you finish.",
+  "You are working through the team's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #4 (stock service): `remove_stock(sku, qty)` takes units out and raises `StockError` if there aren't enough; `movements(sku)` lists every change as `(qty, kind)` tuples, oldest first, with kind \"in\" or \"out\". Run ./ci.sh before you finish.",
+  "You are working through the team's backlog on your own: nobody will answer questions, so make reasonable choices and finish the ticket. Ticket #5 (stock service): the stock service goes live next week, deployed by ops like our other services. Make sure it's ready. Run ./ci.sh before you finish."
+ ]
+}

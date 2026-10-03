@@ -598,9 +598,11 @@ def main(argv: list[str] | None = None) -> int:
     RUN.clear()
     DENY_READ[:] = [REPO_ROOT, Path(args.out).resolve(), *(Path(p).expanduser().resolve() for p in args.deny_read)]
     apy = agent_python() if ISOLATE["on"] else python  # the agent's: hooks, CI, PATH
-    # "repos": one fresh repo per session (a new project for the same team), sharing only Horizon's memory.
-    # Then each session's hidden tests run on its own repo; otherwise they accumulate on the one repo.
+    # "repos": the project each session works in, sharing only Horizon's memory across projects. A name seen
+    # before continues that project (its repo and hidden tests accumulate); a new name starts a fresh repo,
+    # from `start/<name>/` if the scenario has one. Without "repos", every session works on the one repo.
     repos = scenario.get("repos")
+    projects: dict[str, tuple] = {}
     resume = (Path(args.resume), args.from_session) if args.resume else None
     if not repos:
         repo, env = setup(scenario, args.arm, work, apy, start_dir=scenario_dir / "start", resume=resume)
@@ -622,7 +624,10 @@ def main(argv: list[str] | None = None) -> int:
             continue
         print(f"[{args.scenario}/{args.arm}] session {i}", flush=True)
         if repos:
-            repo, env = setup(scenario, args.arm, work, apy, repos[i - 1])
+            name = repos[i - 1]
+            if name not in projects:
+                projects[name] = setup(scenario, args.arm, work, apy, name, start_dir=scenario_dir / "start" / name)
+            repo, env = projects[name]
         package = repos[i - 1] if repos else scenario["package"]
         for attempt in range(RETRIES + 1):
             row = {"session": i, **run_session(prompt, repo, claude=args.claude, model=args.model, arm=args.arm,
@@ -637,7 +642,8 @@ def main(argv: list[str] | None = None) -> int:
         row["outside_reads"] = outside_reads(work / f"session{i}.jsonl", repo, work, apy)
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", f"after session {i}", "--allow-empty")
-        row["hidden"] = hidden_tests(scenario_dir, range(i, i + 1) if repos else range(1, i + 1), repo, python)
+        same = [j for j in range(1, i + 1) if not repos or repos[j - 1] == repos[i - 1]]
+        row["hidden"] = hidden_tests(scenario_dir, same, repo, python)
         row["violations"] = constraints(scenario, repo, python, package)
         if "blocked_reasons" in scenario:
             row["blocked"] = blocked_note(repo, scenario["blocked_reasons"].get(str(i)))
