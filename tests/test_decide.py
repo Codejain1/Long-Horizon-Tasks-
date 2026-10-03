@@ -66,3 +66,22 @@ def test_a_choice_an_earlier_task_settled_doesnt_trigger_again(settings, task_st
     out = lean_user_prompt(task_store, settings.team_id, project_dir, "s2", "Ticket 6: the storage now has more "
                            "users.", scorer=Crucial(), decide=True)
     assert "crucial choice" not in json.dumps(out)
+
+
+def test_decision_history_carries_what_happened_after_a_choice_in_another_project(settings, task_store, tmp_path):
+    """Project A chose a JSON file, then an incident followed and a concurrency check failed; project B's
+    decision sees both. Its own project's decisions aren't repeated there."""
+    from horizon.models import TaskState, TestCapture
+
+    a, b = str(tmp_path / "a"), str(tmp_path / "b")
+    first = task_store.create(TaskState(team_id=settings.team_id, goal="Store notes on disk", cwd=a))
+    first.last_evaluation = {"situation": "how to persist notes", "chosen": "JSON file"}
+    task_store.save(first)
+    task_store.create(TaskState(team_id=settings.team_id, goal="Incident: notes lost with 4 workers", cwd=a))
+    task_store.add_capture(TestCapture(session_id="s", cwd=a, command="pytest", runner="pytest", passed=3, failed=1,
+                                       total=4, failing=["tests/test_store.py::test_concurrent_writers"]))
+    task_store.create(TaskState(team_id=settings.team_id, goal="Track stock", cwd=b))
+    [h] = task_store.decision_history(settings.team_id, exclude_cwd=b)
+    assert h["chosen"] == "JSON file" and "Incident: notes lost with 4 workers" in h["later_tasks"]
+    assert h["later_failures"] == ["tests/test_store.py::test_concurrent_writers"]
+    assert task_store.decision_history(settings.team_id, exclude_cwd=a) == []

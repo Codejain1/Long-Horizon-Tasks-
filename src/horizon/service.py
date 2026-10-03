@@ -324,6 +324,8 @@ class Platform:
                 "project_rules": ((self.tasks.project_constraints(self.settings.team_id, project) if project else [])
                                   + self.tasks.team_rules(self.settings.team_id))[:40],
                 "earlier_tasks": earlier,
+                # What the team's other projects chose for their decisions, and what happened next there.
+                "decision_history": self.tasks.decision_history(self.settings.team_id, exclude_cwd=project or None),
                 "situation": situation,
                 "conditions": [c.model_dump(mode="json") for c in conditions or []],
                 "options": [{"label": o.label, "description": o.description} for o in options],

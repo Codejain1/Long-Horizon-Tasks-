@@ -153,6 +153,36 @@ class TaskStore:
         return next((t["id"] for t in map(lambda r: load_json(r[0]), rows) if t.get("session_id") == session_id),
                     None)
 
+    def decision_history(self, team_id: str, exclude_cwd: str | None = None, limit: int = 20) -> list[dict]:
+        """Decisions made in the team's other projects, each with what happened next in that project: the goals of
+        the tasks that followed it and the checks that failed after it but not before. This is knowledge the agent
+        deciding now can't see; Jev weighs it (e.g. "JSON file -> later: data lost under several workers")."""
+        rows = [load_json(r[0]) for r in self.db.fetchall(
+            "SELECT data FROM tasks WHERE team_id = %s ORDER BY created_at DESC LIMIT 500", (team_id,))]
+        by_project: dict[str, list[dict]] = {}
+        for t in reversed(rows):  # oldest first
+            by_project.setdefault(t.get("cwd") or "", []).append(t)
+        out = []
+        for cwd, tasks in by_project.items():
+            if not cwd or cwd == exclude_cwd:
+                continue
+            for i, t in enumerate(tasks):
+                ev = t.get("last_evaluation") or {}
+                if not ev.get("chosen"):
+                    continue
+                later = tasks[i + 1:i + 6]
+                since = t.get("created_at")
+                before = {f for c in self.db.fetchall(
+                    "SELECT failing FROM test_captures WHERE cwd = %s AND created_at < %s AND failing IS NOT NULL",
+                    (cwd, since)) for f in (load_json(c[0]) or [])}
+                after = {f for c in self.db.fetchall(
+                    "SELECT failing FROM test_captures WHERE cwd = %s AND created_at >= %s AND failing IS NOT NULL",
+                    (cwd, since)) for f in (load_json(c[0]) or [])}
+                out.append({"situation": (ev.get("situation") or "")[:300], "chosen": ev["chosen"],
+                            "later_tasks": [(x.get("goal") or "")[:300] for x in later],
+                            "later_failures": sorted(after - before)[:10]})
+        return out[-limit:]
+
     def team_rules(self, team_id: str) -> list[str]:
         """The team's rules for every project: those of its latest task that set any."""
         # ponytail: scans the latest 50 tasks' JSON; a team_rules table if teams outgrow that window.

@@ -87,13 +87,15 @@ def _option_questions(i: int, evidence: bool) -> dict[str, dict]:
     given = " given `consequences`" if evidence else ""
     return {
         f"o{i}.success": noul(f"Will {ref} work: achieve `goal` within `constraints` for `situation`, "
-                              f"given `past_outcomes`{' and `consequences`' if evidence else ''}?"),
+                              f"given `past_outcomes`, `decision_history` (what other projects chose for similar "
+                              f"decisions and what went wrong afterwards){' and `consequences`' if evidence else ''}?"),
         f"o{i}.compatibility": score(f"How compatible is {ref} with the stack, the work in progress, "
                                      f"`constraints`, `project_rules` and `past_outcomes`{given}?",
                                      _FIT_LEVELS["compatibility"]),
         f"o{i}.future_fit": score(f"How well will {ref} hold up for the work still to come: what `goal`, "
                                   f"`project_rules` and `earlier_tasks` say is planned or likely next (more users "
-                                  f"or processes, new features, scale, data that must last){given}?",
+                                  f"or processes, new features, scale, data that must last), and what "
+                                  f"`decision_history` shows happened to similar choices elsewhere{given}?",
                                   _FIT_LEVELS["future_fit"]),
         f"o{i}.efficiency": score(f"How cheap is {ref} in tokens and time to build, and in cost and speed to run"
                                   f"{given}?", _FIT_LEVELS["efficiency"]),
