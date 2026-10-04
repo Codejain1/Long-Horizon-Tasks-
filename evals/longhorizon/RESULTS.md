@@ -439,3 +439,5 @@ All three arms failed project 1's own incident fix in ticket 2 (notes workers), 
 | sharper, in the message's context (now live) | **18/18** | **4–6** |
 
 Lesson for the method: a capture change must be tested the way it runs (whole tickets), not sentence by sentence.
+
+**Ward after the fix** (`demo/sidebyside`, Claude Code + Sonnet, 1 run): with Horizon **11/11 rules, 30/31 hidden tests**; without, 3/11 and 22/31. Horizon's own context at the start of the last ticket is **1.4k tokens, down from 2.2k** (17.2k against 15.8k without; before, 18.0k against 15.8k). Per agent step it costs 4 % more than without (17.5k against 16.8k). The run still used 34 % more tokens in all, because it took 145 steps against 113: the steps that build the rules the run without Horizon skipped.
