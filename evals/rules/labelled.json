@@ -214,5 +214,65 @@
  {
   "sentence": "An order that's already shipped can't be cancelled; cancelling it raises `OrderError`.",
   "label": "none"
+ },
+ {
+  "sentence": "`get_order(order_id)` returns a dict with at least `id`, `patient`, `drug`, `dose_mcg`, `every_hours`, `prescriber`, `status` (\"active\") and `created_at` (UTC ISO-8601 ending in `Z`, like `ward.clock.stamp` makes).",
+  "label": "none"
+ },
+ {
+  "sentence": "`orders_for(patient_id)` lists the patient's orders, oldest first.",
+  "label": "none"
+ },
+ {
+  "sentence": "`audit_log(patient_id)` lists everything recorded about the patient (orders created, doses given, eGFR readings), oldest first, as dicts with at least `id`, `kind` and `at`.",
+  "label": "none"
+ },
+ {
+  "sentence": "`record_egfr(patient_id, value)` stores a kidney-function reading (eGFR, a positive whole number) taken now; `latest_egfr(patient_id)` returns the latest value, or None.",
+  "label": "none"
+ },
+ {
+  "sentence": "`administrations(order_id)` lists the order's doses, oldest first, as dicts with at least `id`, `order`, `nurse`, `dose_mcg` and `at` (UTC ending in `Z`).",
+  "label": "none"
+ },
+ {
+  "sentence": "`stop_order(order_id)` stops an order (its `status` becomes \"stopped\"); stopped orders aren't due and can't be given (`WardError`).",
+  "label": "none"
+ },
+ {
+  "sentence": "`visits_for(property_id)` lists the property's visits as dicts with at least `id`, `tenant` and `when`, earliest first.",
+  "label": "none"
+ },
+ {
+  "sentence": "A deposit can only be funded once; a second call raises `RentalError`.",
+  "label": "none"
+ },
+ {
+  "sentence": "Export what you add from the `rentals` package.",
+  "label": "none"
+ },
+ {
+  "sentence": "A drug's `max_daily_mcg` is the most a patient may receive in any rolling 24-hour period, not per calendar day.",
+  "label": "project"
+ },
+ {
+  "sentence": "When a patient's latest eGFR is below 30, every daily limit for them is halved (rounded down), on top of any weight scaling.",
+  "label": "project"
+ },
+ {
+  "sentence": "And a patient's MRN (hospital number) never leaves WardSafe in full: anything exported shows only its last 3 characters, the rest replaced by `*`.",
+  "label": "project"
+ },
+ {
+  "sentence": "Controlled drugs (class `opioid`) may only be given with a witness: a second, registered nurse who isn't the one giving the dose (`administer` will take it as `witness=`).",
+  "label": "project"
+ },
+ {
+  "sentence": "A note from treasury for later: 25% of every deposit stays in reserve in our own bank account, so move-out refunds can be paid the same day.",
+  "label": "project"
+ },
+ {
+  "sentence": "In states that adopted the Model Tenancy Act (`rentals.MTA_STATES`), a residential deposit can't exceed 2 months' rent.",
+  "label": "project"
  }
 ]

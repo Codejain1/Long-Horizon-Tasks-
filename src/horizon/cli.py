@@ -25,6 +25,7 @@ def main(argv: list[str] | None = None) -> int:
                                     "pre-compact", "session-end", "sessionStart", "beforeSubmitPrompt", "preToolUse",
                                     "postToolUse", "postToolUseFailure", "preCompact", "sessionEnd"])
     p.add_argument("--remote", help="Hosted server URL: send parsed facts there (key in HORIZON_API_KEY).")
+    p.add_argument("--no-tools", action="store_true", help="The host has no Horizon MCP tools (lean without --mcp).")
     p.add_argument("--profile", choices=["full", "lean", "observe"], default="full")
     p.add_argument("--host", choices=["claude-code", "cursor"], default="claude-code",
                    help="cursor: the name is a Cursor hook event (lean and observe, local only).")
@@ -90,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dir", default=".", help="Project directory (default: current).")
     p.add_argument("--no-claude-md", action="store_true", help="Don't touch CLAUDE.md.")
     p.add_argument("--hosted", metavar="URL", help="Use a hosted Horizon server (key in HORIZON_API_KEY).")
+    p.add_argument("--mcp", action=argparse.BooleanOptionalAction, default=None,
+                   help="Install Horizon's MCP server (default: only for the full profile). Lean needs it for "
+                        "HORIZON_DECIDE and the optional tools (show_memories, explain_decision).")
     p.add_argument("--profile", choices=["full", "lean", "observe"], default="lean",
                    help="lean (default): continuity through hooks (goals, constraints, team rules, recurring "
                         "pitfalls), no agent calls. full: the whole workflow (decision scoring, recall per step, "
@@ -115,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from horizon.hooks import run_hook
 
-            out = run_hook(args.name, sys.stdin.read(), remote=args.remote, profile=args.profile)
+            out = run_hook(args.name, sys.stdin.read(), remote=args.remote, profile=args.profile,
+                           tools=not args.no_tools)
         if out:
             print(out)
     elif args.cmd == "stats":
@@ -265,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             changed = install(Path(args.dir), claude_md=not args.no_claude_md, hosted=args.hosted,
-                              profile=args.profile)
+                              profile=args.profile, mcp=args.mcp)
         except ValueError as exc:
             raise SystemExit(f"horizon: {exc}") from None
         print("Updated: " + ", ".join(changed))

@@ -54,7 +54,7 @@ That's the whole setup. Everything runs locally, in a SQLite file at `~/.horizon
 
 | | Claude Code (`install-claude-code`) | Codex (`install-codex`) |
 |---|---|---|
-| MCP server | `.mcp.json` | `.codex/config.toml` (`[mcp_servers.horizon]`, tools pre-approved) |
+| MCP server | `.mcp.json` (full profile, or lean with `--mcp`) | `.codex/config.toml` (`[mcp_servers.horizon]`, tools pre-approved) |
 | Hooks | `.claude/settings.json` (lean adds `UserPromptSubmit`) | `.codex/hooks.json` (same format) |
 | Instructions | a snippet in `CLAUDE.md` | the same snippet in `AGENTS.md` |
 | Spike scratch space | `.horizon/` added to `.gitignore` | same |

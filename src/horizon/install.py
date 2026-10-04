@@ -92,12 +92,14 @@ def remove_mcp_entry(project: Path) -> None:
         _dump(path, data)
 
 
-def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profile: str = "full") -> dict:
+def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profile: str = "full",
+                tools: bool = True) -> dict:
     """Add Horizon's hooks to a Claude-format `{"hooks": {...}}` document, replacing earlier Horizon entries."""
     hooks = data.setdefault("hooks", {})
     for event, (matcher, name) in HOOK_EVENTS.items():
         cmd = shlex.join(hook_command(command) + ["hook", name] + (["--remote", hosted.rstrip("/")] if hosted else [])
-                             + (["--profile", profile] if profile != "full" else []))
+                             + (["--profile", profile] if profile != "full" else [])
+                             + ([] if tools or profile != "lean" else ["--no-tools"]))
         groups = hooks.setdefault(event, [])
         # Drop any earlier Horizon hook for this event (e.g. from an old interpreter path).
         for group in groups:
@@ -118,11 +120,12 @@ def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profi
     return data
 
 
-def install_settings(project: Path, command: list[str], hosted: str | None = None, profile: str = "full") -> None:
+def install_settings(project: Path, command: list[str], hosted: str | None = None, profile: str = "full",
+                     tools: bool = True) -> None:
     path = project / ".claude" / "settings.json"
-    data = merge_hooks(_load(path), command, hosted, profile)
+    data = merge_hooks(_load(path), command, hosted, profile, tools)
     enabled = data.setdefault("enabledMcpjsonServers", [])
-    if profile == "observe":
+    if profile == "observe" or not tools:
         enabled[:] = [s for s in enabled if s != "horizon"]
         if not enabled:
             del data["enabledMcpjsonServers"]
@@ -270,7 +273,10 @@ def install_codex(project: Path, command: list[str] | None = None, agents_md: bo
 
 
 def install(project: Path, command: list[str] | None = None, claude_md: bool = True,
-            hosted: str | None = None, profile: str = "lean") -> list[str]:
+            hosted: str | None = None, profile: str = "lean", mcp: bool | None = None) -> list[str]:
+    """`mcp`: install Horizon's MCP server. Default: yes for the full profile, no for lean, whose hooks do the work.
+    Lean's optional tools (evaluate_options, which HORIZON_DECIDE needs; show_memories) aren't worth their
+    standing cost otherwise: with any MCP tools, Claude Code adds its tool-search tool to every turn."""
     command = command or default_command()
     project = project.resolve()
     if profile == "observe":
@@ -282,14 +288,18 @@ def install(project: Path, command: list[str] | None = None, claude_md: bool = T
         if claude_md:
             remove_claude_md(project)
         return [".claude/settings.json"]
+    if mcp is None:
+        mcp = profile != "lean"
     if hosted and profile == "lean":
         # Lean's value is in the hooks. The hosted MCP endpoint serves every team the full tool list, whose
         # "call this every time" descriptions only draw extra calls.
         # ponytail: a lean MCP endpoint when a team wants the optional tools (evaluate_options, show_memories).
-        remove_mcp_entry(project)
-    else:
+        mcp = False
+    if mcp:
         install_mcp_json(project, command, hosted, profile)
-    install_settings(project, command, hosted, profile)
+    else:
+        remove_mcp_entry(project)
+    install_settings(project, command, hosted, profile, tools=mcp or hosted is not None)
     install_gitignore(project)
     changed = [".mcp.json", ".claude/settings.json", ".gitignore"]
     if claude_md:

@@ -232,6 +232,8 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
                        "--no-mcp"]
         else:
             install = [python, "-m", "horizon", "install-claude-code", "--dir", str(repo), "--profile", PROFILES[arm]]
+            if EXTRA_ENV.get("HORIZON_DECIDE") == "on":  # decisions need evaluate_options; plain lean is hooks only
+                install.append("--mcp")
         subprocess.run(install, check=True, env=env, capture_output=True)
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", "install horizon")
@@ -425,7 +427,8 @@ def from_cursor(events: list[dict]) -> list[dict]:
     return out
 
 
-def agent_command(prompt: str, *, claude: str, model: str, arm: str, session_id: str | None) -> list[str]:
+def agent_command(prompt: str, *, claude: str, model: str, arm: str, session_id: str | None,
+                  cwd: Path | None = None) -> list[str]:
     if AGENT["host"] == "cursor":
         # Headless Cursor applies no permission list (`-p` may run any command), so the sandbox keeps writes in
         # the project, as Claude Code's allowed-tools list does.
@@ -437,7 +440,8 @@ def agent_command(prompt: str, *, claude: str, model: str, arm: str, session_id:
            *AGENT_TOOLS, *(HORIZON_TOOLS if arm in MCP_ARMS else [])]
     if session_id:
         cmd += ["--resume", session_id]
-    if arm in MCP_ARMS:
+    mcp = Path(cwd, ".mcp.json") if cwd else None
+    if arm in MCP_ARMS and mcp and mcp.exists() and "horizon" in mcp.read_text():
         cmd += ["--mcp-config", ".mcp.json"]
     if arm in PROFILES:
         cmd += ["--include-hook-events"]
@@ -452,7 +456,7 @@ def run_session(prompts: str | list[str], repo: Path, *, claude: str, model: str
     start = time.monotonic()
     streams, results, invocations, session_id = [], [], [], None
     for prompt in prompts:
-        cmd = read_guard(agent_command(prompt, claude=claude, model=model, arm=arm, session_id=session_id), repo)
+        cmd = read_guard(agent_command(prompt, claude=claude, model=model, arm=arm, session_id=session_id, cwd=repo), repo)
         try:
             proc = subprocess.run(cmd, cwd=repo, env=env, capture_output=True, text=True, timeout=SESSION_TIMEOUT,
                                   stdin=subprocess.DEVNULL)

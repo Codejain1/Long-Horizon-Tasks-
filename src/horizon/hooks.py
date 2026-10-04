@@ -163,8 +163,18 @@ def rule_questions(n: int) -> dict[str, dict]:
     for i in range(n):
         qs[f"team_{i}"] = noul(f"Does `sentences[{i}]` set a lasting rule the user wants followed in all of their or "
                                "their team's projects, including future ones, not only in the current project or task?")
-        qs[f"project_{i}"] = noul(f"Does `sentences[{i}]` set a lasting constraint that later work on the current "
-                                  "project must keep following, rather than an instruction only for the current task?")
+        # Specs of the function being built ("`get_order` returns a dict with ...") used to be kept as constraints
+        # and filled half of session start (ward). Labelled set: rules caught 37/37 either way; non-rules kept 9 -> 3.
+        qs[f"project_{i}"] = noul({
+            "question": f"Does `sentences[{i}]` set a lasting rule or constraint that later work on this project "
+                        "must keep following?",
+            "counts": "Business, legal, safety or engineering rules and policies; limits and formulas the product "
+                      "must respect; notes given 'for later'; requirements that will apply to future features.",
+            "not_counted": "A description of what a function, method or command in the current task takes, "
+                           "returns, lists or raises (its spec), unless it states a policy beyond this task; "
+                           "instructions for doing the task (export it, run the tests, write tests); greetings or "
+                           "one-off remarks.",
+        })
     return qs
 
 

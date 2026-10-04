@@ -10,11 +10,16 @@ from horizon.install import install
 
 
 def test_install_lean_writes_the_lean_snippet_env_and_hooks(tmp_path):
-    install(tmp_path, command=["py", "-m", "horizon"])  # lean is the default
+    install(tmp_path, command=["py", "-m", "horizon"])  # lean is the default, hooks only: no MCP server
     assert "You don't need to call it" in (tmp_path / "CLAUDE.md").read_text()
+    assert not (tmp_path / ".mcp.json").exists()
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    hooks = settings["hooks"]
+    assert "UserPromptSubmit" in hooks and "enabledMcpjsonServers" not in settings
+    assert all(g["hooks"][0]["command"].endswith("--profile lean --no-tools") for groups in hooks.values() for g in groups)
+    install(tmp_path, command=["py", "-m", "horizon"], mcp=True)  # with the optional tools (e.g. HORIZON_DECIDE)
     assert json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["horizon"]["env"] == {"HORIZON_PROFILE": "lean"}
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
-    assert "UserPromptSubmit" in hooks
     assert all(g["hooks"][0]["command"].endswith("--profile lean") for groups in hooks.values() for g in groups)
     install(tmp_path, command=["py", "-m", "horizon"], profile="full")  # back to full: replaces, doesn't duplicate
     hooks = json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]
@@ -169,7 +174,7 @@ class RuleScorer:
         out = {}
         for qid, q in questions.items():
             kind, i = qid.rsplit("_", 1)
-            assert f"sentences[{i}]" in q["instructions"]
+            assert f"sentences[{i}]" in str(q["instructions"])
             hit = state["sentences"][int(i)] in (self.team if kind == "team" else self.project)
             out[qid] = Answer(0.9 if hit else 0.1)
         return out

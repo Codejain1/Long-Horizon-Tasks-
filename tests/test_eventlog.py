@@ -345,7 +345,7 @@ def test_the_observe_install_is_hooks_only_and_undoes_a_lean_install(tmp_path, c
     from horizon.cli import main
 
     (tmp_path / "CLAUDE.md").write_text("# My project\n\nUse tabs.\n")
-    install(tmp_path, command=["py", "-m", "horizon"])  # lean first, then switch
+    install(tmp_path, command=["py", "-m", "horizon"], mcp=True)  # lean with its tools first, then switch
     assert install(tmp_path, command=["py", "-m", "horizon"], profile="observe") == [".claude/settings.json"]
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     hooks = settings["hooks"]
@@ -363,6 +363,6 @@ def test_the_observe_install_is_hooks_only_and_undoes_a_lean_install(tmp_path, c
     with pytest.raises(SystemExit, match="locally"):
         main(["install-claude-code", "--dir", str(tmp_path), "--profile", "observe", "--hosted", "https://h.example"])
 
-    install(tmp_path, command=["py", "-m", "horizon"])  # and back to lean
+    install(tmp_path, command=["py", "-m", "horizon"], mcp=True)  # and back to lean with its tools
     assert "horizon" in json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]
     assert "horizon:start" in (tmp_path / "CLAUDE.md").read_text()
