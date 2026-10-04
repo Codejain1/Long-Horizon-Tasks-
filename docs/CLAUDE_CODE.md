@@ -90,7 +90,7 @@ Each hook call's first event records `injected_chars`: the characters of its out
 - **Prompts:** headless runs (`agent -p`) fire no prompt hook. The user's messages are read from Cursor's transcript at the next tool call (one at a time per session, since Cursor runs tools in parallel), and their context comes with that call's output.
 - **Not available yet:** the full profile, hosted mode and refused-command memory. Headless Cursor applies no permission list, so nothing is refused.
 
-**Lean installs no MCP server by default.** Its hooks do the work, and any MCP server makes Claude Code add its tool-search tool to every turn, about 700 tokens. `install-claude-code --mcp` adds the server for the optional tools (`evaluate_options`, which `HORIZON_DECIDE` needs, `show_memories`, `explain_decision`); the hooks are then installed without `--no-tools`, so the prompt hook passes on the task id.
+**Lean installs no MCP server by default.** Its hooks do the work, and the server's deferred tool names and instructions sit in every turn for tools lean agents rarely call (about 150 tokens). `install-claude-code --mcp` adds the server for the optional tools (`evaluate_options`, which `HORIZON_DECIDE` needs, `show_memories`, `explain_decision`); the hooks are then installed without `--no-tools`, so the prompt hook passes on the task id.
 
 ## Fast hooks: the hook daemon
 

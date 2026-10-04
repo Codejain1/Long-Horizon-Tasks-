@@ -276,7 +276,7 @@ def install(project: Path, command: list[str] | None = None, claude_md: bool = T
             hosted: str | None = None, profile: str = "lean", mcp: bool | None = None) -> list[str]:
     """`mcp`: install Horizon's MCP server. Default: yes for the full profile, no for lean, whose hooks do the work.
     Lean's optional tools (evaluate_options, which HORIZON_DECIDE needs; show_memories) aren't worth their
-    standing cost otherwise: with any MCP tools, Claude Code adds its tool-search tool to every turn."""
+    standing cost otherwise: their deferred names and the server's instructions sit in every turn."""
     command = command or default_command()
     project = project.resolve()
     if profile == "observe":
