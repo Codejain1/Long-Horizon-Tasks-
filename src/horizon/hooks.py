@@ -374,6 +374,9 @@ class Local:
         self.store.add_usage(project, session, usage)
 
 
+_CONNECTIONS: dict = {}  # host -> an open HTTP(S) connection, reused by the hook daemon
+
+
 class Remote:
     """Hosted mode: the hooks talk to the Horizon server with the team's API key. Only parsed facts are sent
     (counts, failing test ids, commit ids, a hashed project key), never output, code or paths."""
@@ -382,13 +385,33 @@ class Remote:
         self.url, self.api_key = url.rstrip("/"), api_key
 
     def _post(self, op: str, body: dict):
-        import urllib.request
+        """POST over a kept-alive connection: in the hook daemon, calls after the first skip the TCP and TLS
+        handshake (once per call before). A dropped connection is reopened once."""
+        import http.client
+        from urllib.parse import urlsplit
 
-        req = urllib.request.Request(f"{self.url}/api/hooks/{op}", data=json.dumps(body).encode(), method="POST",
-                                     headers={"Authorization": f"Bearer {self.api_key}",
-                                              "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            return json.loads(r.read() or b"null")
+        u = urlsplit(self.url)
+        data = json.dumps(body).encode()
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        path = f"{u.path.rstrip('/')}/api/hooks/{op}"
+        for attempt in (0, 1):
+            conn = _CONNECTIONS.get(u.netloc) if attempt == 0 else None
+            if conn is None:
+                kind = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+                conn = _CONNECTIONS[u.netloc] = kind(u.netloc, timeout=8)
+            try:
+                conn.request("POST", path, body=data, headers=headers)
+                r = conn.getresponse()
+                payload = r.read()
+            except (OSError, http.client.HTTPException):
+                conn.close()
+                _CONNECTIONS.pop(u.netloc, None)
+                if attempt:
+                    raise
+                continue
+            if r.status >= 400:
+                raise OSError(f"hosted hook {op}: HTTP {r.status}")
+            return json.loads(payload or b"null")
 
     def session_start(self, project):
         return self._post("session-start", {"project": project})

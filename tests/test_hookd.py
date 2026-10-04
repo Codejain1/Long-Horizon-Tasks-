@@ -42,3 +42,51 @@ def test_the_client_matches_a_direct_hook_and_warms_a_daemon(settings, tmp_path)
     assert json.loads(warm) == json.loads(direct)
     assert first == "" or "Horizon" in first
     subprocess.run(["pkill", "-f", f"hookd --socket {sock}"])
+
+
+def test_hosted_hooks_through_the_daemon_match_and_share_team_rules(settings, tmp_path, free_tcp_port):
+    """Hosted lean via the client and daemon: a rule one teammate states reaches another's session start, over
+    the same kept-alive connection; the output matches a direct hosted hook."""
+    import dataclasses
+    import threading
+
+    import uvicorn
+
+    from horizon.accounts import Accounts
+    from horizon.db import connect
+    from horizon.server import http_app
+
+    app = http_app(dataclasses.replace(settings))
+    accounts = Accounts(connect(settings.db_url))
+    team, key = accounts.create_team("Acme")
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=free_tcp_port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    while not server.started:
+        time.sleep(0.05)
+    url = f"http://127.0.0.1:{free_tcp_port}"
+    env = {**{k: v for k, v in os.environ.items() if not k.startswith("HORIZON_")},
+           "HORIZON_API_KEY": key, "HORIZON_HOOKD_IDLE_S": "20"}
+
+    def hosted(name, payload):
+        proc = subprocess.run([sys.executable, "-S", str(CLIENT), "hook", name, "--remote", url, "--profile", "lean"],
+                              input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=60)
+        return proc.stdout.strip()
+
+    try:
+        a, b = str(tmp_path / "alice"), str(tmp_path / "bob")
+        os.makedirs(a), os.makedirs(b)
+        hosted("user-prompt", {"cwd": a, "session_id": "a1", "prompt": "Our team's rules for every service we "
+                                                                       "build: ids are uuid4 hex."})
+        time.sleep(1)  # the daemon the first call started is up
+        warm = hosted("session-start", {"cwd": b, "session_id": "b1", "source": "startup"})
+        assert "uuid4 hex" in warm
+        os.environ["HORIZON_API_KEY"] = key
+        try:
+            direct = run_hook("session-start", json.dumps({"cwd": b, "session_id": "b2", "source": "startup"}),
+                              remote=url, profile="lean")
+        finally:
+            del os.environ["HORIZON_API_KEY"]
+        assert json.loads(warm) == json.loads(direct)
+    finally:
+        server.should_exit = True
+        subprocess.run(["pkill", "-f", "hookd --socket"])
