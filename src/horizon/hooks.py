@@ -164,12 +164,17 @@ def rule_questions(n: int) -> dict[str, dict]:
         qs[f"team_{i}"] = noul(f"Does `sentences[{i}]` set a lasting rule the user wants followed in all of their or "
                                "their team's projects, including future ones, not only in the current project or task?")
         # Specs of the function being built ("`get_order` returns a dict with ...") used to be kept as constraints
-        # and filled half of session start (ward). Labelled set: rules caught 37/37 either way; non-rules kept 9 -> 3.
+        # and filled half of session start (ward). Read in the whole `message`, so a continuation ("that limit is
+        # scaled ...", "And a patient's MRN ...") counts with the rule it continues: judged alone, those two were
+        # dropped and ward lost 4 of 11 rules. Ticket eval (evals/rules/tickets.py): rules kept 18/18 (as before);
+        # other sentences kept 35 -> 4-6.
         qs[f"project_{i}"] = noul({
             "question": f"Does `sentences[{i}]` set a lasting rule or constraint that later work on this project "
-                        "must keep following?",
+                        "must keep following? Read it in the context of the whole `message`: it may continue the "
+                        "sentence before it.",
             "counts": "Business, legal, safety or engineering rules and policies; limits and formulas the product "
-                      "must respect; notes given 'for later'; requirements that will apply to future features.",
+                      "must respect; notes given 'for later'; requirements that will apply to future features; a "
+                      "sentence that continues or qualifies such a rule.",
             "not_counted": "A description of what a function, method or command in the current task takes, "
                            "returns, lists or raises (its spec), unless it states a policy beyond this task; "
                            "instructions for doing the task (export it, run the tests, write tests); greetings or "
@@ -188,7 +193,7 @@ def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
     team, project = [], []
     if scorer is not None and sentences:
         try:
-            a = scorer.ask({"sentences": sentences}, rule_questions(len(sentences)))
+            a = scorer.ask({"message": text, "sentences": sentences}, rule_questions(len(sentences)))
             for i, sentence in enumerate(sentences):
                 if a[f"team_{i}"].value > 0.5:
                     team.append(sentence[:MAX_RULE])

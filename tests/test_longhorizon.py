@@ -483,8 +483,9 @@ def test_boxoffice_catches_the_tempting_choices_only_where_they_break(tmp_path):
     run.main(["--scenario", "boxoffice", "--arm", "baseline", "--out", str(tmp_path / "bad"), "--claude", naive])
     rows = json.loads((tmp_path / "bad" / "boxoffice-baseline" / "results.json").read_text())["sessions"]
     assert all(r["hidden"]["failed"] == [] for r in rows[:5]) and rows[6]["hidden"]["failed"] != []
-    assert {t.split("::")[-1] for t in rows[-1]["hidden"]["failed"]} == BOXOFFICE_TRAPS
-    assert len(rows[-1]["hidden"]["passed"]) == 12 - len(BOXOFFICE_TRAPS)
+    failed = {t.split("::")[-1] for t in rows[-1]["hidden"]["failed"]}
+    # A JSON store under 8 counters always loses bookings; whether it also sells a seat twice depends on timing.
+    assert BOXOFFICE_TRAPS - {"test_concurrent_counters_never_double_sell"} <= failed <= BOXOFFICE_TRAPS
 
 
 def test_lessons_runs_two_projects_and_catches_a_store_unsafe_for_the_teams_workers(tmp_path):

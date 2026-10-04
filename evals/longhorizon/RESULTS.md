@@ -425,3 +425,17 @@ On lessons, the lesson reached the agent (`lessons` in the decision) but Haiku s
 3. Jev's second pass gave SQLite the `clear_winner`, and the stock service survived the team's workers in ticket 5.
 
 All three arms failed project 1's own incident fix in ticket 2 (notes workers), which is Haiku's implementation, not memory. **This is the decision layer doing the job it was designed for:** knowledge only Horizon held (another project's incident), weighed by Jev, checked by a spike when Jev was unsure, and it changed the outcome. It cost +44 % over without Horizon. On Sonnet, which picked SQLite unprompted, the same machinery agreed and cost nothing extra.
+
+## Memory: faster hooks, and a rule-capture regression found and fixed (2026-10-04)
+
+- **Hooks 161 → 46 ms per call** (warm hook daemon). Lean also installs no MCP server by default (about 150 tokens per turn).
+- **Regression.** A sharper rule question, checked one sentence at a time (non-rules kept 9 → 3, rules 37/37), was put live. On ward it **kept 7/11 rules, against 11/11 before**: judged inside the whole ticket, it dropped continuation sentences ("For patients under 50 kg, that limit is scaled by weight…", "And a patient's MRN…"). Ward that run: without 22/31 hidden tests and 2/11 rules; with 27/31 and 7/11.
+- **Fix:** Jev now reads each sentence in the context of the whole message. A new ticket-level eval (`evals/rules/tickets.py`, the 18 rules of ward and rental, judged the way lean judges them) gives:
+
+| Rule question | Rules kept | Other sentences kept |
+|---|---|---|
+| original | 18/18 | 35 |
+| sharper, sentence alone (the regression) | **15/18** | 16 |
+| sharper, in the message's context (now live) | **18/18** | **4–6** |
+
+Lesson for the method: a capture change must be tested the way it runs (whole tickets), not sentence by sentence.
