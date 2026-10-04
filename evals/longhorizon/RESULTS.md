@@ -441,3 +441,15 @@ All three arms failed project 1's own incident fix in ticket 2 (notes workers), 
 Lesson for the method: a capture change must be tested the way it runs (whole tickets), not sentence by sentence.
 
 **Ward after the fix** (`demo/sidebyside`, Claude Code + Sonnet, 1 run): with Horizon **11/11 rules, 30/31 hidden tests**; without, 3/11 and 22/31. Horizon's own context at the start of the last ticket is **1.4k tokens, down from 2.2k** (17.2k against 15.8k without; before, 18.0k against 15.8k). Per agent step it costs 4 % more than without (17.5k against 16.8k). The run still used 34 % more tokens in all, because it took 145 steps against 113: the steps that build the rules the run without Horizon skipped.
+
+## Memory on its final code: 4 side-by-side runs (2026-10-04/05, Claude Code + Sonnet, `demo/sidebyside`)
+
+The final code: hook daemon, context-aware rule capture with Jev, hooks-only lean.
+
+| Scenario (2 runs each) | Rules kept: without → with | Hidden tests: without → with | Time | Cost |
+|---|---|---|---|---|
+| rental (12 tickets) | 2/18 → **18/18** | 30/46 → **46/46** | 7.2 → 8.0 min | $1.38 → $1.54 (+12 %) |
+| ward (14 tickets) | 5/22 → **22/22** | 43/62 → **60/62** | 8.4 → 9.6 min | $1.73 → $1.94 (+12 %) |
+| **all four runs** | **7/40 → 40/40** | **73/108 → 106/108** | +13 % | **+12 %** |
+
+**Every rule kept, in every run,** where the agent alone kept 7 of 40. Hidden tests went from 68 % to 98 %, for 12 % more cost and 13 % more time, against +20 % to +34 % before this round. The two remaining misses are ordinary feature slips on ward, one per run. Run to run, Horizon's results were identical (rules 11/11 and 9/9 every time); the variation is in time and cost.

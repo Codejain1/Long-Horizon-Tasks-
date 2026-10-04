@@ -558,6 +558,12 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - Scenarios `boxoffice` (decision traps) and `lessons` (two projects, knowledge only Horizon holds). Concurrency hidden tests start workers on a barrier (they were flaky; every run re-graded).
   - **Results:** on Sonnet, no arm fell into a trap, and decisions now cost the same as lean. **On Haiku, decisions were the only arm to pass every trap**: boxoffice 5/5 trap checks against 4/5 and 3/5; lessons project 2, 3/3 against 2/3 for both others, at +44 % cost.
 
+- **Session 26: memory made faster and leaner** (owner: double down on memory first).
+  - Hook daemon (`hookc.py` + `horizon hookd`): 161 → 46 ms per hook; hosted hooks keep their connection (178 → 89 ms locally).
+  - Rule capture reads each sentence in the whole message: 18/18 rules kept on whole tickets, other sentences 35 → about 5. A per-sentence version regressed ward to 7/11 rules and was caught by the side-by-side runs; `evals/rules/tickets.py` and `tests/test_rule_capture.py` now guard it.
+  - Lean installs no MCP server by default (`--mcp` for decisions and the optional tools).
+  - **4 side-by-side runs on the final code:** rules 40/40 against 7/40, hidden tests 106/108 against 73/108, at +12 % cost.
+
 ## In progress
 
 - Nothing running.
