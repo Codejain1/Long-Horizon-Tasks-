@@ -90,6 +90,10 @@ Each hook call's first event records `injected_chars`: the characters of its out
 - **Prompts:** headless runs (`agent -p`) fire no prompt hook. The user's messages are read from Cursor's transcript at the next tool call (one at a time per session, since Cursor runs tools in parallel), and their context comes with that call's output.
 - **Not available yet:** the full profile, hosted mode and refused-command memory. Headless Cursor applies no permission list, so nothing is refused.
 
+## Fast hooks: the hook daemon
+
+Lean runs a hook on almost every tool call, and a cold hook costs about 160 ms: starting Python and loading Horizon. Installed hooks therefore run `python -S …/horizon/hookc.py hook …`, a client that uses only the standard library. It hands the call to a warm `horizon hookd` over a local Unix socket, which only your user can open (mode 600, in a private temp folder), and starts one on first use. A call then takes about 45 ms; Python's own start is 18 ms of that. The daemon runs exactly the code path `horizon hook …` would, with the call's environment, folder and input. There is one daemon per interpreter, code version and database, so an upgrade or a separate run never reuses an old one. It exits after 10 idle minutes (`HORIZON_HOOKD_IDLE_S`). If the daemon isn't there or anything fails, the call runs the normal way, with the same result. `HORIZON_HOOKD=off` turns it off.
+
 ## Configuration
 
 Everything is set through environment variables (see `src/horizon/config.py`):

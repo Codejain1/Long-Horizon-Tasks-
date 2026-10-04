@@ -45,6 +45,18 @@ def default_command() -> list[str]:
     return [sys.executable, "-m", "horizon"]
 
 
+def hook_command(command: list[str]) -> list[str]:
+    """What hooks run: the default install goes through the stdlib-only client (`hookc.py`, with `python -S`),
+    which hands each call to a warm daemon (0.2 s per hook down to milliseconds); a custom command is kept."""
+    if command == default_command():
+        return [sys.executable, "-S", str(Path(__file__).with_name("hookc.py"))]
+    return command
+
+
+# An earlier Horizon hook entry, whichever way it was invoked: `-m horizon hook <name>` or `hookc.py hook <name>`.
+OURS = r"(horizon|hookc\.py) hook "
+
+
 def snippet(profile: str = "full") -> str:
     name = "agent.snippet.lean.md" if profile == "lean" else "agent.snippet.md"
     return resources.files("horizon").joinpath(f"data/{name}").read_text()
@@ -84,13 +96,13 @@ def merge_hooks(data: dict, command: list[str], hosted: str | None = None, profi
     """Add Horizon's hooks to a Claude-format `{"hooks": {...}}` document, replacing earlier Horizon entries."""
     hooks = data.setdefault("hooks", {})
     for event, (matcher, name) in HOOK_EVENTS.items():
-        cmd = shlex.join(command + ["hook", name] + (["--remote", hosted.rstrip("/")] if hosted else [])
+        cmd = shlex.join(hook_command(command) + ["hook", name] + (["--remote", hosted.rstrip("/")] if hosted else [])
                              + (["--profile", profile] if profile != "full" else []))
         groups = hooks.setdefault(event, [])
         # Drop any earlier Horizon hook for this event (e.g. from an old interpreter path).
         for group in groups:
             group["hooks"] = [h for h in group.get("hooks", [])
-                              if not re.search(rf"horizon hook {name}( |$)", h.get("command", ""))]
+                              if not re.search(rf"{OURS}{name}( |$)", h.get("command", ""))]
         groups[:] = [g for g in groups if g.get("hooks")]
         if (event in LEAN_ONLY and profile not in LEAN_HOOKS) or (event in EVENT_LOG_ONLY and hosted):
             if not groups:
@@ -168,7 +180,7 @@ def install_cursor(project: Path, command: list[str] | None = None, profile: str
     project = project.resolve()
     base = Path.home() / ".cursor" if user else project / ".cursor"
     env = {"HORIZON_SCORER": scorer} if scorer else {}
-    hook_command = (["env", *(f"{k}={v}" for k, v in env.items())] if env else []) + command
+    hooks_run = (["env", *(f"{k}={v}" for k, v in env.items())] if env else []) + hook_command(command)
     changed = [str(base / "hooks.json") if user else ".cursor/hooks.json"]
     if mcp:
         path = base / "mcp.json"
@@ -177,13 +189,13 @@ def install_cursor(project: Path, command: list[str] | None = None, profile: str
                                                          "env": {"HORIZON_PROFILE": "lean", **env}}
         _dump(path, data)
         changed.append(str(path) if user else ".cursor/mcp.json")
-    command = hook_command
+    command = hooks_run
     path = base / "hooks.json"
     data = _load(path)
     data.setdefault("version", 1)
     hooks = data.setdefault("hooks", {})
     for event in HOOKS:
-        entries = [h for h in hooks.get(event, []) if not re.search(r"horizon hook \w+ --host cursor",
+        entries = [h for h in hooks.get(event, []) if not re.search(rf"{OURS}\w+ --host cursor",
                                                                     h.get("command", ""))]
         if event in INSTALLED:
             cmd = shlex.join(command + ["hook", event, "--host", "cursor", "--profile", profile])

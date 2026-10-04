@@ -22,6 +22,8 @@ This page lists exactly what is stored, where, and who else sees it. It's served
 | **Approvals** | "clear fear lesson X?" → accepted by "Kartik" | Question and answer (redacted), and the name you typed if the prompt asked for one. |
 | **Accounts (hosted)** | team name, API key **hashes**, credit ledger, usage per call | API keys and web session tokens are stored only as SHA-256 hashes. |
 
+**Hook daemon:** hook calls pass from the hook client to Horizon's own background process over a local socket that only your user can open. Nothing leaves the machine, and the daemon stores exactly what the hook itself would.
+
 **Not stored:** file contents, diffs, source code, test output, stack traces, environment variables, or your repository.
 
 ## Where it's stored

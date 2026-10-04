@@ -17,6 +17,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
 
+    p = sub.add_parser("hookd", help="The warm hook daemon hookc.py starts (internal).")
+    p.add_argument("--socket", required=True)
+
     p = sub.add_parser("hook", help="Run a Claude Code hook (reads the hook JSON on stdin).")
     p.add_argument("name", choices=["session-start", "pre-tool-use", "post-tool-use", "stop", "user-prompt",
                                     "pre-compact", "session-end", "sessionStart", "beforeSubmitPrompt", "preToolUse",
@@ -100,6 +103,10 @@ def main(argv: list[str] | None = None) -> int:
         from horizon.server import serve
 
         serve(args.transport, args.host, args.port)
+    elif args.cmd == "hookd":
+        from horizon.hookd import serve
+
+        serve(args.socket)
     elif args.cmd == "hook":
         if args.host == "cursor":
             from horizon.cursor import run_cursor_hook
