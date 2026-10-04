@@ -38,6 +38,7 @@ Instructions for every Claude session in this repository.
 
 - Code lives in `src/horizon/`, tests in `tests/`. Set up with `uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision,export,web]"`.
 - Run `.venv/bin/pytest`. Set `HORIZON_TEST_PG_URL` to a Postgres database with pgvector to run the Postgres variants too. Without it they are skipped.
+- After changing rule capture (`split_rules`, `rule_questions`), also run `HORIZON_TEST_LIVE_JEV=1 .venv/bin/pytest tests/test_rule_capture.py`. It checks every scenario rule is still kept from its ticket, judged on whole tickets as lean runs it. A per-sentence check once passed while ward lost 4 of 11 rules.
 
 ## End of every session
 
