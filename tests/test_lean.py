@@ -211,3 +211,21 @@ def test_numbered_rules_after_a_lead_in_are_each_a_rule():
     assert split_rules("Steps: 1. Add a page. 2. Deploy it.") == ([], [])
     assert split_rules("Our team rules for every project:\n1. Use uv.\n2. Type hints. Then build it.")[0] == [
         "Our team rules for every project:\n1. Use uv.", "2. Type hints."]
+
+
+def test_project_map_lists_modules_and_public_functions_and_joins_session_start(settings, project_dir, monkeypatch):
+    from horizon.projectmap import build
+
+    pkg = Path(project_dir) / "shop"
+    pkg.mkdir()
+    (pkg / "orders.py").write_text('def place(items, prices):\n    """Place an order."""\n\ndef _private():\n    pass\n')
+    (Path(project_dir) / "tests").mkdir()
+    (Path(project_dir) / "tests" / "test_x.py").write_text("def test_a():\n    pass\n")
+    (Path(project_dir) / "ci.sh").write_text("#!/bin/sh\n")
+    m = build(project_dir)
+    assert "shop/orders.py" in m and "place(items, prices): Place an order." in m
+    assert "_private" not in m and "test_x" not in m and "Tests: ./ci.sh" in m
+    assert len(build(project_dir, budget=150)) <= 160  # names kept before descriptions, then cut
+    assert "Project map" not in (lean("session-start", {"cwd": project_dir, "session_id": "s1"}, settings) or "")
+    monkeypatch.setenv("HORIZON_PROJECT_MAP", "on")
+    assert "place(items, prices)" in lean("session-start", {"cwd": project_dir, "session_id": "s2"}, settings)

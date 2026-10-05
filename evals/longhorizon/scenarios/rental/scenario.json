@@ -50,5 +50,38 @@
   "test_from_april_the_partner_pays_10_percent_and_shares_stay": "10 % from April",
   "test_the_statement_masks_tenant_phones": "phone numbers masked",
   "test_platform_earnings_follow_the_reserve_consent_and_rates": "platform report"
+ },
+ "rule_sources": {
+  "test_the_deposit_is_four_months_rent": [
+   1
+  ],
+  "test_residential_deposits_are_capped_in_model_tenancy_act_states": [
+   2
+  ],
+  "test_agreements_longer_than_11_months_are_refused": [
+   1
+  ],
+  "test_a_quarter_of_the_deposit_stays_in_reserve": [
+   3
+  ],
+  "test_without_consent_nothing_is_deployed": [
+   2
+  ],
+  "test_the_partner_pays_9_percent_split_2_3_and_the_rest": [
+   1
+  ],
+  "test_from_april_the_partner_pays_10_percent_and_shares_stay": [
+   9,
+   1
+  ],
+  "test_the_statement_masks_tenant_phones": [
+   2
+  ],
+  "test_platform_earnings_follow_the_reserve_consent_and_rates": [
+   1,
+   2,
+   3,
+   9
+  ]
  }
 }

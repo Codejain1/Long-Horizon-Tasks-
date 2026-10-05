@@ -236,6 +236,15 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
                                                               refused=refused)}}
     out = core_session_start(store, team, project, lean=True)
     ctx = out["hookSpecificOutput"]
+    if os.environ.get("HORIZON_PROJECT_MAP") == "on" and os.path.isdir(project):
+        from horizon.projectmap import build
+
+        try:
+            project_map = build(project)
+        except OSError:
+            project_map = ""
+        if project_map:
+            ctx["additionalContext"] += "\n\n" + project_map
     if refused:
         from horizon.deadends import HEADING
 

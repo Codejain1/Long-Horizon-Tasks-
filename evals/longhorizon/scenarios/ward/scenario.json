@@ -49,5 +49,41 @@
   "test_controlled_drugs_need_a_witness_in_batches": "witness in batches too",
   "test_exports_mask_the_mrn": "MRN masked in exports",
   "test_weight_changes_rescale_the_limit": "limits follow weight changes"
+ },
+ "rule_sources": {
+  "test_cross_reactive_classes_are_refused": [
+   2
+  ],
+  "test_the_limit_is_a_rolling_24_hours": [
+   1
+  ],
+  "test_children_get_a_weight_scaled_limit": [
+   1
+  ],
+  "test_controlled_drugs_need_another_nurse_as_witness": [
+   2
+  ],
+  "test_corrections_never_change_the_record": [
+   3
+  ],
+  "test_poor_kidney_function_halves_the_limit": [
+   3
+  ],
+  "test_the_april_guideline_lowers_paracetamol": [
+   9,
+   1
+  ],
+  "test_days_are_london_days": [
+   3
+  ],
+  "test_controlled_drugs_need_a_witness_in_batches": [
+   2
+  ],
+  "test_exports_mask_the_mrn": [
+   2
+  ],
+  "test_weight_changes_rescale_the_limit": [
+   1
+  ]
  }
 }
