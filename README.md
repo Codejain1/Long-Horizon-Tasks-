@@ -13,13 +13,19 @@ Your agent still does all the coding with your own subscription. Horizon never n
 
 ## Does it help? (`evals/longhorizon/RESULTS.md`)
 
-| Situation | Claude Code alone | With Horizon |
-|---|---|---|
-| Team rules had to carry into new projects (3 repeats) | 15/24 hidden checks | **24/24** |
-| A CI policy kept breaking across unattended sessions (replay) | broken in 3 of 5 sessions | **0 of 5, at 17 % lower cost** |
-| One interactive session, or rules written in the repo | – | no gain, so don't expect one |
+Each scenario is a backlog of tickets, one fresh unattended session per ticket. Rules are given in the early tickets and needed later, and hidden tests check the result.
 
-Following rules costs more work: about +40 % on the team scenario, mostly writing the validation and tests the rules demand. Avoiding repeat failures saves it back. Horizon helps most where no human carries the context: **unattended agents and teams.**
+| Measured (Claude Code + Sonnet) | Claude Code alone | With Horizon |
+|---|---|---|
+| Rules from earlier tickets kept (ward and rental, 4 runs) | 7/40 | **40/40** |
+| Hidden tests passed (same runs) | 73/108 | **106/108** |
+| Cost and time to build (2 runs each, with the project map) | $3.11, 15.6 min | **$3.07, 14.5 min** |
+| Cost and time to *working* software (build + QA fix-ups, 4 runs) | $8.71, 46.4 min; 10 checks still failing; a person had to restate the rules | **$7.42, 38.8 min; 1 still failing** |
+| Team rules carried into new projects (3 repeats) | 15/24 hidden checks | **24/24** |
+| A CI policy kept breaking across sessions (3 replays) | broken in 7 of 15 sessions | **0 of 15, 12 % cheaper** |
+| One interactive session, or rules already written in the repo | – | no gain, so don't expect one |
+
+**At the same cost as the agent alone, it keeps the rules you gave it.** The agent alone looks cheap only until its forgotten rules are found: it can't fix them from the failures, because nothing in the repo records them, so someone has to explain them again. Horizon helps most where no human carries the context: **unattended agents and teams.**
 
 The **full profile** (`--profile full`) adds the original workflow: decision scoring with Jev, consequence checks and spikes, recall before each step, outcomes per test run, and rollback. In our evals it didn't improve outcomes and cost more, so it's opt-in.
 
