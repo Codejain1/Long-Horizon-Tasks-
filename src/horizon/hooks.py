@@ -236,7 +236,9 @@ def lean_session_start(store: TaskStore, team: str, project: str, session: str |
                                                               refused=refused)}}
     out = core_session_start(store, team, project, lean=True)
     ctx = out["hookSpecificOutput"]
-    if os.environ.get("HORIZON_PROJECT_MAP") == "on" and os.path.isdir(project):
+    # On by default (2 runs each of ward and rental: rules kept 40/40 either way; cost -7 %/-18 % and time
+    # -11 %/-25 % against lean without it). HORIZON_PROJECT_MAP=off turns it off.
+    if os.environ.get("HORIZON_PROJECT_MAP", "on") != "off" and os.path.isdir(project):
         from horizon.projectmap import build
 
         try:

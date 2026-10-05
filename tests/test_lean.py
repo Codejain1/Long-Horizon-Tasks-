@@ -226,6 +226,6 @@ def test_project_map_lists_modules_and_public_functions_and_joins_session_start(
     assert "shop/orders.py" in m and "place(items, prices): Place an order." in m
     assert "_private" not in m and "test_x" not in m and "Tests: ./ci.sh" in m
     assert len(build(project_dir, budget=150)) <= 160  # names kept before descriptions, then cut
-    assert "Project map" not in (lean("session-start", {"cwd": project_dir, "session_id": "s1"}, settings) or "")
-    monkeypatch.setenv("HORIZON_PROJECT_MAP", "on")
-    assert "place(items, prices)" in lean("session-start", {"cwd": project_dir, "session_id": "s2"}, settings)
+    assert "place(items, prices)" in lean("session-start", {"cwd": project_dir, "session_id": "s1"}, settings)
+    monkeypatch.setenv("HORIZON_PROJECT_MAP", "off")
+    assert "Project map" not in (lean("session-start", {"cwd": project_dir, "session_id": "s2"}, settings) or "")

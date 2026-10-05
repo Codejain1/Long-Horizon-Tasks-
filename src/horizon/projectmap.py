@@ -1,4 +1,4 @@
-"""A short map of the project for session start (`HORIZON_PROJECT_MAP=on`), so a fresh session spends fewer steps
+"""A short map of the project for session start (on by default; `HORIZON_PROJECT_MAP=off`), so a fresh session spends fewer steps
 finding where things are: about half of a session's tokens went on reading before the first edit (side-by-side
 runs, 2026-10-05).
 

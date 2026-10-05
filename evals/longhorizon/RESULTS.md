@@ -469,3 +469,15 @@ The four final-code runs above, continued in place: each round gives the agent i
 | Requirements re-supplied by a person | every run | never |
 
 **Counted to working software, memory is cheaper and faster, and it saves a person's time that isn't in the token bill.** The run without Horizon is cheaper only until its forgotten rules are found. It then needs 15 % more money and time, plus someone to restate the requirements, and after three rounds it still has ten failures that would cost more. Horizon's runs needed fix-ups only for ordinary feature slips.
+
+## Project map at session start (2026-10-05, 2 runs each, Claude Code + Sonnet)
+
+| | Without Horizon | Lean | Lean + project map |
+|---|---|---|---|
+| ward: rules / hidden tests | 5/22 / 43/62 | 22/22 / 60/62 | **22/22 / 59/62** |
+| ward: cost / time (mean) | $1.73 / 8.4 min | $1.94 / 9.6 min | **$1.80 / 8.5 min** |
+| rental: rules / hidden tests | 2/18 / 30/46 | 18/18 / 46/46 | **18/18 / 46/46** |
+| rental: cost / time (mean) | $1.38 / 7.2 min | $1.54 / 8.0 min | **$1.27 / 6.0 min** |
+| **both** | $3.11 / 15.6 min | $3.48 / 17.6 min | **$3.07 / 14.5 min** |
+
+With the map, memory costs the same as no Horizon on the build alone (−1 %) and is 7 % faster, while keeping 40/40 rules against 7/40, before counting the fix-ups the run without Horizon needs. It is now on by default (`HORIZON_PROJECT_MAP=off` to turn it off).
