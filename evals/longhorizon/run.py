@@ -53,6 +53,22 @@ ARM_ENV = {"candidate": {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "com
 EXTRA_ENV: dict[str, str] = {}  # --set KEY=VALUE, for ablations (e.g. the candidate without one feature)
 AGENT = {"host": "claude"}  # --agent: which coding agent runs the sessions (claude or cursor)
 MCP_ARMS = ("horizon", "lean", "candidate")  # arms whose agent gets Horizon's MCP tools
+# Other memory systems, set up as a careful user would (head-to-head against Horizon; no Horizon installed).
+# Claude Code's own auto memory is on in every arm (each session gets a memory folder); in the baseline runs
+# it saved nothing, so the baseline is already "Claude Code with its built-in memory".
+_KEEP = ("This project is built over many sessions, each starting fresh with no memory of the others. Whenever a "
+         "message states a rule, constraint, policy, limit or a decision that later work must follow, record it "
+         "precisely (quote the numbers and conditions) {where}. At the start of every session, before anything "
+         "else, {read} and follow everything recorded there.")
+COMPETITORS = {
+    "notes": {"CLAUDE.md": "# Project memory\n\n" + _KEEP.format(where="in NOTES.md at the root of this repo",
+                                                                    read="read NOTES.md") + "\n"},
+    "mcpmem": {"CLAUDE.md": "# Project memory\n\n" + _KEEP.format(
+        where="in the `memory` MCP server: an entity named \"project rules\" (create it with create_entities if it "
+              "doesn't exist), one observation per rule, added with add_observations",
+        read="call the memory server's read_graph") + "\n"},
+}
+MEMORY_SERVER = ["npx", "-y", "@modelcontextprotocol/server-memory"]
 TEST_COMMAND = re.compile(r"pytest(?! --version)|ci\.sh")
 
 
@@ -216,6 +232,15 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
         git(repo, "init", "-q")
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", "start", "--allow-empty")
+        if arm in COMPETITORS:
+            for name, text in COMPETITORS[arm].items():
+                (repo / name).write_text(text)
+            if arm == "mcpmem":
+                mem = (repo.parent / "memory.jsonl").resolve()  # outside the repo, like Horizon's database
+                (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"memory": {
+                    "command": MEMORY_SERVER[0], "args": MEMORY_SERVER[1:], "env": {"MEMORY_FILE_PATH": str(mem)}}}}))
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", "install memory")
     if ISOLATE["on"]:
         env = agent_env(python)
     else:
@@ -437,11 +462,11 @@ def agent_command(prompt: str, *, claude: str, model: str, arm: str, session_id:
         return cmd + (["--resume", session_id] if session_id else [])
     cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
            "--model", model, "--setting-sources", "project,local", "--strict-mcp-config", "--allowedTools",
-           *AGENT_TOOLS, *(HORIZON_TOOLS if arm in MCP_ARMS else [])]
+           *AGENT_TOOLS, *(HORIZON_TOOLS if arm in MCP_ARMS else []), *(["mcp__memory"] if arm == "mcpmem" else [])]
     if session_id:
         cmd += ["--resume", session_id]
     mcp = Path(cwd, ".mcp.json") if cwd else None
-    if arm in MCP_ARMS and mcp and mcp.exists() and "horizon" in mcp.read_text():
+    if (arm in MCP_ARMS and mcp and mcp.exists() and "horizon" in mcp.read_text()) or arm == "mcpmem":
         cmd += ["--mcp-config", ".mcp.json"]
     if arm in PROFILES:
         cmd += ["--include-hook-events"]
@@ -560,7 +585,8 @@ def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[s
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", required=True)
-    ap.add_argument("--arm", choices=["baseline", "observe", "lean", "candidate", "horizon"], required=True)
+    ap.add_argument("--arm", choices=["baseline", "observe", "lean", "candidate", "horizon", *COMPETITORS],
+                    required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--sessions", type=int, default=None, help="Stop after this many sessions.")
