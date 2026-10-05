@@ -453,3 +453,19 @@ The final code: hook daemon, context-aware rule capture with Jev, hooks-only lea
 | **all four runs** | **7/40 → 40/40** | **73/108 → 106/108** | +13 % | **+12 %** |
 
 **Every rule kept, in every run,** where the agent alone kept 7 of 40. Hidden tests went from 68 % to 98 %, for 12 % more cost and 13 % more time, against +20 % to +34 % before this round. The two remaining misses are ordinary feature slips on ward, one per run. Run to run, Horizon's results were identical (rules 11/11 and 9/9 every time); the variation is in time and cost.
+
+## Cost to correct software: build plus QA fix-ups (2026-10-05, `evals/longhorizon/fixup.py`, Claude Code + Sonnet)
+
+The four final-code runs above, continued in place: each round gives the agent its failing hidden checks (name and error line) until all pass, at most 3 rounds.
+
+**First try: the failing checks alone could not be fixed.** In every round, the agent without Horizon read the whole repo and replied that the rules weren't in the code or docs ("the eGFR cutoff for halving the limit, how a drug is marked controlled, what counts as a child…"): 9 → 9 and 10 → 10 failing. Forgotten rules exist only in the old tickets, so fixing them needs a person to restate them. Second try, the one counted below: each report also carries the original tickets behind its failing rule checks, as a person would paste them.
+
+| 4 runs (ward ×2, rental ×2) | Without Horizon | With Horizon |
+|---|---|---|
+| Build + fix-ups, cost | $8.71 | **$7.42 (−15 %)** |
+| Build + fix-ups, time | 46.4 min | **38.8 min (−16 %)** |
+| Fix-up rounds | 12 | 5 |
+| Checks still failing after 3 rounds | **10** | 1 |
+| Requirements re-supplied by a person | every run | never |
+
+**Counted to working software, memory is cheaper and faster, and it saves a person's time that isn't in the token bill.** The run without Horizon is cheaper only until its forgotten rules are found. It then needs 15 % more money and time, plus someone to restate the requirements, and after three rounds it still has ten failures that would cost more. Horizon's runs needed fix-ups only for ordinary feature slips.
