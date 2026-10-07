@@ -481,3 +481,54 @@ The four final-code runs above, continued in place: each round gives the agent i
 | **both** | $3.11 / 15.6 min | $3.48 / 17.6 min | **$3.07 / 14.5 min** |
 
 With the map, memory costs the same as no Horizon on the build alone (−1 %) and is 7 % faster, while keeping 40/40 rules against 7/40, before counting the fix-ups the run without Horizon needs. It is now on by default (`HORIZON_PROJECT_MAP=off` to turn it off).
+
+## Head-to-head: told to keep memory vs Horizon lean + project map (2026-10-07, Claude Code + Sonnet)
+
+**Setup.** Ward (11 rule checks) and rental (9), one full pass each per arm. Competitors are the harness arms in `evals/longhorizon/run.py`: `notes` (agent told to record rules in `NOTES.md` via `CLAUDE.md`) and `mcpmem` (official `@modelcontextprotocol/server-memory`, told to use `read_graph` / `create_entities`). Every arm still has Claude Code's built-in auto memory (it saved nothing in earlier baseline runs). Horizon's reference is lean + project map, **2 runs each** of ward and rental: **40/40** rule checks, **$3.07** and **14.5 min** combined (`demo/sidebyside`, table above). Rule score = the scenario's `rule_checks` hidden tests on the **last ticket** of the run (`python evals/longhorizon/score_h2h.py /tmp/h2h`).
+
+**Batch `r1` (complete, 52 sessions).** Four jobs ran in parallel (`/tmp/h2h.sh` as first written).
+
+| Arm | Ward rules | Rental rules | Combined rules | Cost (ward+rental) | Time |
+|---|---|---|---|---|---|
+| `notes` | 11/11 | 9/9 | **20/20** | **$3.04** | **13.8 min** |
+| `mcpmem` | 11/11 | 9/9 | **20/20** | $3.46 | 15.6 min |
+| Horizon lean + map (2 runs each scenario, reference) | 22/22 | 18/18 | **40/40** | $3.07 | 14.5 min |
+
+- **Rules:** On this single full pass, both competitors **kept every rule check** (20/20), the same rate as one Horizon run pair (20/20 per pass). Hidden tests at the last ticket: rental **23/23** for both arms; ward **30/31** (one ordinary feature slip, not a rule check).
+- **Cost and time:** `notes` matched Horizon's combined 2-run reference on cost (**$3.04 vs $3.07**) and was slightly faster. `mcpmem` cost **+13 %** and **+8 %** time for the same rule score.
+- **MCP memory smoke:** Before the batch, a single ticket showed the memory server could store ticket-1 rules precisely; `r1` confirms that behaviour across the full rental and ward backlogs when the agent follows the instructions.
+
+**Batch `r2` (incomplete).** A second repeat was started in parallel; all four jobs hit the **shared Claude usage limit** around tickets 8–10 (~38 sessions). Partial rule scores before abort: `notes` **11/20**, `mcpmem` **12/20** — not comparable to `r1` or Horizon until rerun.
+
+**Verdict (with `r1` only).**
+
+1. **If the claim is "best rules kept per dollar on unattended coding":** A careful user with **`NOTES.md` instructions tied Horizon on rules and beat it slightly on cost/time in `r1`.** Horizon's edge on this evidence is **not** higher rule retention on ward/rental; it is that the agent was **never told** to maintain a notes file or call a memory server, yet lean + map still reaches **40/40** over two runs with the same ballpark cost as `notes`.
+2. **Official MCP memory** matched `notes` on rules in `r1` but cost more; the agent must be told to use the server and pay MCP/tool overhead.
+3. **Still open:** A second full repeat (`r2`) serially (see `evals/longhorizon/h2h.sh`) to measure variance; the first parallel `r2` is discarded except as a usage-limit caution.
+
+**Reproduce / resume.**
+
+```bash
+cd ~/Desktop/Long-Horizon-Tasks-v2
+chmod +x evals/longhorizon/h2h.sh
+python evals/longhorizon/score_h2h.py /tmp/h2h    # score r1 (+ partial r2)
+evals/longhorizon/h2h.sh r2-only                   # after usage limit resets; one job at a time
+```
+
+## Head-to-head against other memory systems (2026-10-07, Claude Code + Sonnet, 1 run each)
+
+Competitors were set up as a careful user would: `CLAUDE.md` tells the agent to record every rule (in `NOTES.md`, or in the official `@modelcontextprotocol/server-memory`, one memory file shared by the run's projects) and to read it at every session start. Claude Code's built-in auto memory is on in every arm.
+
+| | Built-in auto memory only | Notes file (told to) | MCP memory server (told to) | Horizon |
+|---|---|---|---|---|
+| ward + rental, round 1: rules kept | 4/20 | **20/20** | **20/20** | **20/20** |
+| ward + rental, round 1: cost / time | $2.94 / 15 min | $3.04 / 14 min | $3.46 / 16 min | $3.07 / 14 min |
+| team (rules into new projects): project 2 | 2/4 | 2/4 | **4/4** | **4/4** |
+| team: cost | $0.39 | $0.40 | $0.46 | $0.43 |
+| backlog (CI policy): failed CI runs | 0 | 0 | 0 | 0 |
+| backlog: cost / time | $0.68 / 3.2 min | $0.69 / 3.5 min | $0.77 / 3.8 min | **$0.60 / 3.0 min** |
+
+- **Within one project, a notes file the agent is told to keep is as good as Horizon, at the same cost.** The built-in auto memory saved nothing in any run.
+- **Across projects, the notes file fails** (it lives in one repo). Horizon and the shared memory server carry the team's rules; the server costs 7 % more.
+- **The backlog no longer discriminates:** this Sonnet reads the CI policy tests up front, and no arm had a failing CI run (in September, 5 of 8 sessions without Horizon did). The pitfall result stands for the earlier runs, but needs a harder scenario.
+- **What sets Horizon apart is that it's automatic:** the competitors match it only when the user writes the instructions telling the agent to keep memory, and the notes file still can't cross projects. The round-2 ward and rental runs were cut by the usage limit.
