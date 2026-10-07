@@ -46,13 +46,14 @@ HORIZON_TOOLS = ["mcp__horizon__start_task", "mcp__horizon__recall_context", "mc
                  "mcp__horizon__submit_consequences", "mcp__horizon__record_outcome", "mcp__horizon__explain_decision",
                  "mcp__horizon__show_memories"]
 LIMIT_TEXT = ("session limit", "usage limit", "rate limit")
-PROFILES = {"horizon": "full", "lean": "lean", "observe": "observe", "candidate": "lean"}  # arm -> install profile
+PROFILES = {"horizon": "full", "lean": "lean", "observe": "observe", "candidate": "lean", "decide": "lean"}
 # The candidate arm is lean with the features still behind the evaluation gate turned on (docs/EVALS.md).
 ARM_ENV = {"candidate": {"HORIZON_SESSION_MEMORY": "on", "HORIZON_CONTEXT": "composer", "HORIZON_STALL": "on",
-                         "HORIZON_DEAD_ENDS": "on"}}
+                        "HORIZON_DEAD_ENDS": "on"},
+           "decide": {"HORIZON_DECIDE": "on"}}
 EXTRA_ENV: dict[str, str] = {}  # --set KEY=VALUE, for ablations (e.g. the candidate without one feature)
 AGENT = {"host": "claude"}  # --agent: which coding agent runs the sessions (claude or cursor)
-MCP_ARMS = ("horizon", "lean", "candidate")  # arms whose agent gets Horizon's MCP tools
+MCP_ARMS = ("horizon", "lean", "candidate", "decide")  # arms whose agent gets Horizon's MCP tools
 # Other memory systems, set up as a careful user would (head-to-head against Horizon; no Horizon installed).
 # Claude Code's own auto memory is on in every arm (each session gets a memory folder); in the baseline runs
 # it saved nothing, so the baseline is already "Claude Code with its built-in memory".
@@ -236,7 +237,11 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
             for name, text in COMPETITORS[arm].items():
                 (repo / name).write_text(text)
             if arm == "mcpmem":
-                mem = (repo.parent / "memory.jsonl").resolve()  # outside the repo, like Horizon's database
+                # One memory file per run, shared by every project of the run (as a user would configure it once),
+                # outside the repos like Horizon's database.
+                if "mem" not in RUN:
+                    RUN["mem"] = Path(tempfile.mkdtemp(prefix=TEMP_PREFIX)).resolve() / "memory.jsonl"
+                mem = RUN["mem"]
                 (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"memory": {
                     "command": MEMORY_SERVER[0], "args": MEMORY_SERVER[1:], "env": {"MEMORY_FILE_PATH": str(mem)}}}}))
             git(repo, "add", "-A")
@@ -257,8 +262,8 @@ def setup(scenario: dict, arm: str, work: Path, python: str, name: str = "repo",
                        "--no-mcp"]
         else:
             install = [python, "-m", "horizon", "install-claude-code", "--dir", str(repo), "--profile", PROFILES[arm]]
-            if EXTRA_ENV.get("HORIZON_DECIDE") == "on":  # decisions need evaluate_options; plain lean is hooks only
-                install.append("--mcp")
+            if arm == "decide" or EXTRA_ENV.get("HORIZON_DECIDE") == "on":
+                install.append("--mcp")  # evaluate_options for HORIZON_DECIDE
         subprocess.run(install, check=True, env=env, capture_output=True)
         git(repo, "add", "-A")
         git(repo, "commit", "-qm", "install horizon")
@@ -585,7 +590,7 @@ def constraints(scenario: dict, repo: Path, python: str, package: str) -> list[s
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", required=True)
-    ap.add_argument("--arm", choices=["baseline", "observe", "lean", "candidate", "horizon", *COMPETITORS],
+    ap.add_argument("--arm", choices=["baseline", "observe", "lean", "candidate", "decide", "horizon", *COMPETITORS],
                     required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default="sonnet")
