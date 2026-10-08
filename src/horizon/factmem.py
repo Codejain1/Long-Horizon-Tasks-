@@ -22,6 +22,7 @@ import numpy as np
 
 MAX_UNIT = 3000  # characters of one round kept (long assistant answers are clipped)
 _WORD = re.compile(r"[a-z0-9]+")
+_NAMES = re.compile(r"\b[A-Z][\w.'-]*(?:\s+(?:of|de|la|von|van|the)?\s*[A-Z][\w.'-]*)*")
 # A question that counts or totals things said across conversations needs every mention, not the top few: on
 # LongMemEval all four of Horizon's misses were "how many ..." questions with the cap at 12.
 _AGGREGATE = re.compile(r"\b(how many|how much|in total|total|number of|count|altogether|sum)\b", re.I)
@@ -40,6 +41,7 @@ class Unit:
     session: str
     date: str
     text: str
+    superseded_by: int | None = None  # a newer unit that replaced this one (selective forgetting)
 
 
 @dataclass
@@ -80,6 +82,45 @@ class FactMemory:
             self._tf.append(tf)
             self._df.update(tf.keys())
 
+    def add_facts(self, facts: list[str], session: str = "facts", scorer=None, similar: float = 0.8,
+                  batch: int = 40) -> int:
+        """Stored in order, each as its own unit (its position is its date). With a scorer, a new fact that
+        replaces a stored one (same subject and relation, a new value) marks it superseded: it stays for history
+        but is no longer served as current. Returns how many were superseded."""
+        from horizon.decision.scorers import noul
+
+        start = len(self.units)
+        vecs = self.embedder.embed(facts)
+        pending = []  # (new id, old id) pairs that look alike, checked by the scorer in batches
+        for k, (text, vec) in enumerate(zip(facts, vecs)):
+            v = np.asarray(vec, dtype=np.float32)
+            if scorer is not None and self._vecs:
+                m = np.stack(self._vecs)
+                sim = m @ v / (np.linalg.norm(m, axis=1) * np.linalg.norm(v) + 1e-9)
+                pending += [(start + k, int(j)) for j in np.argsort(-sim)[:3] if sim[j] >= similar
+                            and self.units[int(j)].superseded_by is None]
+            self.units.append(Unit(start + k, session, f"{start + k:08d}", text))
+            self._vecs.append(v)
+            tf = Counter(_words(text))
+            self._tf.append(tf)
+            self._df.update(tf.keys())
+        replaced = 0
+        for b in range(0, len(pending), batch):
+            chunk = pending[b:b + batch]
+            state = {"pairs": [{"older": self.units[o].text, "newer": self.units[n].text} for n, o in chunk]}
+            qs = {f"p{j}": noul(f"In `pairs[{j}]`, does the newer statement replace the older one: the same "
+                                f"subject and the same relation or attribute, with a different value, so the "
+                                f"older one is no longer true?") for j in range(len(chunk))}
+            try:
+                a = scorer.ask(state, qs)
+            except Exception:
+                continue
+            for j, (n, o) in enumerate(chunk):
+                if a[f"p{j}"].value >= 0.5 and self.units[o].superseded_by is None:
+                    self.units[o].superseded_by = n
+                    replaced += 1
+        return replaced
+
     def _bm25(self, query: str) -> np.ndarray:
         n = len(self.units)
         avg = sum(sum(tf.values()) for tf in self._tf) / max(n, 1)
@@ -113,10 +154,17 @@ class FactMemory:
         return out
 
     def search(self, query: str, scorer=None, k: int = 30, keep: int = 12, floor: float = 0.15,
-               date: str | None = None) -> list[Hit]:
+               date: str | None = None, current_only: bool = False, hops: int = 1) -> list[Hit]:
         """The units most relevant to `query`, oldest first. With a scorer (Jev), each candidate is judged in one
-        request; otherwise the top by meaning are kept as they are (plain retrieval)."""
-        ids = self.candidates(query, k)
+        request; otherwise the top by meaning are kept as they are (plain retrieval). `current_only` leaves out
+        superseded units; `hops` > 1 also searches for the names in what the first search found (the author of X,
+        then that author's spouse)."""
+        ids = [i for i in self.candidates(query, k) if not (current_only and self.units[i].superseded_by is not None)]
+        for _ in range(hops - 1):
+            names = {n for i in ids[:10] for n in _NAMES.findall(self.units[i].text)} - set(_NAMES.findall(query))
+            more = [i for n in list(names)[:12] for i in self.candidates(n, 5)
+                    if not (current_only and self.units[i].superseded_by is not None)]
+            ids += [i for i in more if i not in ids]
         if scorer is None or not ids:
             return sorted((Hit(self.units[i], 1.0) for i in ids[:keep]), key=lambda h: (h.unit.date, h.unit.id))
         from horizon.decision.scorers import noul

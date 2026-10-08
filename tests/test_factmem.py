@@ -58,3 +58,25 @@ def test_counting_questions_keep_every_relevant_mention():
         m.add_session(f"s{i}", f"2023/01/{i + 1:02d}", [{"role": "user", "content": f"I baked Max a cake, number {i}."}])
     assert len(m.search("What did I bake for Max?", Judge(), k=30)) == 12
     assert len(m.search("How many times did I bake for Max?", Judge(), k=30)) == 20
+
+
+class Replaces:
+    """A stand-in for Jev: the newer statement replaces the older when both name the same subject."""
+
+    def ask(self, state, questions):
+        if "pairs" in state:
+            return {f"p{j}": Answer(0.9 if p["older"].split(" is ")[0] == p["newer"].split(" is ")[0] else 0.1)
+                    for j, p in enumerate(state["pairs"])}
+        return {f"m{j}": Answer(0.9) for j in range(len(state["memories"]))}
+
+
+def test_a_newer_fact_supersedes_the_old_one_and_hops_follow_names():
+    m = FactMemory(make_embedder("hash"))
+    n = m.add_facts(["The author of Bleak House is Charles Dickens.", "The spouse of Charles Dickens is Catherine Hogarth.",
+                     "The author of Bleak House is Wilkie Collins.", "The spouse of Wilkie Collins is Caroline Graves."],
+                    scorer=Replaces(), similar=0.0)
+    assert n == 1 and m.units[0].superseded_by == 2 and m.units[1].superseded_by is None
+    texts = [h.unit.text for h in m.search("Who is the spouse of the author of Bleak House?", Replaces(), k=2,
+                                           current_only=True, hops=2)]
+    assert "The author of Bleak House is Charles Dickens." not in texts
+    assert "The spouse of Wilkie Collins is Caroline Graves." in texts
