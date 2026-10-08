@@ -532,3 +532,24 @@ Competitors were set up as a careful user would: `CLAUDE.md` tells the agent to 
 - **Across projects, the notes file fails** (it lives in one repo). Horizon and the shared memory server carry the team's rules; the server costs 7 % more.
 - **The backlog no longer discriminates:** this Sonnet reads the CI policy tests up front, and no arm had a failing CI run (in September, 5 of 8 sessions without Horizon did). The pitfall result stands for the earlier runs, but needs a harder scenario.
 - **What sets Horizon apart is that it's automatic:** the competitors match it only when the user writes the instructions telling the agent to keep memory, and the notes file still can't cross projects. The round-2 ward and rental runs were cut by the usage limit.
+
+## LongMemEval-S, first run: 60 questions, stratified (2026-10-08, `evals/memory/longmemeval.py`)
+
+The benchmark's own step-by-step reader prompt and per-type judge prompts. Answering and judging with Claude Sonnet through Claude Code, the same for every arm, so the arms compare with each other, not with published GPT-4o numbers.
+
+| | Horizon (factmem + Jev) | Plain retrieval (top 10 by meaning) | Full history |
+|---|---|---|---|
+| **Overall** | **57/60 = 95.0 %** | 53/60 = 88.3 % | 9/10 = 90 % (10 questions; usage limit) |
+| facts the user said | 7/7 | 7/7 | – |
+| facts the assistant said | 7/7 | 6/7 | – |
+| preferences | 4/4 | 3/4 | – |
+| knowledge updates | 9/9 | 9/9 | 8/9 |
+| temporal reasoning | 15/15 | 13/15 | – |
+| multi-session | 11/14 | 11/14 | 1/1 |
+| abstention | 4/4 | 4/4 | – |
+| prompt per question | 6.0K tokens | 5.7K tokens | 128.6K tokens |
+
+- **Jev's relevance judgement adds 7 points over plain retrieval at the same prompt size**, and matches or beats full history at about 1/22 of its tokens.
+- **First fix from the misses:** all four first-pass misses were "how many…" questions, with the cap at 12 memories. Counting and total questions now keep every memory Jev judges relevant (up to 30, with a higher floor): abstention 3/4 → 4/4, overall 93.3 % → 95.0 %.
+- **The remaining 3 misses are reasoning, not retrieval:** the right memories were retrieved, and the reader counted wrongly (an old tank, a signed vinyl, a date window).
+- For reference, Mem0 publishes 93.4–94.4 % on LongMemEval with GPT-4o. That uses a different model and judge, so it isn't comparable.

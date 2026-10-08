@@ -22,6 +22,9 @@ import numpy as np
 
 MAX_UNIT = 3000  # characters of one round kept (long assistant answers are clipped)
 _WORD = re.compile(r"[a-z0-9]+")
+# A question that counts or totals things said across conversations needs every mention, not the top few: on
+# LongMemEval all four of Horizon's misses were "how many ..." questions with the cap at 12.
+_AGGREGATE = re.compile(r"\b(how many|how much|in total|total|number of|count|altogether|sum)\b", re.I)
 _STOP = set("a an the and or but if of to in on at for with by from as is are was were be been it this that "
             "these those i you he she we they me my your our their do did does have has had what which who when "
             "where how why can could would should will just so not no yes".split())
@@ -129,5 +132,7 @@ class FactMemory:
         except Exception:  # Jev down: fall back to plain retrieval
             return self.search(query, None, k, keep, floor, date)
         scored = sorted(((a[f"m{j}"].value, i) for j, i in enumerate(ids)), reverse=True)
+        if _AGGREGATE.search(query):
+            keep, floor = max(keep, 30), max(floor, 0.3)  # every relevant mention, still filtered
         hits = [Hit(self.units[i], round(v, 3)) for v, i in scored[:keep] if v >= floor]
         return sorted(hits, key=lambda h: (h.unit.date, h.unit.id))

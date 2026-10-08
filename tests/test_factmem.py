@@ -50,3 +50,11 @@ def test_the_judge_keeps_only_relevant_memories_oldest_first():
 def test_a_failing_judge_falls_back_to_plain_retrieval():
     hits = memory().search("Max", Judge(fail=True), k=10, keep=2)
     assert len(hits) == 2 and all(h.relevance == 1.0 for h in hits)
+
+
+def test_counting_questions_keep_every_relevant_mention():
+    m = FactMemory(make_embedder("hash"))
+    for i in range(20):
+        m.add_session(f"s{i}", f"2023/01/{i + 1:02d}", [{"role": "user", "content": f"I baked Max a cake, number {i}."}])
+    assert len(m.search("What did I bake for Max?", Judge(), k=30)) == 12
+    assert len(m.search("How many times did I bake for Max?", Judge(), k=30)) == 20
