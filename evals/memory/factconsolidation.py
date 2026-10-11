@@ -24,7 +24,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from longmemeval import claude  # noqa: E402
+from arms import ARMS, make_judge  # noqa: E402
+from longmemeval import auto_complete, claude, cursor_complete, gemini_complete, openai_complete  # noqa: E402
 
 DATA = Path.home() / ".cache" / "horizon-bench" / "mab" / "cr.parquet"
 # utils/templates.py, factconsolidation, rag_agent query (the long-context one is the same text).
@@ -57,26 +58,34 @@ def facts_of(context: str) -> list[str]:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", choices=["horizon", "rag", "full"], required=True)
+    ap.add_argument("--arm", choices=ARMS, required=True)
     ap.add_argument("--splits", nargs="+", default=["sh_6k", "mh_6k"])
     ap.add_argument("--n", type=int, default=50)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--model", default="sonnet")
+    ap.add_argument("--backend", choices=["claude", "openai", "gemini", "auto", "cursor"], default="claude")
+    ap.add_argument("--model", default=None)
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args(argv)
-    import os
-
+    if args.backend == "openai":
+        args.model = args.model or "gpt-4o-mini"
+    elif args.backend == "gemini":
+        args.model = args.model or "gemini-3.8-flash"
+    elif args.backend == "auto":
+        args.model = args.model or "gpt-4o-mini"
+    elif args.backend == "cursor":
+        args.model = args.model or "composer-2.5"
+    else:
+        args.model = args.model or "sonnet"
+    complete = {
+        "openai": openai_complete, "gemini": gemini_complete, "auto": auto_complete, "claude": claude,
+        "cursor": cursor_complete,
+    }[args.backend]
     import pandas as pd
 
     from horizon.factmem import FactMemory
     from horizon.memrouter.embedding import make_embedder
 
-    scorer = None
-    if args.arm == "horizon":
-        from horizon.decision.scorers import JevScorer, typesafe_key
-
-        os.environ.setdefault("TYPESAFE_API_KEY", typesafe_key() or "")
-        scorer = JevScorer()
+    scorer = make_judge(args.arm)
     embedder = make_embedder("fastembed") if args.arm != "full" else None
     table = pd.read_parquet(DATA)
     out = Path(args.out)
@@ -90,7 +99,7 @@ def main(argv=None) -> int:
         mem, replaced = None, 0
         if args.arm != "full":
             mem = FactMemory(embedder)
-            replaced = mem.add_facts(facts, scorer=scorer)
+            replaced = mem.add_facts(facts, scorer=scorer if args.arm == "horizon" else None)
         print(f"{args.arm} {split}: {len(facts)} facts, {replaced} superseded", flush=True)
 
         def one(i: int) -> dict:
@@ -99,10 +108,11 @@ def main(argv=None) -> int:
             if args.arm == "full":
                 pool = "\n".join(facts)
             else:
+                # same budget and hops for every retrieval arm; only horizon has supersession to use
                 hits = mem.search(q, scorer, k=30, keep=20, current_only=args.arm == "horizon",
-                                  hops=2 if args.arm == "horizon" and split.startswith("mh") else 1)
+                                  hops=2 if args.arm != "rag" and split.startswith("mh") else 1)
                 pool = "\n".join(h.unit.text for h in sorted(hits, key=lambda h: h.unit.id))
-            answer, usage = claude(MEMORIZED.format(facts=pool) + QUERY.format(question=q), args.model)
+            answer, usage = complete(MEMORIZED.format(facts=pool) + QUERY.format(question=q), args.model)
             return {"i": i, "question": q, "answers": answers, "prediction": answer[:300],
                     "correct": substring_match(answer, answers), "prompt_chars": len(pool),
                     "cost_usd": usage.get("cost_usd", 0)}

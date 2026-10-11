@@ -63,7 +63,8 @@ class JevScorer:
     def __init__(self, model: str = "jev-latest", client: Any = None):
         from typesafe_sdk import TypeSafeClient
 
-        self.client = client or TypeSafeClient(model=model, api_key=typesafe_key())
+        # A dropped connection otherwise hangs forever (a BEAM run stalled 30+ min); callers fall back on errors.
+        self.client = client or TypeSafeClient(model=model, api_key=typesafe_key(), timeout=120)
 
     def ask(self, state: dict, questions: dict[str, dict]) -> dict[str, Answer]:
         from typesafe_sdk import Noul, Score

@@ -565,11 +565,55 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - **4 side-by-side runs on the final code:** rules 40/40 against 7/40, hidden tests 106/108 against 73/108, at +12 % cost.
   - **Cost to correct software** (build + QA fix-ups, `fixup.py`): $7.42 against $8.71 (−15 %), 38.8 against 46.4 min (−16 %), 1 against 10 checks still failing. Forgotten rules can't be fixed from failures alone: a person has to restate them.
 
+- **Head-to-head memory competitors** (2026-10-07, while Claude usage limit blocked live runs).
+  - **`r1` complete** (52 sessions, parallel): `notes` and `mcpmem` each **20/20** rule checks on ward+rental; **$3.04** and **$3.46** vs Horizon lean+map reference **$3.07** (`evals/longhorizon/RESULTS.md`).
+  - **`r2` incomplete** (parallel abort); serial rerun: `evals/longhorizon/h2h.sh r2-only` or `evals/longhorizon/h2h_wait_r2.sh` (polls until limit clears).
+  - **Tooling:** `evals/longhorizon/score_h2h.py`, `h2h.sh` (serial jobs), `tests/test_score_h2h.py`.
+  - **`docs/EVALS.md`:** lean memory proof table (speed, cost, quality, routing, classification) and decision-layer gate table (boxoffice/lessons).
+  - **`evals/acceptance.json` + `evals/acceptance.py`:** one runnable sheet for all five parameters (memory + decision offline); `tests/test_acceptance.py`.
+  - **Decision eval arm `decide`** (`HORIZON_DECIDE=on`, `--mcp`); batch script `evals/longhorizon/decision_gate.sh`.
+
+- **Session 28 — memory audit fixes** (2026-10-11).
+  - `factmem`: memories are ordered by their parsed date (LongMemEval, LoCoMo, BEAM formats; an unreadable date keeps insertion order), not the date text. All 287 LoCoMo session dates parse. The Jev-down fallback keeps `current_only` and `hops`.
+  - Team rules: every new task inherits the current set (`TaskStore.create`), so the 50-task window no longer loses them.
+  - Old project rules past the 40 shown at session start come back on the first prompt when they share words with the task (up to 5 lines).
+  - Revocation: `revoked_rules` checks new rule sentences, and sentences with a cancelling phrase, against the 3 earlier rules they share most words with. Jev judges them in one request (live: 6/6 right, 0.26-0.40 s); without Jev only a cancelling phrase counts. Revoked rules are kept in the task's new `revoked` list and left out of older tasks' constraints and team rules.
+  - Cost: user-prompt hook p50 15 ms on a 200-task project (+1-4 ms of store reads); one Jev round trip only on prompts whose rule sentences overlap an earlier rule.
+  - Tests: 3 new in `test_factmem.py`, 5 new in `test_lean.py`; live `test_rule_capture.py` passes.
+  - **Fair benchmark protocol** (`evals/memory/run_protocol.sh`, `arms.py`, `compare.py`; `docs/MEMORY_BENCHMARKS.md`): a `hybrid` arm (same candidates and budget as Horizon, ranked by a cross-encoder instead of Jev), `rag` given the same 12 memories, Codex grading every arm, LongMemEval `dev`/`test` splits (dev = the 60 tuned on, verified identical), and scoring on shared questions with bootstrap intervals and McNemar p-values (`tests/test_memory_compare.py`).
+  - **Old results re-scored:** only LoCoMo's lead over plain retrieval is significant (+27 pts, p < 0.001). BEAM +8.6 (p = 0.38) and LongMemEval +3.3 (p = 0.69) are noise. FactConsolidation's full-history arm had run and wasn't reported: 96 % against Horizon's 68 % on multi-hop.
+
 ## In progress
 
-- Nothing running.
+- **Public memory benchmarks on Cursor composer-2.5 with a Codex judge (2026-10-09):** LoCoMo J Horizon 85.5 % / plain retrieval 64.5 % / full 91.9 %; LongMemEval-S 90.0 / 88.3 (Codex-judged). BEAM rerun with rubric scoring in `/tmp/mem-eval-v2/` (resume: `/tmp/mem-eval-v2/run.sh`, then `finish_horizon.sh`). Table in `docs/MEMORY_BENCHMARKS.md`.
+- **Fair-protocol rerun (started 2026-10-11 09:30):** `OUT=/tmp/mem-eval-v3 ./evals/memory/run_protocol.sh`, all four arms of LoCoMo 150, BEAM 80, LongMemEval test 100 and FactConsolidation 2×50, one benchmark at a time (expected about 10-12 hours). Results land in `/tmp/mem-eval-v3/compare.txt`; resume by rerunning the same command.
+- **Memory audit (2026-10-11, session 28), before any decision-layer work.** The five bugs below are **fixed** (see Completed, session 28); the eval-protocol items are still open:
+  - `factmem.search` sorts hits by the date *string*: on BEAM ("April-02" before "March-15") and LoCoMo ("10:37 am on 27 June" before "1:56 pm on 8 May") memories reach the reader out of order, so "latest version last" is false there. LongMemEval's dates sort correctly.
+  - `factmem.search`'s Jev-down fallback drops `current_only` and `hops`: superseded facts are served as current.
+  - `TaskStore.team_rules` reads the latest 50 tasks only: after 50 tasks that set no team rule, every team rule is gone.
+  - `project_constraints` is capped at 40, newest first: the ticket-1 rule falls out after 40 newer constraints.
+  - No revocation in lean: "the deposit limit no longer applies" is stored next to the old rule, and both are shown.
+  - Eval protocol: the counting-question rule was tuned on the same 60 LongMemEval questions it reports (93.3 → 95.0 %); the `rag` baseline is dense-only on user turns with keep=10 against Horizon's hybrid + rerank keep=12-30; failed questions are dropped per arm (BEAM rag 35 vs horizon 40 rows); BEAM is the 100K split, not the 1M one behind Mem0's 64.1 %, and leaves out 3 categories.
+- **`h2h` batch `r2`:** waiting on Claude Code usage limit; `h2h_wait_r2.sh` can run in the background until `r2-only` finishes.
+- **Decision layer (next engineering track):** code built (`HORIZON_DECIDE`, Session 25); product default waits on Sonnet cost/quality or owner sign-off (see `docs/EVALS.md` decision gate).
 
 ## Decisions made
+
+**v2 session 28**
+- **Baseline reranker `ms-marco-MiniLM-L-6-v2`, no relevance floor.** bge-reranker-base took 350-500 s per question on CPU; MiniLM is the standard passage reranker (~7 s). Its scores aren't calibrated like Jev's, so it ranks only; Horizon keeps the floor it abstains with.
+- **FactConsolidation keeps 20 memories for every arm** (as in the earlier runs) rather than 12.
+- **Benchmarks run one at a time, 3 workers.** Parallel benchmarks starved the CPU and skewed retrieval latencies.
+- **Benchmark data re-downloaded** to `~/.cache/horizon-bench/` (the cache had been cleared; LongMemEval's full-history step failed on it).
+- **Revocation is a separate Jev request, not part of `split_rules`.** Rule capture's request and its live guard stay unchanged; the extra call happens only when a new rule overlaps an earlier one.
+- **`revoked` is a new optional field in the task JSON, default empty.** Additive: old rows load unchanged, so no migration.
+- **Dates parsed with the standard library**, not `python-dateutil`, which isn't a declared dependency.
+- **Old rules return by word overlap**, not Jev or embeddings, to keep the hook fast; it misses paraphrases (marked `ponytail:`).
+
+**v2 session 27**
+- **Codex (ChatGPT plan) judges, composer answers.** No API credits; Codex serves only its default model (gpt-5.6-luna), so the vendors' GPT-4o-mini protocol can't be reproduced. An independent judge removes self-grading; the claim is the gap between arms.
+- **LoCoMo old answers reused, category 5 re-asked.** Categories 1-4 used the official prompt already; only category 5 lacked the two options.
+- **BEAM scored by its rubric (0 / 0.5 / 1 per item, pass at 0.5); Kendall tau for event ordering not computed.**
+- **Jev client timeout 120 s.** A dropped connection hung a BEAM run; `factmem.search` already falls back to plain retrieval on errors.
 
 **v2 session 24**
 - **Cursor runs use `--sandbox enabled`.** An unsandboxed probe ran `pip install --break-system-packages` into the system Python.
@@ -1064,13 +1108,16 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 
 ## Next step
 
-**v2 (this copy), state on 2026-10-02.** Phases 0–2 are built. The Phase 3 gate found no component that beats lean, so Phase 4 waits (principle 5). Refused-command memory, the handoff rerun and the rental rerun after the over-capture fix (question 88) are done and recorded in `RESULTS.md`. Question 78 is covered by the Cursor marathon, which ran tickets 1–21 with no gain for lean, so no Sonnet rerun is planned.
+**v2 (this copy), state on 2026-10-07.** Lean memory proof is documented in `docs/EVALS.md` (five metrics). Head-to-head `r1` shows competitors with explicit memory instructions tie Horizon on rules; **`r2`** serial repeat is queued after the usage limit. Phase 3 gate (candidate stack) still found no beat over lean on marathon; **Phase 4 foresight** waits on principle 5. **Decision layer** is implemented; next work is evals and defaults on `boxoffice` / `lessons`, not ward/rental.
 
-What the evidence supports: **lean + Jev carries rules given early and needed late** (handoff 24/24 against 2/12; rental 26/27 against 8/27, at 56–62 % of baseline's tokens), and **pitfall warnings** stop a policy that keeps breaking (v1 replays). On general unattended coding (marathon), nothing beat plain Claude Code.
+What the evidence supports: **lean + Jev carries rules without telling the agent to keep a notes file**; **notes/mcpmem match rules when instructed** (`RESULTS.md` head-to-head). Pitfall replays and fix-up economics unchanged.
 
 Next:
-- **Owner decisions** that now gate progress: Jev as lean's default rule splitter (question 87; two scenarios now support it), the real RentEase product (question 91), and pushing this branch for review.
-- **Engineering, once decided:** if Jev becomes the default, make the installer set it up (the key from the environment or Keychain) and fall back to keywords silently. Otherwise, the next evidence is a scenario where earlier sessions' test history decides a later ticket (question 84), which is the only place the history-based components could still win.
+0. **Memory gate before the decision layer (owner, 2026-10-11):** the five audit bugs are fixed and the fair protocol is built and running (`/tmp/mem-eval-v3`). Next: read its `compare.txt`; decide from it whether Jev's relevance judging earns its place over the `hybrid` baseline; then BEAM 1M and LongMemEval-S all 500.
+1. **Finish `h2h` `r2`** (`h2h_wait_r2.sh` or manual after ~4:20am IST limit reset); append combined verdict to `RESULTS.md`.
+2. **Decision layer:** run Sonnet `boxoffice`/`lessons` with `HORIZON_DECIDE=on` + `--mcp` vs lean; target ≤ +10 % cost with trap quality ≥ lean (`docs/EVALS.md`).
+3. **Owner:** Jev as default splitter (Q87), branch review, public repo (`LAUNCH.md`).
+4. **Engineering if Jev default:** installer reads env or Keychain (`typesafe_key`), silent keyword fallback.
 
 **Owner, when convenient:** rotate the TypeSafe key (question 68). Once the usage limit resets, the `candidate` against `lean` gate run on `marathon` (question 72).
 
