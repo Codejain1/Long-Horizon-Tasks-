@@ -17,6 +17,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 
 import numpy as np
 
@@ -26,9 +27,22 @@ _NAMES = re.compile(r"\b[A-Z][\w.'-]*(?:\s+(?:of|de|la|von|van|the)?\s*[A-Z][\w.
 # A question that counts or totals things said across conversations needs every mention, not the top few: on
 # LongMemEval all four of Horizon's misses were "how many ..." questions with the cap at 12.
 _AGGREGATE = re.compile(r"\b(how many|how much|in total|total|number of|count|altogether|sum)\b", re.I)
+# Session dates as the benchmarks write them (LongMemEval, LoCoMo, BEAM). Sorted as text they misorder: "April"
+# before "March", "10:37 am on 27 June" before "1:56 pm on 8 May".
+_DATE_FORMATS = ("%Y/%m/%d %H:%M", "%Y/%m/%d", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%I:%M %p on %d %B, %Y", "%B-%d-%Y")
 _STOP = set("a an the and or but if of to in on at for with by from as is are was were be been it this that "
             "these those i you he she we they me my your our their do did does have has had what which who when "
             "where how why can could would should will just so not no yes".split())
+
+
+def _when(date: str) -> float | None:
+    s = " ".join(re.sub(r"\(\w+\)", " ", date).split())  # "2023/05/20 (Sat) 02:21"
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).timestamp()
+        except ValueError:
+            pass
+    return None
 
 
 def _words(text: str) -> list[str]:
@@ -42,6 +56,7 @@ class Unit:
     date: str
     text: str
     superseded_by: int | None = None  # a newer unit that replaced this one (selective forgetting)
+    when: float = 0.0  # the date as a time, for ordering; an unreadable date keeps the order units were added in
 
 
 @dataclass
@@ -75,8 +90,11 @@ class FactMemory:
         keys = [" ".join(t.get("content", "") for t in r if t.get("role") == "user")[:1000] or texts[i][:1000]
                 for i, r in enumerate(rounds)]
         vecs = self.embedder.embed(keys)
+        when = _when(date)
+        if when is None:
+            when = self.units[-1].when if self.units else 0.0
         for text, vec in zip(texts, vecs):
-            self.units.append(Unit(len(self.units), session, date, text))
+            self.units.append(Unit(len(self.units), session, date, text, when=when))
             self._vecs.append(np.asarray(vec, dtype=np.float32))
             tf = Counter(_words(text))
             self._tf.append(tf)
@@ -99,7 +117,8 @@ class FactMemory:
                 sim = m @ v / (np.linalg.norm(m, axis=1) * np.linalg.norm(v) + 1e-9)
                 pending += [(start + k, int(j)) for j in np.argsort(-sim)[:3] if sim[j] >= similar
                             and self.units[int(j)].superseded_by is None]
-            self.units.append(Unit(start + k, session, f"{start + k:08d}", text))
+            self.units.append(Unit(start + k, session, f"{start + k:08d}", text,
+                                   when=self.units[-1].when if self.units else 0.0))
             self._vecs.append(v)
             tf = Counter(_words(text))
             self._tf.append(tf)
@@ -166,7 +185,7 @@ class FactMemory:
                     if not (current_only and self.units[i].superseded_by is not None)]
             ids += [i for i in more if i not in ids]
         if scorer is None or not ids:
-            return sorted((Hit(self.units[i], 1.0) for i in ids[:keep]), key=lambda h: (h.unit.date, h.unit.id))
+            return sorted((Hit(self.units[i], 1.0) for i in ids[:keep]), key=lambda h: (h.unit.when, h.unit.id))
         from horizon.decision.scorers import noul
 
         state = {"question": query, "asked_on": date or "", "memories": [
@@ -178,9 +197,9 @@ class FactMemory:
         try:
             a = scorer.ask(state, questions)
         except Exception:  # Jev down: fall back to plain retrieval
-            return self.search(query, None, k, keep, floor, date)
+            return self.search(query, None, k, keep, floor, date, current_only, hops)
         scored = sorted(((a[f"m{j}"].value, i) for j, i in enumerate(ids)), reverse=True)
         if _AGGREGATE.search(query):
             keep, floor = max(keep, 30), max(floor, 0.3)  # every relevant mention, still filtered
         hits = [Hit(self.units[i], round(v, 3)) for v, i in scored[:keep] if v >= floor]
-        return sorted(hits, key=lambda h: (h.unit.date, h.unit.id))
+        return sorted(hits, key=lambda h: (h.unit.when, h.unit.id))

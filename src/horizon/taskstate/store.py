@@ -96,6 +96,8 @@ class TaskStore:
     # --- tasks -----------------------------------------------------------------
 
     def create(self, task: TaskState) -> TaskState:
+        if not task.team_rules:  # every task carries the current set, so the latest task always holds it
+            task.team_rules = self.team_rules(task.team_id)
         self.db.execute(
             "INSERT INTO tasks (id, team_id, project_id, status, cwd, data, created_at, updated_at)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
@@ -144,7 +146,12 @@ class TaskStore:
             (team_id, cwd, window))]
         goals = [t.get("goal") or "" for t in tasks]
         recurring = lambda c: c in goals[0] and any(c in g for g in goals[1:])  # noqa: E731
-        return [c for c in dict.fromkeys(c for t in tasks for c in t.get("constraints") or []) if not recurring(c)]
+        revoked: set[str] = set()  # a rule a newer task cancelled no longer holds; one it restated later does
+        kept = []
+        for t in tasks:
+            kept += [c for c in t.get("constraints") or [] if c not in revoked]
+            revoked.update(t.get("revoked") or [])
+        return [c for c in dict.fromkeys(kept) if not recurring(c)]
 
     def session_task(self, team_id: str, cwd: str, session_id: str) -> str | None:
         """The task a session worked on (lean: the one its first message started), if any."""
@@ -188,14 +195,17 @@ class TaskStore:
         return out[-limit:]
 
     def team_rules(self, team_id: str) -> list[str]:
-        """The team's rules for every project: those of its latest task that set any."""
+        """The team's rules for every project: those of its latest task that holds any, less any a newer task
+        revoked. Each new task inherits the set (`create`), so the window only matters for older data."""
         # ponytail: scans the latest 50 tasks' JSON; a team_rules table if teams outgrow that window.
         rows = self.db.fetchall("SELECT data FROM tasks WHERE team_id = %s ORDER BY created_at DESC LIMIT 50",
                                 (team_id,))
+        revoked: set[str] = set()
         for row in rows:
-            rules = load_json(row[0]).get("team_rules")
-            if rules:
-                return rules
+            data = load_json(row[0])
+            if data.get("team_rules"):
+                return [r for r in data["team_rules"] if r not in revoked]
+            revoked.update(data.get("revoked") or [])
         return []
 
     # --- test captures (PostToolUse hook) --------------------------------------

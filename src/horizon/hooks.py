@@ -25,7 +25,7 @@ import sys
 
 from horizon.adapters.coding import command_summary, events_from_hook
 from horizon.adapters.coding import tool_output as _tool_output
-from horizon.composer import MAX_RULE
+from horizon.composer import MAX_CONSTRAINTS, MAX_RULE
 from horizon.config import Settings
 from horizon.db import connect
 from horizon.decision.scorers import make_scorer
@@ -63,7 +63,7 @@ def project_dir(payload: dict) -> str:
 def core_session_start(store: TaskStore, team: str, project: str, lean: bool = False) -> dict:
     """`lean`: the agent makes no Horizon calls, so nothing here asks for one, and goals lose the preamble every
     recent goal opens with (a backlog's shared instructions would otherwise fill the 200 characters shown)."""
-    from horizon.composer import MAX_CONSTRAINTS, RECENT_WINDOW, label
+    from horizon.composer import RECENT_WINDOW, label
 
     lines = [LEAN_WORKFLOW if lean else WORKFLOW]
     active = store.active(team, cwd=project)
@@ -149,6 +149,14 @@ MAX_GOAL = 4000
 _TEAM_RULE = re.compile(r"\b(all (of )?(our|my|the team'?s?) (projects|services|repos)|every (project|service|repo)"
                         r"|future projects|team'?s? rules?|rules? for (all|every))\b", re.I)
 _PROJECT_RULE = re.compile(r"\b(from now on|constraints?|must (always|never)|always|never)\b", re.I)
+_SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\b\d\.)\s+")  # not after a list number ("1.")
+# A sentence that may cancel or change an earlier rule. Jev judges every new rule sentence too; without Jev only
+# these are checked.
+_REVOKE = re.compile(r"\b(no longer|never ?mind|(doesn'?t|does not|don'?t|do not) (apply|hold|need)|not required|"
+                     r"cancel\w*|drop(ped)? the|ignore the|instead of|replac\w*|lift\w*|scrap\w*|any amount)\b", re.I)
+# Words too common in rules to tie one rule to another.
+_COMMON = set("must never always should every project projects rule rules with that this from will have only they "
+              "their when what which there these those into also than then them were been here".split())
 _LIST_START = re.compile(r":\s*\n?\s*1[.)]\s")  # a lead-in that opens a numbered list
 _LIST_ITEM = re.compile(r"\s*\d+[.)]\s")
 
@@ -189,7 +197,7 @@ def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
     With a scorer (Jev), two yes/no questions per sentence in one request: 10/10 on a probe set where the
     keyword fallback got 8/10 ("Never mind…" isn't a rule; "Always… everywhere" is a team rule)."""
     # not after a list number ("1."), which would leave "…these constraints hold: 1." as a rule of its own
-    sentences = [s for s in re.split(r"(?<=[.!?])(?<!\b\d\.)\s+", text) if s.strip()][:MAX_SENTENCES]
+    sentences = [s for s in _SENTENCE_END.split(text) if s.strip()][:MAX_SENTENCES]
     team, project = [], []
     if scorer is not None and sentences:
         try:
@@ -214,6 +222,42 @@ def split_rules(text: str, scorer=None) -> tuple[list[str], list[str]]:
             project.append(sentence[:MAX_RULE])
             listing = project if _LIST_START.search(sentence) else listing
     return team, project
+
+
+def _stems(text: str) -> set[str]:
+    return {w.rstrip("s") for w in re.findall(r"[a-z]{4,}", text.lower())} - _COMMON
+
+
+def _overlapping(text: str, rules: list[str], top: int) -> list[str]:
+    """The rules sharing the most words with `text` (at least one), best first."""
+    words = _stems(text)
+    ranked = sorted(((len(words & _stems(r)), k) for k, r in enumerate(rules)), key=lambda x: (-x[0], x[1]))
+    return [rules[k] for n, k in ranked[:top] if n]
+
+
+def revoked_rules(sentences: list[str], existing: list[str], scorer=None) -> list[str]:
+    """The `existing` rules that one of `sentences` cancels or changes ("the deposit limit no longer applies").
+    Each sentence is checked against the 3 rules it shares most words with: by Jev in one request, or without
+    Jev, only a sentence with a cancelling phrase, against its closest rule."""
+    pairs = [(i, r) for i, s in enumerate(sentences) for r in _overlapping(s, existing, 3)]
+    if not pairs:
+        return []
+    if scorer is not None:
+        from horizon.decision.scorers import noul
+
+        try:
+            a = scorer.ask({"sentences": sentences, "rules": [r for _, r in pairs]},
+                           {f"r{j}": noul(f"Does `sentences[{i}]` cancel, lift or change `rules[{j}]`, so that "
+                                          f"`rules[{j}]` as written should no longer be followed?")
+                            for j, (i, _) in enumerate(pairs)})
+            return list(dict.fromkeys(r for j, (_, r) in enumerate(pairs) if a[f"r{j}"].value > 0.5))
+        except Exception as exc:  # the scorer is down: fall back to cancelling phrases
+            if os.environ.get("HORIZON_DEBUG"):
+                print(f"horizon: revocation check failed, using keywords: {exc!r}", file=sys.stderr)
+    best = {}
+    for i, r in pairs:
+        best.setdefault(i, r)
+    return list(dict.fromkeys(r for i, r in best.items() if _REVOKE.search(sentences[i])))
 
 
 def lean_session_start(store: TaskStore, team: str, project: str, session: str | None,
@@ -263,6 +307,13 @@ def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | N
     if text == CODE_REMOVED:
         return None
     team_rules, constraints = split_rules(text, scorer)
+    new = team_rules + constraints
+    # New rule sentences, and any sentence with a cancelling phrase, may cancel or change an earlier rule.
+    checked = [x for x in _SENTENCE_END.split(text) if x.strip() and (x[:MAX_RULE] in new or _REVOKE.search(x))]
+    revoked = []
+    if checked:
+        earlier = [r for r in store.team_rules(team) + store.project_constraints(team, project) if r not in new]
+        revoked = revoked_rules(checked, earlier, scorer)
     task = next((t for t in store.active(team, cwd=project) if t.session_id == session), None)
     created = task is None
     if created:
@@ -270,14 +321,24 @@ def lean_user_prompt(store: TaskStore, team: str, project: str, session: str | N
                                       constraints=constraints))
     else:
         task.progress.append(ProgressEntry(note=redact(prompt, MAX_NOTE)))
+        task.constraints = [c for c in task.constraints if c not in revoked]
         task.constraints += [c for c in constraints if c not in task.constraints]
-    if team_rules:  # the latest task that sets team rules holds the current set
-        current = store.team_rules(team)
+    task.revoked += [r for r in revoked if r not in task.revoked]
+    current = store.team_rules(team)
+    if team_rules or set(revoked) & set(current):  # the latest task that sets team rules holds the current set
+        current = [r for r in current if r not in revoked]
         task.team_rules = current + [r for r in team_rules if r not in current]
     store.save(task)
     if not created:
         return None
     lines = [f"Horizon task id: {task.id} (only needed if you call evaluate_options)."] if tools else []
+    # Session start shows the newest MAX_CONSTRAINTS rules; older ones that share words with this task come back.
+    # ponytail: word overlap, misses paraphrases; Jev or embeddings if long projects show misses.
+    older = [c for c in store.project_constraints(team, project) if c not in task.constraints][MAX_CONSTRAINTS:]
+    relevant = _overlapping(text, older, 5)
+    if relevant:
+        lines += ["Earlier rules for this project that may apply to this task:",
+                  *[f"- {c[:MAX_RULE]}" for c in relevant]]
     if decide and tools:
         from horizon.decide import crucial_ahead, earlier_decisions, instruction
 

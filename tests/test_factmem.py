@@ -80,3 +80,29 @@ def test_a_newer_fact_supersedes_the_old_one_and_hops_follow_names():
                                            current_only=True, hops=2)]
     assert "The author of Bleak House is Charles Dickens." not in texts
     assert "The spouse of Wilkie Collins is Caroline Graves." in texts
+
+
+def test_memories_come_back_in_date_order_whatever_the_date_format():
+    # Sorted as text, "April" came before "March" (BEAM) and "10:37 am on 27 June" before "1:56 pm on 8 May" (LoCoMo).
+    for dates in (["March-15-2024", "April-02-2024", "May-20-2024"],
+                  ["1:56 pm on 8 May, 2023", "1:14 pm on 25 May, 2023", "10:37 am on 27 June, 2023"],
+                  ["2023/05/20 (Sat) 02:21", "2023/05/21 (Sun) 09:00", "2023/06/01 (Thu) 10:00"]):
+        m = FactMemory(make_embedder("hash"))
+        for d in reversed(dates):  # added newest first, so the order can only come from the dates
+            m.add_session(d, d, [{"role": "user", "content": f"Max went to the vet on {d}."}])
+        assert [h.unit.date for h in m.search("Max vet", k=10)] == dates
+
+
+def test_unreadable_dates_keep_the_order_sessions_were_added_in():
+    m = FactMemory(make_embedder("hash"))
+    for d in ["session 2", "session 1", "session 10"]:
+        m.add_session(d, d, [{"role": "user", "content": "Max ate."}])
+    assert [h.unit.date for h in m.search("Max", k=10)] == ["session 2", "session 1", "session 10"]
+
+
+def test_a_failing_judge_still_leaves_out_superseded_facts():
+    m = FactMemory(make_embedder("hash"))
+    m.add_facts(["The capital of Freedonia is Ruritania.", "The capital of Freedonia is Elbonia."],
+                scorer=Replaces(), similar=0.0)
+    texts = [h.unit.text for h in m.search("capital of Freedonia", Judge(fail=True), current_only=True)]
+    assert texts == ["The capital of Freedonia is Elbonia."]

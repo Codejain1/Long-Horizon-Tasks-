@@ -1,6 +1,7 @@
 """The lean profile: task continuity only (goals, constraints, team rules), one outcome per task."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -229,3 +230,70 @@ def test_project_map_lists_modules_and_public_functions_and_joins_session_start(
     assert "place(items, prices)" in lean("session-start", {"cwd": project_dir, "session_id": "s1"}, settings)
     monkeypatch.setenv("HORIZON_PROJECT_MAP", "off")
     assert "Project map" not in (lean("session-start", {"cwd": project_dir, "session_id": "s2"}, settings) or "")
+
+
+def prompt(store, settings, project, session, text, scorer=None):
+    from horizon.hooks import lean_user_prompt
+
+    return lean_user_prompt(store, settings.team_id, project, session, text, tools=False, scorer=scorer)
+
+
+def test_team_rules_outlive_any_number_of_tasks_that_set_none(settings, task_store):
+    # The latest 50 tasks were read: 50 ordinary tasks made every team rule disappear.
+    prompt(task_store, settings, "/p0", "s0", "Always use UTC timestamps in every project, including future ones.")
+    for i in range(55):
+        prompt(task_store, settings, f"/p{i + 1}", f"s{i + 1}", "Fix the login button colour.")
+    assert task_store.team_rules(settings.team_id) == [
+        "Always use UTC timestamps in every project, including future ones."]
+
+
+def test_a_rule_past_the_session_start_cap_comes_back_when_a_task_needs_it(settings, task_store):
+    from horizon.composer import MAX_CONSTRAINTS
+
+    prompt(task_store, settings, "/q", "x0", "The rental deposit must never exceed 2 months rent.")
+    for i in range(MAX_CONSTRAINTS + 5):
+        prompt(task_store, settings, "/q", f"x{i + 1}", f"Field number {i} must always be validated.")
+    assert not any("deposit" in c for c in task_store.project_constraints(settings.team_id, "/q")[:MAX_CONSTRAINTS])
+    ctx = prompt(task_store, settings, "/q", "y", "Add a deposit refund endpoint.")
+    ctx = ctx["hookSpecificOutput"]["additionalContext"]
+    assert "- The rental deposit must never exceed 2 months rent." in ctx
+    assert prompt(task_store, settings, "/q", "z", "Polish the README.") is None  # nothing shares its words
+
+
+class Revokes(RuleScorer):
+    """A stand-in for Jev that also answers the revocation questions: a sentence cancels a rule when both name
+    the deposit."""
+
+    def ask(self, state, questions):
+        from horizon.decision.scorers import Answer
+
+        if "rules" not in state:
+            return super().ask(state, questions)
+        self.calls += 1
+        out = {}
+        for qid, q in questions.items():
+            i, j = (int(x) for x in re.findall(r"\[(\d+)\]", str(q["instructions"]))[:2])
+            hit = "deposit" in state["sentences"][i].lower() and "deposit" in state["rules"][j].lower()
+            out[qid] = Answer(0.9 if hit else 0.1)
+        return out
+
+
+@pytest.mark.parametrize("scorer", [None, Revokes(project=["The rental deposit must never exceed 2 months rent.",
+                                                          "Late fees must never exceed 5 percent.",
+                                                          "Deposits may now be up to 3 months rent."])])
+def test_a_cancelled_or_changed_rule_stops_being_shown(settings, task_store, scorer):
+    prompt(task_store, settings, "/r", "a", "The rental deposit must never exceed 2 months rent. Late fees must "
+                                            "never exceed 5 percent.", scorer)
+    if scorer is None:  # without Jev only a cancelling phrase counts
+        prompt(task_store, settings, "/r", "b", "Never mind, the deposit limit no longer applies.")
+    else:  # Jev also sees a changed value
+        prompt(task_store, settings, "/r", "b", "Deposits may now be up to 3 months rent.", scorer)
+    rules = task_store.project_constraints(settings.team_id, "/r")
+    assert "The rental deposit must never exceed 2 months rent." not in rules
+    assert any("Late fees" in r for r in rules)  # other rules stay
+
+
+def test_a_team_rule_can_be_revoked(settings, task_store):
+    prompt(task_store, settings, "/t1", "a", "Always use UTC timestamps in every project, including future ones.")
+    prompt(task_store, settings, "/t2", "b", "Never mind, UTC timestamps are no longer required in our projects.")
+    assert task_store.team_rules(settings.team_id) == []
