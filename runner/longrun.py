@@ -248,27 +248,45 @@ class PodmanSandbox(LocalSandbox):
 
 
 # ---------------------------------------------------------------- model
-def chat(url: str, messages: list, tools=None, json_mode=False, model="local", timeout=600, deep=False) -> dict:
+def chat(url: str, messages: list, tools=None, json_mode=False, model="local", timeout=600, deep=False,
+         api_key: str = "") -> dict:
     """deep: the same model thinking before it answers (Qwen3 thinking mode): the escalation for a stuck step,
-    at no extra cost beyond time."""
+    at no extra cost beyond time. api_key: a hosted endpoint (OpenAI-compatible); then the vLLM-only thinking switch
+    is left out."""
     body = {"model": model, "messages": messages, "temperature": 0.6 if deep else 0.2,
-            "max_tokens": 6000 if deep else 4000, "chat_template_kwargs": {"enable_thinking": deep}}
+            "max_tokens": 6000 if deep else 4000}
+    if not api_key:
+        body["chat_template_kwargs"] = {"enable_thinking": deep}
     if tools:
         body["tools"] = tools
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    req = urllib.request.Request(url.rstrip("/") + "/chat/completions", json.dumps(body).encode(),
-                                 {"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {api_key}"} if api_key else {})}
+    req = urllib.request.Request(url.rstrip("/") + "/chat/completions", json.dumps(body).encode(), headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         out = json.loads(r.read())
     u = out.get("usage") or {}
     USAGE["calls"] += 1
     USAGE["prompt_tokens"] += u.get("prompt_tokens", 0)
     USAGE["completion_tokens"] += u.get("completion_tokens", 0)
+    m = USAGE["by_model"].setdefault(model, {"prompt_tokens": 0, "completion_tokens": 0})  # cost is per model
+    m["prompt_tokens"] += u.get("prompt_tokens", 0)
+    m["completion_tokens"] += u.get("completion_tokens", 0)
     return out["choices"][0]["message"]
 
 
-USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}  # this process = one job: what the model really did
+def endpoint(spec: str):
+    """A role's model: "URL,MODEL[,API_KEY_ENV]" -> an llm callable (the key is read from that environment variable,
+    never passed on the command line)."""
+    import os
+    url, model, *key = [x.strip() for x in spec.split(",")]
+    api_key = os.environ.get(key[0], "") if key else ""
+    if key and not api_key:
+        raise SystemExit(f"{key[0]} is not set")
+    return lambda m, **k: chat(url, m, model=model, api_key=api_key, **k)
+
+
+USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "by_model": {}}  # this process = one job: what the model really did
 
 
 def _json(text: str) -> dict:
@@ -364,7 +382,7 @@ class Runner:
 
     def __init__(self, goal: str, sandbox, llm, log: Path, constraints: str = "", memory=None, max_calls: int = 12,
                  memrouter: Memrouter | None = None, spec_llm=None,
-                 max_minutes: float | None = None, judge=None, kind: str = "code"):
+                 max_minutes: float | None = None, judge=None, kind: str = "code", planner_llm=None):
         self.goal, self.box, self.llm, self.log = goal, sandbox, llm, log
         self.constraints = constraints or "none"
         self.memory = memory  # optional: callable(query) -> facts text (our embed memory)
@@ -385,6 +403,7 @@ class Runner:
         self.memory_warnings: list = []
         self.judge, self.step_writes = judge, []  # judge: runner/judge.py, for checks no command can make
         self.kind = kind  # code (greenfield or brownfield, detected) | research (sources, evidence, judge)
+        self.planner_llm = planner_llm or llm  # a bigger model may plan while the small one does the steps
         self.brownfield, self.base_names, self.existing_tests, self.existing_ok = False, {}, set(), False
         self.decisions: list[dict] = []
 
@@ -411,7 +430,7 @@ class Runner:
         project = f"THE PROJECT AS IT IS NOW:\n{project_map(self.box.root)}\n" if self.brownfield else ""
         order = ORDER_RESEARCH if self.kind == "research" else ORDER_EXISTING if self.brownfield else ORDER_NEW
         prompt = PLAN_PROMPT.format(goal=self.goal, extra=extra, lessons=lessons, project=project, order=order)
-        msg = self.llm([{"role": "user", "content": prompt}], json_mode=True)
+        msg = self.planner_llm([{"role": "user", "content": prompt}], json_mode=True)
         steps = []
         for i, s in enumerate(_json(msg.get("content", "")).get("steps", [])[:10], 1):
             check = s.get("check") if isinstance(s.get("check"), dict) else {}
@@ -892,8 +911,10 @@ def main() -> int:
     ap.add_argument("--memory-url", default="", help="memrouter service: rules, warnings and what the owner said")
     ap.add_argument("--scope", default="", help="experience scope (a project or task set) for failure warnings")
     ap.add_argument("--rules-only", action="store_true", help="from memory, only the owner's standing rules")
-    ap.add_argument("--spec-model-url", default="", help="a bigger model for the contract and tests steps")
-    ap.add_argument("--spec-model", default="local")
+    ap.add_argument("--model", default="local", help="the worker model's name at --model-url")
+    ap.add_argument("--api-key-env", default="", help="environment variable holding --model-url's API key")
+    for role in ("planner", "spec", "judge"):
+        ap.add_argument(f"--{role}", default="", help=f"own model for the {role}: URL,MODEL[,API_KEY_ENV]")
     ap.add_argument("--max-minutes", type=float, default=None, help="stop the job after this long")
     ap.add_argument("--plain", action="store_true", help="baseline: no plan, contract, locked tests or watcher")
     ap.add_argument("--kind", choices=["code", "research"], default="code")
@@ -906,15 +927,14 @@ def main() -> int:
     box = LocalSandbox(wd) if args.local else PodmanSandbox(wd)
     memrouter = Memrouter(args.memory_url, args.scope, args.rules_only) if args.memory_url else None
     try:
-        spec_llm = (lambda m, **k: chat(args.spec_model_url, m, model=args.spec_model, **k)) if args.spec_model_url \
-            else None
-        llm = lambda m, **k: chat(args.model_url, m, **k)  # noqa: E731
+        llm = endpoint(",".join([args.model_url, args.model] + ([args.api_key_env] if args.api_key_env else [])))
         judge = None
         if args.judge_db:
             from judge import Judge
-            judge = Judge(llm, args.judge_db)
-        runner = Runner(args.goal, box, llm, wd / "run.jsonl", memrouter=memrouter, spec_llm=spec_llm,
-                        max_minutes=args.max_minutes, judge=judge, kind=args.kind)
+            judge = Judge(endpoint(args.judge) if args.judge else llm, args.judge_db)
+        runner = Runner(args.goal, box, llm, wd / "run.jsonl", memrouter=memrouter,
+                        spec_llm=endpoint(args.spec) if args.spec else None, max_minutes=args.max_minutes,
+                        judge=judge, kind=args.kind, planner_llm=endpoint(args.planner) if args.planner else None)
         r = runner.run_plain() if args.plain else runner.run()
     finally:
         box.close()

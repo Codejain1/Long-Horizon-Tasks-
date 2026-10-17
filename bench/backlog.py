@@ -13,6 +13,9 @@ Arms, all on the same model and tools:
   plain   one tool loop, no plan/contract/watcher (runner --plain)
   runner  the long-horizon runner, no memory
   notes   the runner; every ticket and QA report is appended to NOTES.md in the repo, and the goal says to read it
+  --label names a variant of an arm and --extra passes runner flags, e.g. the big-model arms (docs §8):
+    --arm plain --label big --extra "--model-url https://openrouter.ai/api/v1 --model <frontier> --api-key-env KEY"
+    --arm mem --label bigplan --extra "--planner https://openrouter.ai/api/v1,<frontier>,KEY"
   mem     the runner with its own fresh memrouter: each ticket and QA report goes in as the owner's message once
           its job is done (a job never retrieves its own goal), and every hidden-test result as a real outcome
 """
@@ -23,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -82,6 +86,7 @@ def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None)
     cmd += ["--plain"] if args.arm == "plain" else []
     cmd += ["--memory-url", f"http://127.0.0.1:{port}", "--scope", args.scenario] if port else []
     cmd += ["--local"] if args.local else []
+    cmd += shlex.split(args.extra) if args.extra else []
     t0 = time.time()
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -100,7 +105,7 @@ def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None)
     rep = next((e for e in reversed(events) if e.get("event") == "report"), {})
     u = rep.get("usage") or {}
     return {"minutes": round((time.time() - t0) / 60, 2), "ok": bool(rep.get("ok")), "warning_id": rep.get("warning_id"),
-            "judge_id": rep.get("judge_id"),
+            "judge_id": rep.get("judge_id"), "by_model": u.get("by_model") or {},
             "tokens": u.get("prompt_tokens", 0) + u.get("completion_tokens", 0)}
 
 
@@ -128,7 +133,8 @@ def outcome(port: int | None, scope: str, passed: list[str], out: str, job: dict
 
 def run(args, job=run_job) -> list[dict]:
     sdir, sc = scenario(args.scenario)
-    work = Path(args.out) / args.arm
+    name = args.label or args.arm
+    work = Path(args.out) / name
     repo, logs = work / "repo", work / "logs"
     shutil.rmtree(work, ignore_errors=True)
     shutil.copytree(sdir / "start", repo)
@@ -150,9 +156,10 @@ def run(args, job=run_job) -> list[dict]:
             passed, failed, out = hidden(sdir, i, repo, work, args.image)
             outcome(port, args.scenario, passed, out, build)
             B.label_judge(Path(args.out) / "judge.db", build.get("judge_id"), not failed)
-            row = {"arm": args.arm, "scenario": args.scenario, "ticket": i, "build_min": build["minutes"],
+            row = {"arm": name, "scenario": args.scenario, "ticket": i, "build_min": build["minutes"],
                    "build_tokens": build["tokens"], "runner_ok": build["ok"], "after_build": len(passed),
-                   "total": len(passed) + len(failed), "fixup_rounds": 0, "fixup_min": 0.0, "fixup_tokens": 0}
+                   "total": len(passed) + len(failed), "fixup_rounds": 0, "fixup_min": 0.0, "fixup_tokens": 0,
+                   "by_model": dict(build["by_model"])}
             for r in range(1, args.fixups + 1):
                 if not failed:
                     break
@@ -167,11 +174,15 @@ def run(args, job=run_job) -> list[dict]:
                 B.label_judge(Path(args.out) / "judge.db", fix.get("judge_id"), not failed)
                 row["fixup_rounds"], row["fixup_min"] = r, round(row["fixup_min"] + fix["minutes"], 2)
                 row["fixup_tokens"] += fix["tokens"]
+                for m_, u_ in fix["by_model"].items():
+                    t_ = row["by_model"].setdefault(m_, {"prompt_tokens": 0, "completion_tokens": 0})
+                    t_["prompt_tokens"] += u_.get("prompt_tokens", 0)
+                    t_["completion_tokens"] += u_.get("completion_tokens", 0)
             row.update(passed=passed, failed=failed, final=len(passed),
                        rules_passed=sorted(t for t in passed if t in rules),
                        rules_present=sorted(t for t in passed + failed if t in rules))
             rows.append(row)
-            with (Path(args.out) / f"{args.arm}.jsonl").open("a") as f:
+            with (Path(args.out) / f"{name}.jsonl").open("a") as f:
                 f.write(json.dumps(row) + "\n")
             print(json.dumps({k: row[k] for k in ("ticket", "after_build", "final", "total", "fixup_rounds")}), flush=True)
     finally:
@@ -221,6 +232,8 @@ def main() -> int:
     r.add_argument("--local", action="store_true", help="runner without a container (trusted use only)")
     r.add_argument("--port", type=int, default=8790)
     r.add_argument("--memrouter-cmd", default="")
+    r.add_argument("--label", default="", help="name for this variant of the arm (results file and report)")
+    r.add_argument("--extra", default="", help="extra runner flags, e.g. a frontier model for some role")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)
     args = ap.parse_args()

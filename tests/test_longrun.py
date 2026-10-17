@@ -177,6 +177,43 @@ def test_chat_counts_tokens(monkeypatch):
             return False
     body = {"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 7, "completion_tokens": 3}}
     monkeypatch.setattr(LR.urllib.request, "urlopen", lambda *a, **k: Resp(json.dumps(body).encode()))
-    monkeypatch.setattr(LR, "USAGE", {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+    monkeypatch.setattr(LR, "USAGE", {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "by_model": {}})
     assert LR.chat("http://x", [{"role": "user", "content": "hi"}]) == {"content": "hi"}
-    assert LR.USAGE == {"calls": 1, "prompt_tokens": 7, "completion_tokens": 3}
+    assert LR.USAGE == {"calls": 1, "prompt_tokens": 7, "completion_tokens": 3,
+                        "by_model": {"local": {"prompt_tokens": 7, "completion_tokens": 3}}}
+
+
+def test_each_role_can_have_its_own_model_and_key(monkeypatch):
+    import io
+    sent = []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout=0):
+        sent.append((req.full_url, dict(req.header_items()), json.loads(req.data)))
+        return Resp(json.dumps({"choices": [{"message": {"content": "{}"}}], "usage": {}}).encode())
+    monkeypatch.setattr(LR.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("BIG_KEY", "sk-test")
+    big = LR.endpoint("https://api.example.com/v1,frontier-1,BIG_KEY")
+    big([{"role": "user", "content": "plan"}], json_mode=True)
+    url, headers, body = sent[0]
+    assert url == "https://api.example.com/v1/chat/completions" and headers["Authorization"] == "Bearer sk-test"
+    assert body["model"] == "frontier-1" and "chat_template_kwargs" not in body  # vLLM-only switch left out
+    LR.endpoint("http://127.0.0.1:8000/v1,local")([{"role": "user", "content": "x"}])
+    assert "Authorization" not in sent[1][1] and sent[1][2]["chat_template_kwargs"] == {"enable_thinking": False}
+    monkeypatch.delenv("BIG_KEY")
+    import pytest
+    with pytest.raises(SystemExit):
+        LR.endpoint("https://api.example.com/v1,frontier-1,BIG_KEY")
+
+
+def test_a_bigger_planner_plans_and_the_small_model_does_the_steps(tmp_path):
+    small = FakeModel([], [[call("write_file", path="greet.py", content="print('hi')\n")], [call("done", summary="ok")]])
+    big = FakeModel([[{"id": "s1", "do": "write greet.py", "check": {"file": "greet.py"}}]], [])
+    r = LR.Runner("make greet.py", LR.LocalSandbox(tmp_path / "ws"), small, tmp_path / "r.jsonl", planner_llm=big).run()
+    assert r["ok"] and len(big.plan_prompts) == 1 and small.plan_prompts == [] and len(small.step_prompts) == 1

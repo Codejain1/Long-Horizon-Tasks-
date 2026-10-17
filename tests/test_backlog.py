@@ -26,7 +26,7 @@ def scenario(root: Path) -> None:
 
 def args(tmp_path, arm, **kw):
     return SimpleNamespace(scenario="shop", arm=arm, out=str(tmp_path / "out"), model_url="x", tickets=99, fixups=2,
-                           max_minutes=1, image=None, local=True, port=0, memrouter_cmd="", **kw)
+                           max_minutes=1, image=None, local=True, port=0, memrouter_cmd="", label="", extra="", **kw)
 
 
 def test_tickets_score_hidden_tests_and_qa_fixups_count(tmp_path, monkeypatch):
@@ -40,7 +40,7 @@ def test_tickets_score_hidden_tests_and_qa_fixups_count(tmp_path, monkeypatch):
         if "fix" in tag:
             code += "def total(items):\n    return sum(price(n) for n in items)\n"
         (repo / "shop" / "__init__.py").write_text(code)
-        return {"minutes": 1.0, "ok": True, "tokens": 100}
+        return {"minutes": 1.0, "ok": True, "tokens": 100, "by_model": {"local": {"prompt_tokens": 90, "completion_tokens": 10}}}
     rows = BL.run(args(tmp_path, "runner"), job=job)
     assert [(r["ticket"], r["after_build"], r["final"], r["total"], r["fixup_rounds"]) for r in rows] == \
         [(1, 1, 1, 1, 0), (2, 1, 2, 2, 1)]
@@ -59,7 +59,7 @@ def test_notes_arm_keeps_every_ticket_and_report_in_the_repo(tmp_path, monkeypat
 
     def job(goal, repo, logs, tag, a, port):
         seen.append(goal)
-        return {"minutes": 0.5, "ok": False, "tokens": 0}
+        return {"minutes": 0.5, "ok": False, "tokens": 0, "by_model": {}}
     BL.run(args(tmp_path, "notes"), job=job)
     notes = (tmp_path / "out" / "notes" / "repo" / "NOTES.md").read_text()
     assert "Ticket #1" in notes and "whole rupees" in notes and "QA report after ticket #2" in notes
@@ -91,10 +91,32 @@ def test_mem_arm_stores_each_ticket_after_its_job_and_real_outcomes(tmp_path, mo
 
     def job(goal, repo, logs, tag, a, port):
         stored.append([r[0] for r in mem.db.execute("SELECT text FROM turns")])
-        return {"minutes": 0.1, "ok": True, "tokens": 0, "warning_id": None}
+        return {"minutes": 0.1, "ok": True, "tokens": 0, "warning_id": None, "by_model": {}}
     a = args(tmp_path, "mem")
     a.port, a.fixups = 18831, 1
     BL.run(a, job=job)
     assert stored[0] == []  # ticket 1's job did not get its own ticket back from memory
     assert any("price(n) = 10" in t for t in stored[1])  # ticket 2's job can recall ticket 1
     assert {x["check"] for x in mem.fails.stats("shop")} == {"test_price", "test_total_is_whole_rupees"}
+
+
+def test_a_labelled_variant_passes_its_runner_flags(tmp_path, monkeypatch):
+    scenario(tmp_path)
+    monkeypatch.setattr(BL, "HERE", tmp_path)
+    cmds = []
+
+    class P:
+        def __init__(self, cmd, **kw):
+            cmds.append(cmd)
+
+        def wait(self, timeout=None):
+            return 0
+    a = args(tmp_path, "plain")
+    a.label, a.extra, a.tickets, a.fixups = "big", "--model frontier-1 --api-key-env BIG_KEY", 1, 0
+    with monkeypatch.context() as m:
+        m.setattr(BL.subprocess, "Popen", P)
+        (tmp_path / "repo").mkdir()
+        BL.run_job("ticket", tmp_path / "repo", tmp_path / "logs", "t01", a, None)
+    assert cmds[0][-4:] == ["--model", "frontier-1", "--api-key-env", "BIG_KEY"] and "--plain" in cmds[0]
+    rows = BL.run(a, job=lambda *x: {"minutes": 0, "ok": True, "tokens": 0, "by_model": {}})
+    assert rows[0]["arm"] == "big" and (tmp_path / "out" / "big.jsonl").exists()
