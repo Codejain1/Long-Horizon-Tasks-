@@ -217,3 +217,9 @@ def test_a_bigger_planner_plans_and_the_small_model_does_the_steps(tmp_path):
     big = FakeModel([[{"id": "s1", "do": "write greet.py", "check": {"file": "greet.py"}}]], [])
     r = LR.Runner("make greet.py", LR.LocalSandbox(tmp_path / "ws"), small, tmp_path / "r.jsonl", planner_llm=big).run()
     assert r["ok"] and len(big.plan_prompts) == 1 and small.plan_prompts == [] and len(small.step_prompts) == 1
+
+
+def test_binary_command_output_never_crashes_the_sandbox(tmp_path):
+    box = LR.LocalSandbox(tmp_path)
+    code, out = box.run("printf '\\x1f\\x8b\\x08 gzip bytes'")
+    assert code == 0 and "gzip bytes" in out

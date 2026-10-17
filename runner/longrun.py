@@ -202,7 +202,7 @@ class LocalSandbox:
 
     def run(self, cmd: str, timeout: int = 180) -> tuple[int, str]:
         try:
-            p = subprocess.run(["bash", "-lc", cmd], cwd=self.root, capture_output=True, text=True, timeout=timeout)
+            p = subprocess.run(["bash", "-lc", cmd], cwd=self.root, capture_output=True, text=True, errors="replace", timeout=timeout)
             return p.returncode, (p.stdout + p.stderr)
         except subprocess.TimeoutExpired as e:
             return 124, f"timed out after {timeout}s\n{(e.stdout or '')}"
@@ -238,7 +238,7 @@ class PodmanSandbox(LocalSandbox):
     def run(self, cmd: str, timeout: int = 180) -> tuple[int, str]:
         try:
             p = subprocess.run(["podman", "exec", "-w", "/work", self.name, "bash", "-lc", cmd], capture_output=True,
-                               text=True, timeout=timeout)
+                               text=True, errors="replace", timeout=timeout)
             return p.returncode, (p.stdout + p.stderr)
         except subprocess.TimeoutExpired as e:
             return 124, f"timed out after {timeout}s\n{(e.stdout or '')}"
@@ -672,7 +672,7 @@ class Runner:
                 bad.append(f"{c.get('claim', '?')[:80]}: needs an http(s) url and a quote of 8+ characters")
                 continue
             if url not in pages:
-                code, out = self.box.run(f"curl -sL --max-time 20 -A 'Mozilla/5.0' {shlex.quote(url)} | head -c 3000000",
+                code, out = self.box.run(f"curl -sL --compressed --max-time 20 -A 'Mozilla/5.0' {shlex.quote(url)} | head -c 3000000",
                                          timeout=40)
                 pages[url] = norm(out) if code == 0 else ""
             if not pages[url]:

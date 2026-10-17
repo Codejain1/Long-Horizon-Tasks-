@@ -165,7 +165,11 @@ def run(args) -> None:
                 if not jobs:
                     return
                 t, arm, r = jobs.pop(0)
-            rec = run_job(t, arm, r, args)
+            try:
+                rec = run_job(t, arm, r, args)
+            except Exception as e:  # one broken job is recorded, never a silently dead worker
+                rec = {"task": t.id, "arm": arm, "rep": r, "passed": None, "total": None, "notes": [f"harness error: {e!r}"],
+                       "evidence_ok": False, "evidence": "", "minutes": 0, "runner_ok": False, "judge_p": None, "tokens": 0}
             with lock, (out / "results.jsonl").open("a") as f:
                 f.write(json.dumps(rec) + "\n")
             print(json.dumps({k: rec[k] for k in ("task", "arm", "rep", "passed", "total", "evidence_ok")}), flush=True)
