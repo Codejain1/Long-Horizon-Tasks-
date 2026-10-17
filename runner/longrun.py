@@ -265,6 +265,8 @@ class Step:
 
 
 class Runner:
+    PYTEST = "python -m pytest"  # inside the sandbox image
+
     def __init__(self, goal: str, sandbox, llm, log: Path, constraints: str = "", memory=None, max_calls: int = 12,
                  memrouter: Memrouter | None = None, spec_llm=None,
                  max_minutes: float | None = None):
@@ -354,7 +356,7 @@ class Runner:
                 return "(time budget used up)"
             if spec_step and self.spec_llm is not None:
                 msg = self.spec_llm(msgs, tools=TOOLS)
-            elif deep or spec_step:
+            elif deep:
                 msg = self.llm(msgs, tools=TOOLS, deep=True)
             else:
                 msg = self.llm(msgs, tools=TOOLS)
@@ -484,6 +486,16 @@ class Runner:
             return True
         return False  # still impossible: nothing is locked, the watcher stops and asks rather than build on it
 
+    def _all_locked_pass(self) -> bool:
+        """The fixed tests are the spec: when all of them pass, the job is done, whatever steps the plan has left
+        (benchmark runs: 31 jobs ran into the time budget with the work already passing)."""
+        files = [f for f in self.locked if not f.endswith("conftest.py")]
+        if not files:
+            return False
+        self._restore_tests()
+        code, _ = self.box.run(f"{self.PYTEST} -q -p no:cacheprovider " + " ".join(files))
+        return code == 0
+
     def _test_files(self) -> list[str]:
         code, out = self.box.run("ls -1 test_*.py *_test.py tests/*.py 2>/dev/null")
         return [ln.strip() for ln in out.splitlines() if ln.strip().endswith(".py")]
@@ -555,21 +567,6 @@ class Runner:
                 history.append({"option": option, "ok": ok, "error": error, "failure": "" if ok else classify_failure(error),
                                 "passed": counts[0] if counts else None, "failed": counts[1] if counts else None,
                                 "failing": counts[2] if counts else ()})
-                if ok and step.kind == "tests":
-                    problems = self.review_spec()
-                    fixes = sum(h.get("option") in ("spec_fix", "spec_fix_deep") for h in history)
-                    if problems and fixes >= 3:  # never lock a spec judged impossible: stop and ask
-                        option, why = "stop", "the tests could not be made possible: needs the owner"
-                        self._log(event="decision", step=step.id, option=option, why=why)
-                        step.status = "failed"
-                        return self.report(stopped=step, reason=why + ":\n- " + "\n- ".join(problems))
-                    if problems:  # an impossible spec must not be locked: redo the tests step with the problems
-                        ok, error = False, "THE TESTS CANNOT PASS AS WRITTEN:\n- " + "\n- ".join(problems)
-                        history[-1].update(ok=False, error=error, failure="spec")
-                        option = "spec_fix_deep" if fixes >= 1 else "spec_fix"  # the plain rewrite failed: think
-                        hint = "Rewrite the tests so a correct implementation of the goal can pass, following SPEC.md."
-                        self._log(event="decision", step=step.id, option=option, why="spec review: tests impossible")
-                        continue
                 if ok:
                     step.status = "done"
                     if step.kind == "tests":
@@ -598,6 +595,11 @@ class Runner:
                     break
             if step.status == "done":
                 i += 1
+                if i < len(self.steps) and step.kind in ("build", "verify") and self._all_locked_pass():
+                    for rest in self.steps[i:]:
+                        rest.status = "skipped"
+                    self._log(event="early_finish", after=step.id, skipped=[s_.id for s_ in self.steps[i:]])
+                    return self.report()
                 continue
             if option == "stop":
                 step.status = "failed"

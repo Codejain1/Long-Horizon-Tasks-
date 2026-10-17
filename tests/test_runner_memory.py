@@ -106,18 +106,6 @@ IMPOSSIBLE = ("import json, subprocess, tempfile\n\ndef test_add():\n    p = tem
 GOOD = "import g\n\ndef test_hi():\n    assert g.hi() == 'hello'\n"
 
 
-def test_impossible_tests_are_reviewed_before_they_are_locked(tmp_path):
-    m = FakeModel([PLAN], [
-        [call("write_file", path="test_g.py", content=IMPOSSIBLE)], [call("done", summary="tests v1")],
-        [call("write_file", path="test_g.py", content=GOOD)], [call("done", summary="tests v2")],
-        [call("write_file", path="g.py", content="def hi():\n    return 'hello'\n")], [call("done", summary="code")]])
-    m.reviews = [{"possible": False, "problems": ["the test reads a temp file todo.py is never told about"]},
-                 {"possible": True}]
-    rn = LR.Runner("make greet return hello", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl")
-    assert rn.run()["ok"]
-    assert "never told about" in m.step_prompts[1] and GOOD in rn.locked["test_g.py"][1]  # only the fixed spec locked
-
-
 def test_build_failure_can_revise_an_impossible_spec(tmp_path):
     m = FakeModel([PLAN], [
         [call("write_file", path="test_g.py", content=IMPOSSIBLE.replace("todo.py", "g.py"))], [call("done", summary="t")],
@@ -125,8 +113,7 @@ def test_build_failure_can_revise_an_impossible_spec(tmp_path):
         [call("done", summary="try 2 (escalated)")],
         [call("write_file", path="test_g.py", content=GOOD)], [call("done", summary="tests rewritten")],
         [call("done", summary="code already right")]])
-    m.reviews = [{"possible": True},  # the first review misses it: the build has to catch it
-                 {"possible": False, "problems": ["reads a temp file the program never gets"]}, {"possible": True}]
+    m.reviews = [{"possible": False, "problems": ["reads a temp file the program never gets"]}, {"possible": True}]
     rn = LR.Runner("make greet return hello", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl")
     r = rn.run()
     assert r["ok"] and [d["option"] for d in r["decisions"]] == ["escalate", "revise_spec"]
@@ -141,20 +128,19 @@ def test_a_broken_review_never_blocks_the_work(tmp_path):
     assert rn.review_spec() == []
 
 
-def test_contract_reaches_every_later_step_and_impossible_tests_are_never_locked(tmp_path):
+def test_contract_reaches_every_later_step_and_tests_are_not_reviewed_up_front(tmp_path):
+    """The spec review costs a thinking call per job (about 10 % of the time): it now runs only when the build is
+    stuck (revise_spec), never on a tests step that passed its check."""
     plan = [{"id": "c", "kind": "contract", "do": "write SPEC.md", "check": {"cmd": "test -s SPEC.md"}},
             {"id": "t", "kind": "tests", "do": "write tests", "check": {"file": "test_g.py"}},
             {"id": "b", "kind": "build", "do": "build", "check": {"cmd": "true"}}]
     m = FakeModel([plan], [
         [call("write_file", path="SPEC.md", content="greet: g.hi() returns 'hello'")], [call("done", summary="c")],
-        [call("write_file", path="test_g.py", content=IMPOSSIBLE)], [call("done", summary="t1")],
-        [call("done", summary="t2")], [call("done", summary="t3 (thinking)")], [call("done", summary="t4 (thinking)")]])
-    m.reviews = [{"possible": False, "problems": ["temp file never passed"]}] * 4
+        [call("write_file", path="test_g.py", content=GOOD)], [call("done", summary="t")], [call("done", summary="b")]])
     rn = LR.Runner("greet", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl")
-    r = rn.run()
-    assert not r["ok"] and r["stopped_at"] == "t" and "needs the owner" in r["reason"] and rn.locked == {}
-    assert "THE CONTRACT (SPEC.md)" in m.step_prompts[1] and "returns 'hello'" in m.step_prompts[1]
-    assert m.deep_calls >= 1  # rewrites after the first failed one think first
+    assert rn.run()["ok"] and not hasattr(m, "review_prompts")
+    assert "THE CONTRACT (SPEC.md)" in m.step_prompts[1] and "returns 'hello'" in m.step_prompts[2]
+    assert "test_g.py" in rn.locked and m.deep_calls == 0  # spec steps no longer think first
 
 
 def test_review_without_a_concrete_blocker_does_not_block(tmp_path):
@@ -178,7 +164,37 @@ def test_spec_steps_get_the_stronger_writer(tmp_path):
     small2 = FakeModel([plan], [[call("write_file", path="SPEC.md", content="c")], [call("done", summary="s")],
                                 [call("done", summary="built")]])
     LR.Runner("g", LR.LocalSandbox(tmp_path / "ws2"), small2, tmp_path / "r2.jsonl").run()
-    assert small2.deep_calls >= 2  # without a bigger model: the spec steps think first
+    assert small2.deep_calls == 0  # without a bigger model: thinking is the escalation, not the first try
+
+
+def test_the_job_ends_as_soon_as_the_fixed_tests_pass(tmp_path):
+    """Benchmark runs: 31 jobs used up the time budget after the work already passed. Once every locked test
+    passes after a build step, the rest of the plan is skipped."""
+    plan = [{"id": "t", "kind": "tests", "do": "write tests", "check": {"file": "test_g.py"}},
+            {"id": "b1", "kind": "build", "do": "make greet", "check": {"cmd": "true"}},
+            {"id": "b2", "kind": "build", "do": "polish greet", "check": {"cmd": "true"}},
+            {"id": "v", "kind": "verify", "do": "run all tests", "check": {"cmd": "true"}}]
+    m = FakeModel([plan], [[call("write_file", path="test_g.py", content=GOOD)], [call("done", summary="t")],
+                           [call("write_file", path="g.py", content="def hi():\n    return 'hello'\n")],
+                           [call("done", summary="built")]])
+    rn = LR.Runner("greet", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl")
+    rn.PYTEST = f"{sys.executable} -m pytest"
+    r = rn.run()
+    assert r["ok"] and [st[1] for st in r["steps"]] == ["done", "done", "skipped", "skipped"]
+    assert "early_finish" in (tmp_path / "r.jsonl").read_text()
+
+
+def test_no_early_finish_while_a_fixed_test_still_fails(tmp_path):
+    plan = [{"id": "t", "kind": "tests", "do": "write tests", "check": {"file": "test_g.py"}},
+            {"id": "b1", "kind": "build", "do": "scaffold", "check": {"cmd": "true"}},
+            {"id": "b2", "kind": "build", "do": "make greet", "check": {"cmd": "true"}}]
+    m = FakeModel([plan], [[call("write_file", path="test_g.py", content=GOOD)], [call("done", summary="t")],
+                           [call("write_file", path="g.py", content="def hi():\n    return 'hi'\n")],
+                           [call("done", summary="scaffold")], [call("done", summary="b2")]])
+    rn = LR.Runner("greet", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl")
+    rn.PYTEST = f"{sys.executable} -m pytest"
+    r = rn.run()
+    assert [st[1] for st in r["steps"]] == ["done", "done", "done"]
 
 
 class FakeMemrouter:
