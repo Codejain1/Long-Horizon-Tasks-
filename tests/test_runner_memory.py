@@ -224,3 +224,63 @@ def test_rules_only_memory_gives_the_owners_rules_and_nothing_else():
     mr._post = lambda path, body: {"items": [{"speaker": "owner", "text": "relevant"}], "warning_id": None,
                                    "warnings": [{"check": "x", "seen": 1}], "rules": [{"text": "errors go to stderr"}]}
     assert mr.text(mr.read("build")) == "OWNER'S STANDING RULES (always follow):\n- errors go to stderr"
+
+
+def brownfield(tmp_path):
+    """A small existing project: a package with exports, its own passing test, and a ci script."""
+    ws = tmp_path / "ws"
+    (ws / "shop").mkdir(parents=True)
+    (ws / "shop" / "__init__.py").write_text('from shop.items import add_item, get_item\n\n__all__ = ["add_item", "get_item"]\n')
+    (ws / "shop" / "items.py").write_text('ITEMS = {}\n\n\ndef add_item(name, price):\n    """Add an item."""\n'
+                                          '    ITEMS[name] = price\n\n\ndef get_item(name):\n    return ITEMS[name]\n')
+    (ws / "tests").mkdir()
+    (ws / "tests" / "test_shop.py").write_text("import shop\n\ndef test_add():\n    shop.add_item('a', 3)\n"
+                                               "    assert shop.get_item('a') == 3\n")
+    return ws
+
+
+def test_project_map_shows_what_exists():
+    import tempfile
+    from pathlib import Path as P
+    ws = brownfield(P(tempfile.mkdtemp()))
+    m = LR.project_map(ws)
+    assert "shop/items.py\n  add_item(name, price): Add an item.\n  get_item(name)" in m
+    assert "exports from shop.items: add_item, get_item" in m and "tests (python -m pytest -q): tests/test_shop.py" in m
+
+
+def test_existing_project_is_extended_never_rebuilt(tmp_path):
+    ws = brownfield(tmp_path)
+    plan = [{"id": "t", "kind": "tests", "do": "test total", "check": {"file": "tests/test_total.py"}},
+            {"id": "b", "kind": "build", "do": "add total", "check": {"cmd": "true"}}]
+    new_test = "import shop\n\ndef test_total():\n    shop.add_item('a', 3)\n    assert shop.total() == 3\n"
+    m = FakeModel([plan], [
+        [call("write_file", path="tests/test_total.py", content=new_test)], [call("done", summary="t")],
+        [call("write_file", path="shop/__init__.py", content="def total():\n    pass\n"),  # stubs over the exports
+         call("write_file", path="shop.py", content="def total():\n    return 3\n"),  # shadows the package
+         call("write_file", path="tests/test_shop.py", content="def test_add():\n    pass\n"),  # edits an old test
+         call("write_file", path="shop/items.py", content=(ws / "shop" / "items.py").read_text()
+              + "\n\ndef total():\n    return sum(ITEMS.values())\n"),
+         call("write_file", path="shop/__init__.py", content="from shop.items import add_item, get_item, total\n")],
+        [call("done", summary="b")]])
+    rn = LR.Runner("add shop.total()", LR.LocalSandbox(ws), m, tmp_path / "r.jsonl")
+    rn.PYTEST = f"{sys.executable} -m pytest"
+    r = rn.run()
+    assert rn.brownfield and rn.existing_ok and r["ok"], r
+    assert "EXISTING project" in m.plan_prompts[0] and "add_item(name, price)" in m.plan_prompts[0]
+    log = (tmp_path / "r.jsonl").read_text()
+    assert "removes existing names: add_item, get_item" in log and "would shadow the existing package shop/" in log
+    assert "existing tests" in log and not (ws / "shop.py").exists()
+    assert "assert shop.get_item('a') == 3" in (ws / "tests" / "test_shop.py").read_text()
+
+
+def test_a_build_that_breaks_existing_tests_has_failed(tmp_path):
+    ws = brownfield(tmp_path)
+    rn = LR.Runner("x", LR.LocalSandbox(ws), None, tmp_path / "r.jsonl")
+    rn.PYTEST = f"{sys.executable} -m pytest"
+    rn._start()
+    assert rn._brownfield_guard() == ""
+    (ws / "shop" / "items.py").write_text("ITEMS = {}\n\ndef add_item(name, price):\n    pass\n\ndef get_item(name):\n"
+                                          "    return None\n")  # a shell edit: names kept, behaviour broken
+    assert "existing tests now fail" in rn._brownfield_guard()
+    (ws / "shop" / "items.py").write_text("ITEMS = {}\n")
+    assert "lost existing names: add_item, get_item" in rn._brownfield_guard()

@@ -33,7 +33,15 @@ Every step needs a check that a program can run to prove it is done, one of:
   {{"file": "<path that must exist>"}}
 Checks must be SELF-CONTAINED: a check runs on its own, so if it inspects data it must first create that data itself
 (e.g. "python todo.py add milk && python todo.py list | grep -q milk"), never rely on an earlier manual action.
-Order for code goals:
+{order}
+
+Return JSON: {{"steps": [{{"id": "s1", "kind": "setup|contract|tests|build|verify", "do": "<what to do, concrete>",
+"check": {{...}}, "uses": ["<ids whose output it needs>"]}}]}}
+
+GOAL: {goal}
+{project}{lessons}{extra}"""
+
+ORDER_NEW = """Order for code goals:
   1. a "setup" step: install what the goal needs (e.g. pip install pytest), checked by importing it;
   2. a "contract" step: write SPEC.md, the interface everything follows: file names, commands and arguments,
      what each prints, data files, HOW TESTS ISOLATE STATE (e.g. "the data file path comes from the environment
@@ -43,13 +51,74 @@ Order for code goals:
   3. a "tests" step: write the tests from SPEC.md, checked with "python -m pytest --collect-only -q";
      these tests become FIXED afterwards: later steps must make the code pass them, never edit them;
   4. "build" steps following SPEC.md, each checked by running the relevant tests (python -m pytest -q -k <name>);
-  5. a final "verify" step running all tests.
+  5. a final "verify" step running all tests."""
 
-Return JSON: {{"steps": [{{"id": "s1", "kind": "setup|contract|tests|build|verify", "do": "<what to do, concrete>",
-"check": {{...}}, "uses": ["<ids whose output it needs>"]}}]}}
+ORDER_EXISTING = """This is an EXISTING project (its map is below): EXTEND it. Never rewrite or replace existing modules,
+functions or exports, and never create a module that shadows the package. The existing tests are FIXED and must keep
+passing. No SPEC.md: the contract is the existing code plus the goal. Order:
+  1. a "tests" step: tests for the NEW behaviour only, in a NEW test file next to the existing ones, importing the
+     package the way the existing tests do; checked with "python -m pytest --collect-only -q";
+  2. "build" steps adding the new code inside the existing modules (and exporting it where the goal says), each
+     checked by running the new test file (python -m pytest -q <new test file>);
+  3. a final "verify" step running the project's own test command (./ci.sh if there is one, else pytest)."""
 
-GOAL: {goal}
-{lessons}{extra}"""
+SKIP_DIRS = {".git", "venv", ".venv", "env", "__pycache__", "node_modules", ".pytest_cache", "logs"}
+
+
+def _py_files(root: Path) -> list[Path]:
+    return sorted(f for f in Path(root).rglob("*.py") if not SKIP_DIRS & set(f.relative_to(root).parts))
+
+
+def _is_test(rel: str) -> bool:
+    name = rel.rsplit("/", 1)[-1]
+    return name.startswith("test_") or name.endswith("_test.py") or name == "conftest.py" or rel.startswith("tests/")
+
+
+def public_names(source: str, init: bool = False) -> set[str]:
+    """A module's public API: top-level functions, classes and assignments; for a package's __init__, what it
+    imports too (its exports)."""
+    import ast
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    names = set()
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(n.name)
+        elif isinstance(n, ast.Assign):
+            names |= {t.id for t in n.targets if isinstance(t, ast.Name)}
+        elif init and isinstance(n, ast.ImportFrom):
+            names |= {a.asname or a.name for a in n.names}
+    return {x for x in names if not x.startswith("_")}
+
+
+def project_map(root: Path, limit: int = 3000) -> str:
+    """What an existing project offers, so a small model extends it instead of inventing it: each module's public
+    functions and classes with their signatures and first docstring line, the test files and how tests run."""
+    import ast
+    lines, tests = [], []
+    for f in _py_files(root):
+        rel = f.relative_to(root).as_posix()
+        if _is_test(rel):
+            tests.append(rel)
+            continue
+        try:
+            tree = ast.parse(f.read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        items = []
+        for n in tree.body:
+            if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and not n.name.startswith("_"):
+                sig = f"({ast.unparse(n.args)})" if isinstance(n, ast.FunctionDef) else ""
+                doc = (ast.get_docstring(n) or "").split("\n")[0][:80]
+                items.append(f"  {'class ' if isinstance(n, ast.ClassDef) else ''}{n.name}{sig}" + (f": {doc}" if doc else ""))
+            elif rel.endswith("__init__.py") and isinstance(n, ast.ImportFrom):
+                items.append(f"  exports from {n.module}: {', '.join(a.name for a in n.names)}")
+        lines.append(rel + ("\n" + "\n".join(items) if items else ""))
+    run = "./ci.sh" if (Path(root) / "ci.sh").exists() else "python -m pytest -q"
+    lines.append(f"tests ({run}): " + ", ".join(tests))
+    return "\n".join(lines)[:limit]
 
 PLAIN_PROMPT = """You are a coding agent in a Linux sandbox (Python 3.11, bash). Do the task below with the tools: read
 the existing code first, make the change, run the tests, and fix what fails. Call `done` with a short summary when
@@ -288,6 +357,7 @@ class Runner:
         self.deadline = time.time() + max_minutes * 60 if max_minutes is not None else None
         self.warning_id = None  # the experience warnings this job was shown: the scorer credits them
         self.memory_warnings: list = []
+        self.brownfield, self.base_names, self.existing_tests, self.existing_ok = False, {}, set(), False
         self.decisions: list[dict] = []
 
     def _log(self, **rec):
@@ -305,8 +375,10 @@ class Runner:
                 lessons = f"FROM MEMORY:\n{got}\n" if got else ""
             except Exception as e:
                 self._log(event="memrouter_error", error=repr(e)[:200])
-        msg = self.llm([{"role": "user", "content": PLAN_PROMPT.format(goal=self.goal, extra=extra, lessons=lessons)}],
-                       json_mode=True)
+        project = f"THE PROJECT AS IT IS NOW:\n{project_map(self.box.root)}\n" if self.brownfield else ""
+        prompt = PLAN_PROMPT.format(goal=self.goal, extra=extra, lessons=lessons, project=project,
+                                    order=ORDER_EXISTING if self.brownfield else ORDER_NEW)
+        msg = self.llm([{"role": "user", "content": prompt}], json_mode=True)
         steps = []
         for i, s in enumerate(_json(msg.get("content", "")).get("steps", [])[:10], 1):
             check = s.get("check") if isinstance(s.get("check"), dict) else {}
@@ -340,6 +412,9 @@ class Runner:
                 self._log(event="memrouter_error", error=repr(e)[:200])
         err = f"LAST ATTEMPT FAILED, fix this:\n{error}\n" if error else ""
         spec = ""
+        if self.brownfield:
+            spec += (f"THE PROJECT (existing code: extend it, keep every existing name and export):\n"
+                     f"{project_map(self.box.root, 2500)}\n")
         contract = self._contract()
         if contract and step.kind != "contract":
             spec += f"THE CONTRACT (SPEC.md): follow it exactly.\n{contract}\n"
@@ -429,6 +504,11 @@ class Runner:
                 return f"exit {code}\n{out[-2500:]}{note}"
             if name == "write_file":
                 path = str(a["path"]).lstrip("./")
+                if path in self.existing_tests:
+                    return f"refused: {path} is one of the project's existing tests. They must keep passing unchanged."
+                lost = self._names_lost(path, str(a.get("content", "")))
+                if lost:
+                    return lost
                 if path in self.locked and (self.current is None or self.current.kind != "tests"):
                     return (f"refused: {path} holds the fixed tests (the spec). Change the code so the tests pass; "
                             "do not edit the tests.")
@@ -485,6 +565,54 @@ class Runner:
             self._lock_tests()
             return True
         return False  # still impossible: nothing is locked, the watcher stops and asks rather than build on it
+
+    def _names_lost(self, path: str, content: str) -> str:
+        """Brownfield guard: a write may not drop an existing module's public names, nor add a module that shadows a
+        package (`rentals.py` next to `rentals/`): the 2026-10-18 smoke run's failure."""
+        if not self.brownfield or not path.endswith(".py"):
+            return ""
+        if path in self.base_names:
+            gone = self.base_names[path] - public_names(content, path.endswith("__init__.py"))
+            if gone:
+                return (f"refused: this rewrite of {path} removes existing names: {', '.join(sorted(gone))}. Extend the "
+                        "module: keep everything that is there and add to it.")
+        elif (self.box.root / path[:-3] / "__init__.py").exists():
+            return f"refused: {path} would shadow the existing package {path[:-3]}/. Add the code inside the package."
+        return ""
+
+    def _brownfield_guard(self) -> str:
+        """After a build or verify step: existing names still there (shell commands can edit files too) and the
+        project's existing tests still passing. Returns what is wrong, or ""."""
+        for path, names in self.base_names.items():
+            f = self.box.root / path
+            gone = names - (public_names(f.read_text(), path.endswith("__init__.py")) if f.exists() else set())
+            if gone:
+                return f"WATCHER: {path} lost existing names: {', '.join(sorted(gone))}. Restore them; extend, don't replace."
+        if self.existing_ok:
+            code, out = self.box.run(f"{self.PYTEST} -q -p no:cacheprovider " + " ".join(sorted(self.existing_tests)))
+            if code != 0:
+                return f"WATCHER: the project's existing tests now fail (they passed before this job):\n{out[-1200:]}"
+        return ""
+
+    def _start(self):
+        """Look at the workspace before planning: an existing project (code already there) is extended, never rebuilt."""
+        root = self.box.root
+        code = [f for f in _py_files(root) if not _is_test(f.relative_to(root).as_posix())]
+        self.brownfield = bool(code)
+        if not self.brownfield:
+            return
+        self.base_names = {f.relative_to(root).as_posix(): public_names(f.read_text(), f.name == "__init__.py")
+                           for f in code}
+        self.existing_tests = {f.relative_to(root).as_posix() for f in _py_files(root)
+                               if _is_test(f.relative_to(root).as_posix()) and f.name != "conftest.py"}
+        if self.existing_tests:
+            self.existing_ok = self.box.run(f"{self.PYTEST} -q -p no:cacheprovider "
+                                            + " ".join(sorted(self.existing_tests)))[0] == 0
+        for t in self.existing_tests:  # fixed from the start: restored if a shell command edits them
+            content = (root / t).read_text()
+            self.locked[t] = (hashlib.sha256(content.encode()).hexdigest(), content)
+        self._log(event="brownfield", modules=sorted(self.base_names), tests=sorted(self.existing_tests),
+                  tests_pass=self.existing_ok)
 
     def _all_locked_pass(self) -> bool:
         """The fixed tests are the spec: when all of them pass, the job is done, whatever steps the plan has left
@@ -547,6 +675,7 @@ class Runner:
         return "stop", "out of re-plans: needs the owner"
 
     def run(self, max_replans: int = 2) -> dict:
+        self._start()
         self.steps = self.plan()
         replans, i = 0, 0
         while i < len(self.steps):
@@ -562,6 +691,9 @@ class Runner:
                     error = ("WATCHER: you changed the fixed test files; they were restored. Change the code, not "
                              "the tests.\n") + (error or "")
                 ok, error = self.check(step)
+                if ok and self.brownfield and step.kind in ("build", "verify"):
+                    guard = self._brownfield_guard()
+                    ok, error = (False, guard) if guard else (ok, error)
                 counts = test_counts(error)
                 self._log(event="check", step=step.id, attempt=len(history), ok=ok, option=option, detail=error[-500:])
                 history.append({"option": option, "ok": ok, "error": error, "failure": "" if ok else classify_failure(error),
@@ -595,7 +727,8 @@ class Runner:
                     break
             if step.status == "done":
                 i += 1
-                if i < len(self.steps) and step.kind in ("build", "verify") and self._all_locked_pass():
+                wrote_tests = any(s_.kind == "tests" and s_.status == "done" for s_ in self.steps)
+                if i < len(self.steps) and step.kind in ("build", "verify") and wrote_tests and self._all_locked_pass():
                     for rest in self.steps[i:]:
                         rest.status = "skipped"
                     self._log(event="early_finish", after=step.id, skipped=[s_.id for s_ in self.steps[i:]])
