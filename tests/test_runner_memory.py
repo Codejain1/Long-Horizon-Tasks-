@@ -284,3 +284,41 @@ def test_a_build_that_breaks_existing_tests_has_failed(tmp_path):
     assert "existing tests now fail" in rn._brownfield_guard()
     (ws / "shop" / "items.py").write_text("ITEMS = {}\n")
     assert "lost existing names: add_item, get_item" in rn._brownfield_guard()
+
+
+def test_edit_file_changes_only_what_it_names_and_keeps_the_guards(tmp_path):
+    ws = brownfield(tmp_path)
+    rn = LR.Runner("x", LR.LocalSandbox(ws), None, tmp_path / "r.jsonl")
+    rn.PYTEST = f"{sys.executable} -m pytest"
+    rn._start()
+    out = rn._tool("edit_file", {"path": "shop/items.py", "old": "def get_item(name):\n    return ITEMS[name]\n",
+                                 "new": "def get_item(name):\n    return ITEMS[name]\n\n\ndef total():\n    return sum(ITEMS.values())\n"})
+    assert out.startswith("wrote") and "def add_item" in (ws / "shop" / "items.py").read_text()
+    assert "appears 0 times" in rn._tool("edit_file", {"path": "shop/items.py", "old": "nope", "new": "x"})
+    assert "appears 3 times" in rn._tool("edit_file", {"path": "shop/items.py", "old": "def ", "new": "x"})
+    assert "removes existing names: get_item" in rn._tool(
+        "edit_file", {"path": "shop/items.py", "old": "def get_item(name):\n    return ITEMS[name]\n", "new": ""})
+    assert "existing tests" in rn._tool("edit_file", {"path": "tests/test_shop.py", "old": "== 3", "new": "== 4"})
+    assert "does not exist" in rn._tool("edit_file", {"path": "shop/new.py", "old": "a", "new": "b"})
+
+
+def test_a_plain_code_error_gets_a_quick_fix_before_thinking_mode(tmp_path):
+    rn = LR.Runner("g", LR.LocalSandbox(tmp_path / "ws"), None, tmp_path / "r.jsonl")
+    st = LR.Step("s", "x", {"cmd": "false"})
+    err = h("first try", error="E   NameError: name 'Optional' is not defined")
+    assert rn.decide(st, [err], 0, 2)[0] == "quick_fix"
+    assert rn.decide(st, [err, h("quick_fix", error="NameError again")], 0, 2)[0] == "escalate"
+    assert rn.decide(st, [h("first try", error="assert 3 == 4")], 0, 2)[0] == "escalate"  # not a plain bug
+
+
+def test_the_new_tests_step_sees_how_the_existing_tests_are_written(tmp_path):
+    ws = brownfield(tmp_path)
+    (ws / "tests" / "conftest.py").write_text("def item(name='a', price=3):\n    import shop\n    shop.add_item(name, price)\n")
+    plan = [{"id": "t", "kind": "tests", "do": "test total", "check": {"file": "tests/test_total.py"}}]
+    m = FakeModel([plan], [[call("write_file", path="tests/test_total.py", content="def test_t():\n    pass\n")],
+                           [call("done", summary="t")]])
+    rn = LR.Runner("add shop.total()", LR.LocalSandbox(ws), m, tmp_path / "r.jsonl")
+    rn.PYTEST = f"{sys.executable} -m pytest"
+    rn.run()
+    assert "HOW THE PROJECT'S EXISTING TESTS ARE WRITTEN" in m.step_prompts[0]
+    assert "def item(name='a', price=3)" in m.step_prompts[0] and "shop.get_item('a') == 3" in m.step_prompts[0]

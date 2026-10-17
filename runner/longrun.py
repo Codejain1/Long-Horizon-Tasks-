@@ -150,8 +150,9 @@ THIS STEP IS CHECKED BY: {check}
 If you write tests that run the program as a command: use [sys.executable, "<script>.py", ...] with
 cwd=os.path.dirname(os.path.abspath(__file__)), exactly as SPEC.md says.
 {spec}
-Before calling done, run that check yourself (with the run tool) and keep fixing until it passes. Read error output
-carefully and change your approach if the same error repeats.
+Change existing files with edit_file (only the lines that change); write_file is for new files. Before calling done,
+run that check yourself (with the run tool) and keep fixing until it passes. Read error output carefully and change
+your approach if the same error repeats.
 {uses}{facts}{error}{hint}"""
 
 SPEC_PROMPT = """SPEC REVIEW. You check tests before a program is built against them.
@@ -183,6 +184,11 @@ TOOLS = [
                     "required": ["path", "content"]}}},
     {"type": "function", "function": {"name": "read_file", "description": "Read a text file.",
      "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "edit_file", "description": "Change part of an existing file: replace "
+     "the exact text `old` (copied from the file, appearing once) with `new`. To add code, use the lines it goes "
+     "after as `old` and repeat them at the start of `new`. Prefer this to rewriting a whole file.",
+     "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"},
+                                                    "new": {"type": "string"}}, "required": ["path", "old", "new"]}}},
     {"type": "function", "function": {"name": "dispute_check", "description": "Use ONLY when you have proved the "
      "work is right but the step's check is wrong (e.g. wrong quotes, wrong file name). Give a corrected check "
      "command; the watcher accepts it only if it passes now and still runs the same program action.",
@@ -222,6 +228,9 @@ class LocalSandbox:
 
     def read(self, path: str) -> str:
         return self._path(path).read_text()[:6000]
+
+    def read_all(self, path: str) -> str:
+        return self._path(path).read_text()
 
     def close(self):
         pass
@@ -514,6 +523,11 @@ class Runner:
         if self.brownfield:
             spec += (f"THE PROJECT (existing code: extend it, keep every existing name and export):\n"
                      f"{project_map(self.box.root, 2500)}\n")
+            if step.kind == "tests":  # new tests must call the code the way the project's own tests do
+                helpers = sorted(self.existing_tests | {f.relative_to(self.box.root).as_posix()
+                                 for f in self.box.root.glob("**/conftest.py") if not SKIP_DIRS & set(f.parts)})
+                spec += "HOW THE PROJECT'S EXISTING TESTS ARE WRITTEN (use the same imports, helpers and calls):\n" + \
+                    "".join(f"--- {t}\n{self.box.read(t)[:1800]}\n" for t in helpers[:3])
         contract = self._contract()
         if contract and step.kind != "contract":
             spec += f"THE CONTRACT (SPEC.md): follow it exactly.\n{contract}\n"
@@ -615,6 +629,16 @@ class Runner:
                 return self.box.write(str(a["path"]), str(a.get("content", "")))
             if name == "read_file":
                 return self.box.read(str(a["path"]))
+            if name == "edit_file":
+                path = str(a.get("path", "")).lstrip("./")
+                if not (self.box.root / path).exists():
+                    return f"error: {path} does not exist (use write_file for a new file)"
+                text, old = self.box.read_all(path), str(a.get("old", ""))
+                n = text.count(old) if old else 0
+                if n != 1:
+                    return (f"error: `old` appears {n} times in {path}; copy an exact passage that appears once "
+                            "(read_file shows the file)")
+                return self._tool("write_file", {"path": path, "content": text.replace(old, str(a.get("new", "")), 1)})
             return f"unknown tool {name}"
         except Exception as e:  # a bad tool call is feedback for the model, never a crash
             return f"error: {e}"
@@ -795,6 +819,10 @@ class Runner:
         if len(history) >= 2 and last["passed"] is not None and history[-2]["passed"] is not None \
                 and last["passed"] > history[-2]["passed"] and len(history) < 5:
             return "continue", f"progress: {history[-2]['passed']} -> {last['passed']} tests passing"
+        code_error = re.search(r"\b(NameError|ImportError|ModuleNotFoundError|AttributeError|SyntaxError|"
+                               r"IndentationError|TypeError|KeyError)\b", last["error"] or "")
+        if code_error and not tried & {"quick_fix", "escalate"}:  # a plain bug: a fast fix, not minutes of thinking
+            return "quick_fix", f"a {code_error[1]}: fix that exact line"
         stuck = False
         try:
             from stall import Run, stuck as is_stuck
@@ -895,6 +923,8 @@ class Runner:
                     self._log(event="decision", step=step.id, option=option, why=why)
                 hint = {"fix_environment": "First install or fix what is missing (see the error), then redo the step.",
                         "continue": f"You are making progress ({why}). Keep going on the remaining failures.",
+                        "quick_fix": "The error names the exact problem (see LAST ATTEMPT FAILED). Fix just that, "
+                                     "with edit_file, and rerun the check.",
                         "escalate": "Think carefully: read the fixed tests and the full error, find the root cause, "
                                     "then fix it in one go."}.get(option, "")
                 if option in ("replan", "stop"):
