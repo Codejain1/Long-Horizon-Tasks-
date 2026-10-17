@@ -12,6 +12,9 @@ ROOT = Path(__file__).parent.parent
 sys.path[:0] = [str(ROOT / "memrouter"), str(ROOT / "hermes")]
 import memory_service as M  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "hermes" / "embed_memory"))
+import places as PL  # noqa: E402  (the plugin's package needs Hermes; its places module doesn't)
+
 
 def fake_encode(texts, max_len=96):  # bag of hashed words: enough to make "rent" find "rent"
     out = np.zeros((len(texts), 64), np.float32)
@@ -203,18 +206,18 @@ def test_profile_mood_area_and_real_nearby_places(tmp_path):
     mem.note_mood("ugh I'm so exhausted")
     loc = mem.note_location("[Live location: 12.9353,77.6134]")
     assert loc["area"] == "80 Feet Road, Koramangala, Bengaluru"
-    r = mem.nearby_food()
+    loc = mem.current()["location"]
+    r = PL.nearby_food(loc, fetch=fake_fetch)
     assert r["near"] == "80 Feet Road, Koramangala, Bengaluru" and r["count"] == 3
     assert r["places"][0]["name"] == "Sattvam"  # vegetarian-only first, then nearest
-    assert [p["name"] for p in mem.nearby_food(cuisine="japanese")["places"]] == ["Tokyo Table"]
+    assert [p["name"] for p in PL.nearby_food(loc, cuisine="japanese", fetch=fake_fetch)["places"]] == ["Tokyo Table"]
     assert "maps" in r["places"][0] and r["places"][1]["km"] < r["places"][2]["km"]
     cur = mem.search("food", 50)["current"]
     assert cur["mood"]["mood"] == "tired" and cur["profile"][0]["text"].startswith("Vegetarian")
 
 
 def test_nearby_without_location_and_plugin_blocks(tmp_path, monkeypatch):
-    mem = M.Memory(tmp_path, fake_encode, KeywordRanker(), fetch=fake_fetch)
-    assert "no location" in mem.nearby_food()["error"]
+    assert "no location" in PL.nearby_food(None, fetch=fake_fetch)["error"]
     stub = types.ModuleType("agent.memory_provider")
     stub.MemoryProvider = object
     monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
@@ -230,7 +233,7 @@ def test_nearby_without_location_and_plugin_blocks(tmp_path, monkeypatch):
 
 
 def test_nearby_falls_back_to_nominatim_when_overpass_is_down(tmp_path, monkeypatch):
-    monkeypatch.setattr(M.time, "sleep", lambda s: None)
+    monkeypatch.setattr(PL.time, "sleep", lambda s: None)
 
     def fetch(url, data=None, timeout=20):
         if "interpreter" in url:
@@ -243,7 +246,7 @@ def test_nearby_falls_back_to_nominatim_when_overpass_is_down(tmp_path, monkeypa
 
     mem = M.Memory(tmp_path, fake_encode, KeywordRanker(), fetch=fetch)
     mem.note_location("[Location: 12.9353,77.6134]")
-    r = mem.nearby_food(1500)
+    r = PL.nearby_food(mem.current()["location"], 1500, fetch=fetch)
     assert [p["name"] for p in r["places"]] == ["Adaa Restaurant"] and r["places"][0]["cuisine"] == "indian"
 
 

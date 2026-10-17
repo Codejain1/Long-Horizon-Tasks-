@@ -16,6 +16,8 @@ from typing import Any
 
 from agent.memory_provider import MemoryProvider
 
+from . import places
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,9 +188,11 @@ class EmbedMemoryProvider(MemoryProvider):
         try:
             if tool_name == "remember_rule":
                 return json.dumps(_post("/rule", {"text": args["text"]}, timeout=10))
-            if tool_name == "nearby_food":
-                return json.dumps(_post("/nearby_food", {"cuisine": args.get("cuisine", ""),
-                                                         "radius_m": int(args.get("radius_m", 2000))}, timeout=45))
+            if tool_name == "nearby_food":  # location from memory, the search itself in places.py
+                url = os.environ.get("EMBED_MEMORY_URL", "http://127.0.0.1:8765") + "/current"
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    loc = json.loads(r.read()).get("location")
+                return json.dumps(places.nearby_food(loc, int(args.get("radius_m", 2000)), args.get("cuisine", "")))
             if tool_name == "correct_memory":
                 return json.dumps(_post("/memory/correct", {"id": int(args["id"]), "text": args["text"]}, timeout=30))
             if tool_name == "forget_memory":
