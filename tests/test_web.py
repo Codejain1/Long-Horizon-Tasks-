@@ -108,6 +108,6 @@ def test_every_arm_is_told_the_answer_format(tmp_path, monkeypatch):
         def wait(self, timeout=None):
             return 0
     monkeypatch.setattr(W.subprocess, "Popen", P)
-    a = SimpleNamespace(out=str(tmp_path), model_url="x", max_minutes=1, local=True)
+    a = SimpleNamespace(out=str(tmp_path), model_url="x", max_minutes=1, local=True, explore=0.2)
     W.run_job(W.WebTask("t", "Find X.", lambda ans: (0, 1, [])), "plain", 1, a)
     assert cmds[0][2].startswith("Find X. Use live web sources") and '"claims"' in cmds[0][2]

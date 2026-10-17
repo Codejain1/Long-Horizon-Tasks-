@@ -121,7 +121,7 @@ def run_job(task: WebTask, arm: str, rep: int, args) -> dict:
     shutil.rmtree(wd, ignore_errors=True)
     wd.mkdir(parents=True)
     cmd = [sys.executable, str(RUNNER), task.goal + FORMAT, "--model-url", args.model_url, "--workdir", str(wd),
-           "--max-minutes", str(args.max_minutes), "--judge-db", str(Path(args.out) / "judge.db")]
+           "--max-minutes", str(args.max_minutes), "--judge-db", str(Path(args.out) / "judge.db"), "--explore", str(args.explore)]
     cmd += ["--plain"] if arm == "plain" else ["--kind", "research"]
     cmd += ["--local"] if args.local else []
     t0 = time.time()
@@ -206,6 +206,7 @@ def main() -> int:
     r.add_argument("--reps", type=int, default=2)
     r.add_argument("--streams", type=int, default=4)
     r.add_argument("--max-minutes", type=float, default=15)
+    r.add_argument("--explore", type=float, default=0.2, help="watcher exploration for world-model data")
     r.add_argument("--local", action="store_true")
     p = sub.add_parser("report")
     p.add_argument("--out", required=True)

@@ -391,7 +391,8 @@ class Runner:
 
     def __init__(self, goal: str, sandbox, llm, log: Path, constraints: str = "", memory=None, max_calls: int = 12,
                  memrouter: Memrouter | None = None, spec_llm=None,
-                 max_minutes: float | None = None, judge=None, kind: str = "code", planner_llm=None, forecast=None):
+                 max_minutes: float | None = None, judge=None, kind: str = "code", planner_llm=None, forecast=None,
+                 explore: float = 0.0, seed: int | None = None):
         self.goal, self.box, self.llm, self.log = goal, sandbox, llm, log
         self.constraints = constraints or "none"
         self.memory = memory  # optional: callable(query) -> facts text (our embed memory)
@@ -414,24 +415,29 @@ class Runner:
         self.kind = kind  # code (greenfield or brownfield, detected) | research (sources, evidence, judge)
         self.planner_llm = planner_llm or llm  # a bigger model may plan while the small one does the steps
         self.forecast, self.budget = forecast, max_minutes  # forecast: runner/forecast.py, only if its gate passed
+        self._prior = None
+        import random
+        self.explore, self.rng = explore, random.Random(seed)  # explore: benchmarks only, never the owner's jobs
         self.brownfield, self.base_names, self.existing_tests, self.existing_ok = False, {}, set(), False
         self.decisions: list[dict] = []
 
-    DOOM_AFTER, DOOM_BELOW = 0.4, 0.1  # of the time budget; P(solved)
-
     def _doomed(self) -> str:
-        """The world model's stop: past DOOM_AFTER of the budget, P(this job ends solved) below DOOM_BELOW."""
+        """The world model's stop, with the policy its replay chose: past `after` of the budget, P(this job ends
+        solved) below `below`."""
         if not (self.forecast and self.budget) or not self.log.exists():
             return ""
-        from forecast import matrix, states
+        from forecast import states
+        policy = self.forecast.spec.get("policy") or {}
         events = [json.loads(x) for x in self.log.read_text().splitlines() if x.strip()]
         st = states(events)
-        if not st or st[-1]["minutes"] < self.DOOM_AFTER * self.budget:
+        if not policy or not st or st[-1]["minutes"] < policy["after"] * self.budget:
             return ""
-        p = float(self.forecast.predict(matrix(st[-1:]))[0])
+        if self._prior is None:
+            self._prior = self.forecast.task_prior(self.goal)
+        p = float(self.forecast.predict(self.goal, st[-1:], self._prior)[0])
         self._log(event="forecast", p_solved=round(p, 3))
         return f"forecast: P(solved) = {p:.2f} after {st[-1]['minutes']:.1f} min: stopped to save the budget" \
-            if p < self.DOOM_BELOW else ""
+            if p < policy["below"] else ""
 
     def _events(self, kind: str) -> list[dict]:
         if not self.log.exists():
@@ -804,6 +810,24 @@ class Runner:
             return "replan", "still failing after escalation"
         return "stop", "out of re-plans: needs the owner"
 
+    def _explore(self, option: str, why: str, step: Step, history: list[dict], replans: int, max_replans: int):
+        """Benchmarks only (--explore): with probability `explore` the watcher takes a random allowed action instead
+        of its rule's choice, and logs both with the pick's probability. Without this the logs only show what the
+        rules chose, and the world model (level 2) could never learn what the other actions would have done."""
+        if not self.explore or option in ("stop", "fix_environment"):
+            return option, why, {}
+        allowed = ["escalate"] + (["continue"] if len(history) < 5 else []) \
+            + (["revise_spec"] if self.locked and step.kind != "tests" and history[-1]["failed"] else []) \
+            + (["replan"] if replans < max_replans else [])
+        if len(allowed) < 2:
+            return option, why, {}
+        rule = {"rule_option": option, "allowed": allowed}
+        if self.rng.random() >= self.explore:
+            return option, why, {**rule, "explored": False, "p_pick": 1 - self.explore + self.explore / len(allowed)}
+        pick = self.rng.choice(allowed)
+        p_pick = self.explore / len(allowed) + (1 - self.explore if pick == option else 0)
+        return pick, f"exploring (rule said {option}: {why})", {**rule, "explored": True, "p_pick": round(p_pick, 4)}
+
     def run(self, max_replans: int = 2) -> dict:
         self._start()
         self.steps = self.plan()
@@ -854,8 +878,9 @@ class Runner:
                         self._lock_tests()
                     break
                 option, why = self.decide(step, history, replans, max_replans)
-                self.decisions.append({"step": step.id, "option": option, "why": why})
-                self._log(event="decision", step=step.id, option=option, why=why)
+                option, why, explored = self._explore(option, why, step, history, replans, max_replans)
+                self.decisions.append({"step": step.id, "option": option, "why": why, **explored})
+                self._log(event="decision", step=step.id, option=option, why=why, **explored)
                 if option == "revise_spec":
                     problems = self.review_spec(error)
                     if problems and self._redo_tests(problems):
@@ -966,6 +991,8 @@ def main() -> int:
     ap.add_argument("--max-minutes", type=float, default=None, help="stop the job after this long")
     ap.add_argument("--plain", action="store_true", help="baseline: no plan, contract, locked tests or watcher")
     ap.add_argument("--kind", choices=["code", "research"], default="code")
+    ap.add_argument("--explore", type=float, default=0.0,
+                    help="benchmarks only: chance the watcher takes a random allowed action (world-model data)")
     ap.add_argument("--forecast", default="", help="world model (runner/forecast.py train); used only if its gate passed")
     ap.add_argument("--judge-db", default="", help="the judge's log (runner/judge.py): judge checks and a verdict per job")
     args = ap.parse_args()
@@ -983,12 +1010,12 @@ def main() -> int:
             judge = Judge(endpoint(args.judge) if args.judge else llm, args.judge_db)
         forecast = None
         if args.forecast:
-            from forecast import Model
-            spec = json.loads(Path(args.forecast).read_text())
-            forecast = Model.from_json(spec) if spec.get("gate", {}).get("passes") else None
+            from forecast import load
+            forecast = load(args.forecast)
         runner = Runner(args.goal, box, llm, wd / "run.jsonl", memrouter=memrouter, forecast=forecast,
                         spec_llm=endpoint(args.spec) if args.spec else None, max_minutes=args.max_minutes,
-                        judge=judge, kind=args.kind, planner_llm=endpoint(args.planner) if args.planner else None)
+                        judge=judge, kind=args.kind, planner_llm=endpoint(args.planner) if args.planner else None,
+                        explore=args.explore)
         r = runner.run_plain() if args.plain else runner.run()
     finally:
         box.close()

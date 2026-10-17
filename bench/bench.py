@@ -135,7 +135,7 @@ def run_stream(arm: str, seed: int, args, port: int):
             wd = out / "work" / f"{arm}-{seed}" / f"{pos:02d}-{task.id}"
             shutil.rmtree(wd, ignore_errors=True)
             cmd = [sys.executable, str(RUNNER), task.goal, "--model-url", args.model_url, "--workdir", str(wd),
-                   "--max-minutes", str(args.max_minutes), "--judge-db", str(out / "judge.db")]
+                   "--max-minutes", str(args.max_minutes), "--judge-db", str(out / "judge.db"), "--explore", str(args.explore)]
             if args.local:
                 cmd.append("--local")
             if mem:
@@ -237,6 +237,7 @@ def main() -> int:
     r.add_argument("--model-url", required=True)
     r.add_argument("--max-minutes", type=float, default=10)
     r.add_argument("--image", default=None, help="score inside this container image (podman)")
+    r.add_argument("--explore", type=float, default=0.2, help="watcher exploration for world-model data")
     r.add_argument("--set", default="basic", choices=list(T.SETS), help="task set (house = the conventions set)")
     r.add_argument("--local", action="store_true", help="runner without a container (trusted use only)")
     r.add_argument("--memrouter-cmd", default="python memory_service.py --home {home} --port {port}")

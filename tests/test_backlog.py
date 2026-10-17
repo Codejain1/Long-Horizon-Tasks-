@@ -26,7 +26,7 @@ def scenario(root: Path) -> None:
 
 def args(tmp_path, arm, **kw):
     return SimpleNamespace(scenario="shop", arm=arm, out=str(tmp_path / "out"), model_url="x", tickets=99, fixups=2,
-                           max_minutes=1, image=None, local=True, port=0, memrouter_cmd="", label="", extra="", **kw)
+                           max_minutes=1, image=None, local=True, port=0, memrouter_cmd="", label="", extra="", explore=0.2, **kw)
 
 
 def test_tickets_score_hidden_tests_and_qa_fixups_count(tmp_path, monkeypatch):

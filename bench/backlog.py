@@ -82,7 +82,7 @@ def qa_report(ticket: int, out: str) -> str:
 def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None) -> dict:
     """One runner (or plain) job in the repo; returns minutes, tokens and the runner's own verdict."""
     cmd = [sys.executable, str(RUNNER), goal, "--model-url", args.model_url, "--workdir", str(repo),
-           "--max-minutes", str(args.max_minutes), "--judge-db", str(Path(args.out) / "judge.db")]
+           "--max-minutes", str(args.max_minutes), "--judge-db", str(Path(args.out) / "judge.db"), "--explore", str(args.explore)]
     cmd += ["--plain"] if args.arm == "plain" else []
     cmd += ["--memory-url", f"http://127.0.0.1:{port}", "--scope", args.scenario] if port else []
     cmd += ["--local"] if args.local else []
@@ -232,6 +232,7 @@ def main() -> int:
     r.add_argument("--local", action="store_true", help="runner without a container (trusted use only)")
     r.add_argument("--port", type=int, default=8790)
     r.add_argument("--memrouter-cmd", default="")
+    r.add_argument("--explore", type=float, default=0.2, help="watcher exploration for world-model data")
     r.add_argument("--label", default="", help="name for this variant of the arm (results file and report)")
     r.add_argument("--extra", default="", help="extra runner flags, e.g. a frontier model for some role")
     p = sub.add_parser("report")
