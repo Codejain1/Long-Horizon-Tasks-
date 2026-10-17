@@ -223,3 +223,32 @@ def test_binary_command_output_never_crashes_the_sandbox(tmp_path):
     box = LR.LocalSandbox(tmp_path)
     code, out = box.run("printf '\\x1f\\x8b\\x08 gzip bytes'")
     assert code == 0 and "gzip bytes" in out
+
+
+def test_rate_limits_are_waited_out_and_hosted_models_skip_json_mode(monkeypatch):
+    import io
+    import urllib.error
+    calls = []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(req, timeout=0):
+        calls.append(json.loads(req.data))
+        if len(calls) < 3:
+            raise urllib.error.HTTPError(req.full_url, 429, "rate limited", {}, None)
+        return Resp(json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode())
+    monkeypatch.setattr(LR.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(LR, "RETRY_WAITS", (0, 0, 0))
+    monkeypatch.setattr(LR.time, "sleep", lambda s: None)
+    LR.chat("https://x/v1", [{"role": "user", "content": "plan"}], json_mode=True, api_key="k")
+    assert len(calls) == 3 and "response_format" not in calls[0]
+    calls.clear()
+    monkeypatch.setattr(LR, "RETRY_WAITS", ())
+    import pytest
+    with pytest.raises(urllib.error.HTTPError):
+        LR.chat("https://x/v1", [{"role": "user", "content": "x"}], api_key="k")

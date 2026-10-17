@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -259,12 +260,19 @@ def chat(url: str, messages: list, tools=None, json_mode=False, model="local", t
         body["chat_template_kwargs"] = {"enable_thinking": deep}
     if tools:
         body["tools"] = tools
-    if json_mode:
+    if json_mode and not api_key:  # hosted (free) models often reject it; the JSON is pulled from the text anyway
         body["response_format"] = {"type": "json_object"}
     headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {api_key}"} if api_key else {})}
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions", json.dumps(body).encode(), headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        out = json.loads(r.read())
+    for wait in RETRY_WAITS + (None,):  # rate limits and busy servers are waited out, not fatal
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                out = json.loads(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            if wait is None or e.code not in (429, 500, 502, 503, 504):
+                raise
+            time.sleep(wait)
     u = out.get("usage") or {}
     USAGE["calls"] += 1
     USAGE["prompt_tokens"] += u.get("prompt_tokens", 0)
@@ -286,6 +294,7 @@ def endpoint(spec: str):
     return lambda m, **k: chat(url, m, model=model, api_key=api_key, **k)
 
 
+RETRY_WAITS = (5, 15, 30, 60, 120)
 USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "by_model": {}}  # this process = one job: what the model really did
 
 
