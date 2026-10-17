@@ -170,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
         settings = Settings.from_env()
         scorers = {"jev": make_scorer("jev", settings.jev_model, settings.llm_scorer_model),
                    "llm": make_scorer("llm", settings.jev_model, settings.llm_scorer_model)}
+        if settings.own_judge_url:
+            scorers["own"] = make_scorer("own", settings.jev_model, settings.llm_scorer_model, settings.own_judge_url,
+                                         settings.own_judge_model)
         with connected(settings.db_url) as db:
             print(json.dumps(compare(DecisionLog(db), settings.team_id, scorers, settings, args.limit), indent=2))
     elif args.cmd == "eval-world-model":

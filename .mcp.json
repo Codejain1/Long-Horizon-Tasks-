@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "embed-memory": {
+      "command": "/Users/kartikjain/horizon-evals/reader-venv/bin/python",
+      "args": ["/Users/kartikjain/Desktop/Long-Horizon-Tasks-v2/deploy/claude/embed_memory_mcp.py"]
+    }
+  }
+}

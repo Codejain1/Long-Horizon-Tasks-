@@ -151,7 +151,8 @@ def build_platform(settings: Settings, cwd: str | None = None) -> Platform:
 
     def scorer():
         if "s" not in scorers:  # built on first use; a failure (e.g. no API key) is retried next time
-            scorers["s"] = make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)
+            scorers["s"] = make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model,
+                                           settings.own_judge_url, settings.own_judge_model)
         return scorers["s"]
 
     def memrouter() -> MemRouter:

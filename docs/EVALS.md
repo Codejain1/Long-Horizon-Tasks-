@@ -28,6 +28,38 @@
 | `backlog` | unattended tickets under CI policies (8 sessions) | failed-CI sessions 2/8 lean against 6/8; pitfall replays 0/5 against 3/5 and 2/5, 17–18 % cheaper |
 | `evals/rules` | picking rules out of prompts (32 labelled sentences) | Jev 97 %, keywords 62 % |
 
+## Lean memory proof (shipped path, 2026-10-07)
+
+This is what “memrouter is proven” means for the **default product**: hooks capture rules and test history, **task state** routes them into session-start context, Jev **classifies** sentences into team/project rules, and **session episodes** feed memrouter learning at session end—not full `recall_context` on every turn.
+
+| Metric | What we measure | Pass (current evidence) | Where |
+|---|---|---|---|
+| **Speed** | Hook latency; wall time per ward+rental pass | Hooks **~46 ms** warm (`hookd`); lean + project map **14.5 min** combined (2 runs) vs baseline **15.6 min** | `PROGRESS` session 26; `RESULTS.md` project map |
+| **Cost** | Build cost for ward+rental; fix-up cost to working software | Combined **$3.07** vs **$3.11** without (−1 % build); fix-ups **$7.42** vs **$8.71** (−15 %) | `RESULTS.md` side-by-side, fixup |
+| **Quality** | Rule checks + hidden tests on rules-across-sessions scenarios | **40/40** rules, **106/108** hidden (4 runs); handoff **24/24** vs baseline **2/12** | `RESULTS.md` |
+| **Routing** | Rules/constraints/pitfalls/map reach later tickets without agent memory calls | Ticket-1 rules still at session start (composer fixes classic 3-task window); pitfalls replay **0/5** vs **3/5** breaks | `composer`, `backlog` replays |
+| **Classification** | Rule vs noise in prompts | Jev **97 %** vs keywords **62 %** (32 sentences); tickets **18/18** whole-message (`evals/rules/tickets.py`) | `evals/rules`, session 26 |
+
+**Head-to-head (`notes`, `mcpmem`, `r1` complete):** told to keep `NOTES.md` or MCP memory → **20/20** rule checks, **$3.04–3.46** per ward+rental pass (`evals/longhorizon/score_h2h.py`). Horizon’s claim is **zero instructions** with the same ballpark cost (`RESULTS.md` head-to-head). **`r2`** (3 repeats) waits on Claude usage limit; run `evals/longhorizon/h2h_wait_r2.sh`.
+
+**Single acceptance run (five parameters):** `python evals/acceptance.py` (spec: `evals/acceptance.json`; CI: `tests/test_acceptance.py`). Writes `evals/acceptance_report.json` with `--write-report`.
+
+**Not proven for default-on:** session-memory briefing, composer vs classic on marathon, stall, dead-ends (Phase 3 gate: no gain over lean).
+
+## Decision layer gate (next track, code built)
+
+Implementation exists (`decision/`, `decide.py`, `HORIZON_DECIDE=on`, `--mcp` for lean). **Do not** use ward/rental rule scores as the decision metric; use decision scenarios.
+
+| Metric | What we measure | Pass bar | Scenario |
+|---|---|---|---|
+| **Quality** | Trap checks; cross-project lesson applied | ≥ lean; on cheap models, beat lean on traps | `boxoffice`, `lessons` |
+| **Cost** | vs lean with `HORIZON_DECIDE=on` | ≤ +10 % on Sonnet; Haiku may pay more if traps pass | same |
+| **Speed** | Jev per `evaluate_options` / crucial detection | No hook regression; scorer failure → no trigger | `demo/reliability` |
+| **Routing** | `decision_history` + spikes change chosen storage | Lesson incident flips SQLite vs JSON when Jev unsure | `lessons` ticket 3 |
+| **Classification** | Crucial vs settled vs routine | False crucial → extra eval cost only; miss → trap fail | `boxoffice` on Haiku |
+
+**So far (`RESULTS.md`):** Sonnet — no trap misses, decisions ≈ lean cost. Haiku — **only** decisions arm passed **all** boxoffice traps; lessons **3/3** vs **2/3** at **+44 %** cost. **Default remains off** until Sonnet shows a win or owner accepts Haiku-only value.
+
 ## New scenario 1: `marathon`, the Phase 3 gate
 
 > **Built** (v2 Phase 1, track E): `evals/longhorizon/scenarios/marathon`, a reference solution that passes all 45 hidden checks and the repo's own CI, and `tests/test_marathon.py`, which shows each planted trap caught by its own check. Not yet run with real sessions.

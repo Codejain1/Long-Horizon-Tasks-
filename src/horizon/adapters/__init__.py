@@ -2,8 +2,9 @@
 
 from horizon.adapters.base import DomainAdapter, Outcome
 from horizon.adapters.coding import CodingAdapter
+from horizon.adapters.runner import RunnerAdapter
 
-ADAPTERS: dict[str, DomainAdapter] = {"coding": CodingAdapter()}
+ADAPTERS: dict[str, DomainAdapter] = {"coding": CodingAdapter(), "runner": RunnerAdapter()}
 
 
 def get_adapter(domain: str) -> DomainAdapter:
@@ -13,4 +14,4 @@ def get_adapter(domain: str) -> DomainAdapter:
         raise ValueError(f"no adapter for domain {domain!r}; known: {sorted(ADAPTERS)}") from None
 
 
-__all__ = ["ADAPTERS", "CodingAdapter", "DomainAdapter", "Outcome", "get_adapter"]
+__all__ = ["ADAPTERS", "CodingAdapter", "RunnerAdapter", "DomainAdapter", "Outcome", "get_adapter"]

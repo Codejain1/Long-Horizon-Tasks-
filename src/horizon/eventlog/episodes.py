@@ -105,7 +105,8 @@ def configured_scorer(settings) -> Callable[[], object] | None:
         return None
     from horizon.decision.scorers import make_scorer
 
-    return lambda: make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)
+    return lambda: make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model,
+                                           settings.own_judge_url, settings.own_judge_model)
 
 
 def local_memory(settings, db: Database):

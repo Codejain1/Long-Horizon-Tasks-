@@ -78,6 +78,9 @@ class Settings:
     scorer: str = "none"
     jev_model: str = "jev-latest"
     llm_scorer_model: str = "claude-haiku-4-5"
+    # "own": our own judge on any OpenAI-compatible endpoint, calibrated on real outcomes (decision/scorers.py)
+    own_judge_url: str = ""
+    own_judge_model: str = "local"
     decision_weights: dict = field(default_factory=lambda: dict(DEFAULT_DECISION_WEIGHTS))
     crucial_threshold: float = 0.5  # any crucial signal at or above this makes the decision crucial
     clear_margin: float = 0.10  # composite lead over the runner-up that counts as a clear winner
@@ -176,6 +179,8 @@ class Settings:
             scorer=get("SCORER", base.scorer),
             jev_model=get("JEV_MODEL", base.jev_model),
             llm_scorer_model=get("LLM_SCORER_MODEL", base.llm_scorer_model),
+            own_judge_url=get("OWN_JUDGE_URL", base.own_judge_url),
+            own_judge_model=get("OWN_JUDGE_MODEL", base.own_judge_model),
             decision_weights=get("DECISION_WEIGHTS", base.decision_weights, json.loads),
             crucial_threshold=get("CRUCIAL_THRESHOLD", base.crucial_threshold, float),
             clear_margin=get("CLEAR_MARGIN", base.clear_margin, float),

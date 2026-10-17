@@ -115,13 +115,30 @@ def claude(prompt: str, model: str) -> tuple[str, dict]:
     raise RuntimeError(f"claude failed: {proc.stdout[-300:]} {proc.stderr[-300:]}")
 
 
+# Raw CLIs: with this file present, Cursor and Codex run from clean config folders (login only), without the
+# user's MCP servers, skills, rules or AGENTS.md, which otherwise load into every answer and every grade.
+# Checked per call, so switching it on takes effect between benchmarks without restarting a run.
+RAW = Path.home() / "horizon-evals" / "raw"
+
+
+def raw_env(tool: str) -> dict | None:
+    if not (RAW / "ON").exists():
+        return None
+    env = dict(os.environ)
+    if tool == "cursor":
+        env["HOME"] = str(RAW / "cursor-home")
+    else:
+        env["CODEX_HOME"] = str(RAW / "codex")
+    return env
+
+
 def cursor_complete(prompt: str, model: str) -> tuple[str, dict]:
     """Plain completion via Cursor Agent CLI (Composer, Grok, etc.)."""
     for attempt in range(3):
         # Prompt on stdin: full-history prompts (~1 MB) exceed the argument limit; ask mode is read-only.
         proc = subprocess.run(
             ["agent", "-p", "--output-format", "text", "--model", model, "--mode", "ask", "--trust"],
-            input=prompt, capture_output=True, text=True, timeout=900, cwd="/tmp")
+            input=prompt, capture_output=True, text=True, timeout=900, cwd="/tmp", env=raw_env("cursor"))
         text = (proc.stdout or "").strip()
         if proc.returncode == 0 and text:
             return text, {"cost_usd": 0, "llm": "cursor", "cursor_model": model}
@@ -139,7 +156,7 @@ def codex_complete(prompt: str, model: str) -> tuple[str, dict]:
             proc = subprocess.run(
                 ["codex", "exec", *([] if model in ("", "default") else ["-m", model]), "-s", "read-only",
                  "--skip-git-repo-check", "-o", out.name, "-"],
-                input=prompt, capture_output=True, text=True, timeout=900, cwd="/tmp")
+                input=prompt, capture_output=True, text=True, timeout=900, cwd="/tmp", env=raw_env("codex"))
             text = Path(out.name).read_text().strip()
             if proc.returncode == 0 and text:
                 return text, {"cost_usd": 0, "llm": "codex"}

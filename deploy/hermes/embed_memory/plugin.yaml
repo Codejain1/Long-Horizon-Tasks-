@@ -1,0 +1,3 @@
+name: embed_memory
+version: 0.1.0
+description: "Our embedding memory: fine-tuned bge-small + learned ranker, local service on 127.0.0.1."

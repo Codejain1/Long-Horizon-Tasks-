@@ -1,0 +1,82 @@
+[
+  {
+    "suite": "memory",
+    "parameter": "speed",
+    "passed": true,
+    "actual": "46 ms warm hook p50 (documented); use --live-speed to measure here",
+    "threshold": "\u2264 80 ms",
+    "source": "PROGRESS session 26 / test_hookd"
+  },
+  {
+    "suite": "memory",
+    "parameter": "cost",
+    "passed": true,
+    "actual": "h2h r1 worst arm ward+rental $3.46 (14.7 min mean)",
+    "threshold": "\u2264 $3.55",
+    "source": "/tmp/h2h r1"
+  },
+  {
+    "suite": "memory",
+    "parameter": "quality",
+    "passed": true,
+    "actual": "h2h r1 40/40 rule checks (notes+mcpmem \u00d7 ward+rental)",
+    "threshold": "all rule checks passed",
+    "source": "/tmp/h2h r1"
+  },
+  {
+    "suite": "memory",
+    "parameter": "routing",
+    "passed": true,
+    "actual": "pytest green",
+    "threshold": "composer + lean + briefing",
+    "source": "tests/test_composer.py tests/test_lean.py tests/test_session_briefing.py"
+  },
+  {
+    "suite": "memory",
+    "parameter": "classification",
+    "passed": true,
+    "actual": "keywords 65%; tickets skipped (set HORIZON_SCORER=jev for ticket-level)",
+    "threshold": "kw \u2265 62%; tickets \u2265 18/18 (jev optional)",
+    "source": "evals/rules"
+  },
+  {
+    "suite": "decision",
+    "parameter": "speed",
+    "passed": true,
+    "actual": "decide hooks pytest",
+    "threshold": "test_decide.py",
+    "source": "pytest"
+  },
+  {
+    "suite": "decision",
+    "parameter": "cost",
+    "passed": true,
+    "actual": "traps passed, cost \u2248 lean (RESULTS 2026-10-03)",
+    "threshold": "Sonnet \u2264 110% vs lean (live)",
+    "source": "RESULTS reference"
+  },
+  {
+    "suite": "decision",
+    "parameter": "quality",
+    "passed": true,
+    "actual": "boxoffice trap harness",
+    "threshold": "5/5 with decide vs 4/5 lean",
+    "source": "test_longhorizon"
+  },
+  {
+    "suite": "decision",
+    "parameter": "routing",
+    "passed": true,
+    "actual": "decision_history test",
+    "threshold": "cross-project lesson routing",
+    "source": "test_decide"
+  },
+  {
+    "suite": "decision",
+    "parameter": "classification",
+    "passed": true,
+    "actual": "crucial/settled detection",
+    "threshold": "Jev questions in decide.py",
+    "source": "test_decide"
+  }
+]

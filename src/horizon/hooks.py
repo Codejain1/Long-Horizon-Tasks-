@@ -777,7 +777,7 @@ def run_hook(name: str, stdin: str, settings: Settings | None = None, remote: st
             settings = settings or Settings.from_env()
             db = connect(settings.db_url)
             try:
-                scorer = lambda: make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model)  # noqa: E731
+                scorer = lambda: make_scorer(settings.scorer, settings.jev_model, settings.llm_scorer_model, settings.own_judge_url, settings.own_judge_model)  # noqa: E731
                 project = project_dir(payload)
                 brief = past_sessions_briefing(db, settings) if profile == "lean" else None
                 budget = settings.context_budget_chars if settings.context == "composer" else None

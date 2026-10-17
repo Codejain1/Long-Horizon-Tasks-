@@ -585,8 +585,109 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 
 ## In progress
 
+- **Conventions run (2026-10-17; `evals/longrun/tasks.py` `house_tasks`, `bench.py --set house`):** 17 tasks
+  (12 CLI stores, 5 CSV summaries), each carrying 3 of 4 unwritten owner rules: `(empty)` when there's nothing to show;
+  errors go to stderr as `error: …` with exit code 2; store files are `{"items": [...]}`; CSVs use `;`. The rules are
+  never in a goal. They're checked by hidden `test_house_*` tests, and the owner states only the rules a delivery
+  broke. A solution that follows only the goal fails every rule on every task. The report adds house-check rates
+  (early→late) and paired diffs (all jobs and late half). Code is staged at `/opt/longrun/fb3` (md5-verified), and
+  `go3.sh` starts it automatically when run 2 writes BENCH DONE. Log: `/home/hermes/housebench.log`. Check with
+  `bash evals/longrun/progress.sh housebench [report]`. Tests: `tests/test_longrun_bench.py` (11) and
+  `test_longrun.py` pass.
+- **Conventions run (final, 2026-10-17, `/home/hermes/housebench`, old noisy memory, 32 paired jobs): PASSED the
+  pre-set criteria.** House-rule checks in the late half: mem − none = +64.6 pts, 95% CI [+43.8, +83.3]. Memory
+  went 39.6% → 66.7% from early to late, while no memory stayed flat at 2.1%. Solved: 12/32 vs 0/32. Other hidden
+  tests 68.2% vs 70.5% (not worse), median 11.1 vs 10.9 min. Late half, per rule: errors 12/16 vs 1/16, empty 10/16
+  vs 0/16, store format 8/12 vs 0/12, semicolon 2/4 vs 0/4. Caveats: it shows the stated-rule path works, which a
+  notes file could also do. The runner marked 30/32 and 24/32 jobs not finished (mostly the 10-min budget), so the set
+  is tight for the budget.
+- **Silent-by-default memory (2026-10-17, step 2):** built and tested, deployed to `/opt/longrun/fb4`, md5-verified.
+  `go4.sh` runs after the conventions run: (1) `/home/hermes/fastbench3`, the basic set with run 2's seeds and order,
+  mem vs none. Gate: memory is not worse than no memory on solved or time. (2) `/home/hermes/housebench2`, the
+  conventions set with mem / rules / none × 2 seeds (6 streams, 10 min). It shows which part of memory helps.
+  Check with `bash evals/longrun/progress.sh <dir> [report]`.
+- **fastbench3 (final, 2026-10-18, silent memory, run 2's seeds and order, 32 paired jobs):** mem 65.6% vs none 71.9%
+  solved, paired −6.2 pts [−21.9, +9.4]; hidden tests 72.7% vs 80.7%; median 10.4 vs 9.9 min; interventions 1.22 vs
+  1.16. Gate "not worse" is not clearly failed (CI spans 0) but not passed either. The time gap shrank (run 2:
+  10.6 vs 6.8). The same no-memory arm on identical tasks scored 78.1% in run 2 and 71.9% now, so ±6 pts is run noise.
+  Per job: none won 4 solves (3 stores, 1 utils), mem won 2 (1 store, 1 report). What got through the filter: 0 rules,
+  6 + 10 "advice" retry notes, mostly raw pytest error text plus a vague "what fixed it" (e.g. "Created SPEC.md").
+  Reading: on ordinary tasks there is nothing for memory to add, and those notes are still noise. Next fix candidate:
+  store an advice note only when it names a concrete, reusable fix, or drop retry notes and keep rules only.
+- **System audit (2026-10-18, owner asked "is it real"):** (1) three systems share the name: `src/horizon` (11k
+  lines, the documented MCP/hooks product) runs nowhere live; the live "memrouter" is `deploy/hermes/memory_service.py`,
+  a chat memory whose encoder and ranker were trained on LoCoMo, with per-query normalised scores (the 0.5 bar is
+  relative, not "relevant"); the runner writes Horizon events nothing reads. PROJECT.md §3 ("we never run the working
+  LLM") no longer matches the work. (2) The conventions win comes from the bench giving memory the exact rule
+  sentence, which the runner pastes in; the none arm gets no feedback at all, so a notes file would match it.
+  (3) Experience lessons are rates and raw pytest tails, never shown to help (run 2 +0.0, run 3 −6.2). (4) The runner's
+  "done" is right 63/64 times, but about half the jobs end on the 10-min budget, and 31 of those had already passed
+  the hidden tests. Contract, tests and spec review take 56–62 % of the time on ~40-line programs. (5) There is no
+  baseline of the runner against a plain Qwen tool loop, and memory has never been compared with a notes file.
+  (6) Nothing has been committed since 2026-10-11.
+- **Fast benchmark run 2 (final, 2026-10-17, `/home/hermes/fastbench2`, 32 paired jobs):** memrouter 78.1% solved,
+  no memory 78.1%, paired +0.0 pts with a 95% CI of [−18.8, +15.6]: no benefit. No-memory sits under the 85% ceiling,
+  so by the pre-set rule this is a real negative result. Median time per job was 10.6 vs 6.8 min with 1.50 vs 0.94
+  interventions per job, but by family the gap is mostly the 4 report jobs (12.5 vs 4.6 min). Utils (5.8 vs 6.0) and
+  stores (11.5 vs 11.2) ran at the same speed. The traced cause is that memrouter search fills its budget with whatever
+  is nearest (29 plan-lesson lines, only 12 from the same kind of task, mostly non-actionable "X/Y checks passed")
+  and the runner labels it "use them". Measured costs: `/search` 25 ms, `/episode` 21 ms, `/add` via the writer
+  2.7 s (background); one Qwen3-14B answer of 730 tokens takes 15 s (48 tok/s). The minutes are model calls and
+  failure recovery, not memory.
+- **Fast benchmark, first full run (2026-10-17; `evals/longrun/`; 4 streams x 16 tasks, hidden tests):** memrouter 68.8%
+  solved vs none 62.5%, paired +6.2 pts, 95% CI [-12.5, +25.0]: no proven benefit. Both arms rose early->late equally
+  (task order), memory jobs slightly slower. CLI stores are the failure point (4/12 vs 3/12); utils near perfect. The
+  earlier 6-job "30% faster" did not replicate. Next: diagnose store failures; lessons only reach the planner today.
+- **2026-10-17:** (1) cross-task procedure lessons (`deploy/hermes/experience.py`): step outcomes grouped by procedure
+  ("<kind> via <how>") across tasks -> "What worked / What failed across tasks" with the approach or typical error;
+  runner consolidates after every run. (2) **Our own judge** `OwnJudge` (`src/horizon/decision/scorers.py`,
+  `HORIZON_SCORER=own`, `HORIZON_OWN_JUDGE_URL`/`_MODEL`): Jev's question shapes on any OpenAI-compatible endpoint,
+  every judgment logged (`~/.horizon/judge.db`), yes/no answers isotonic-calibrated per question family after 20+
+  labelled outcomes; Jev optional everywhere. (3) Runner spec writer: contract + tests steps think first by default or
+  use a bigger model (`--spec-model-url`). Full suite 598 passed. Not yet measured on real runs.
+- **6-job learning curve (finished 2026-10-17, all 12 jobs verified by independent pytest):** with memrouter 4/6 passed,
+  75 min, 12 interventions, 7.1 min per successful job; without 4/6, 105 min, 20 interventions, 14.4 min. Same success
+  rate; memory cut time ~30% and interventions ~40% (small sample, not proven). Consolidation made 0 lessons (clusters
+  need near-identical situations; jobs were different apps) -> lessons must also cluster by step kind/action across
+  tasks. Bottleneck remains the 14B model writing passable tests.
+- **Learning-curve run (2026-10-16, Qwen3-14B, 3 CLI jobs, verified by independent pytest):** with memrouter (A) 2/3
+  (todo 2.5 min; notes 2.1 min with ZERO interventions after receiving job 1's lessons; expenses failed); without (B)
+  1/3 (todo stopped on reviewer false positives with 2/3 tests passing; notes ok; expenses failed). Earlier runner
+  versions finished 0 of these; contract-first `SPEC.md` (incl. how tests isolate state) was the turning point. Too
+  small to prove memory's effect. Next fixes: spec reviewer false positives (style flagged as "impossible"), tests that
+  run the program via subprocess (contract should fix how to invoke it), consolidation needs more episodes.
+- **Runner connected to Horizon (2026-10-16):** new domain adapter `src/horizon/adapters/runner.py` (registered next to
+  coding): runs are Horizon events (plan / tool / check with `testparse` counts / decision / session start-end) via
+  `HorizonEvents` in `deploy/longrun/longrun.py`, replayable into transitions. Watcher decisions from signals:
+  environment failure -> fix it; tests passing going up -> continue; no progress (`horizon.stall.stuck`) -> escalate
+  once (same Qwen3 in thinking mode, no new spend); still failing -> re-plan; out of re-plans -> stop with an
+  `ask_owner` line. Locked tests shown to every build step as the spec. Experience loop: planner gets lessons from
+  memrouter; each step and run is an episode (credit via recall_id); multi-try steps leave a note. Tests: 52 in the
+  memory/runner files; full suite 587 passed. Learning-curve run (3 similar CLI jobs, with vs without memrouter) on the
+  Hermes server; a separate memrouter instance on :8766 (`/home/hermes/.memrouter-runner`) keeps runner experience out
+  of the owner's personal memory.
+- **memrouter (our engine) — decided steps complete, now ON HOLD (2026-10-16).** Done: memory writer (held-out 41/45),
+  provenance + confidence + `#id` on every memory, writer check (numbers/links/names) with original words attached on
+  mismatch, correction/forget API + Hermes tools, entity slots matched by meaning, non-blocking index, and the old
+  memrouter's experience features ported in `deploy/hermes/experience.py`: episodes, surprise (MEMROUTER.md §5),
+  credit to recalled memories with strength/stability, strength in ranking (0.2 + 0.8 x strength), sleep consolidation
+  into strategies / failure lessons (no re-counting old evidence), fears cleared only by name, reconsolidation
+  (scope first, then halve), predictor bias. Not ported: spreading activation, Jev attention filter. 49 tests. Live on
+  Hermes. Not done (owner said no more benchmarks): harder realistic tests, mixed-data ranker, own small writer model.
+- **Long-horizon runner v0.3:** setup step + tests-first with locked tests worked (no tampering); stopped at step 3/6,
+  1/3 tests pass (verified): code/test contract mismatch. Next part: connect the runner to Horizon (adapter -> event
+  log -> stall/dead-ends/forecast/decision layer with our own scorer -> episodes into memrouter) and a learning-curve
+  run; quick win: give each build step the locked tests as its spec, escalate a stuck step.
+- **Long-horizon runner v0 (2026-10-16, owner's design):** `deploy/longrun/longrun.py`: model plans 3-10 steps with code-checkable checks; executes ONE step at a time with tools in a podman sandbox (goal card + used outputs + optional memory facts + last error); a code watcher runs every check, retries once, re-plans after 2 failures, stops and reports after the re-plan budget; flags a command failing 3 times. 5 tests. First real job (todo CLI with pytest) running on the Hermes server vs the same model in one go.
+- **Memory writer live on Hermes (2026-10-16):** `evals/memory/writer.py` (Qwen3-14B via the Stockholm tunnel) types and cleans every message; fallback to the rule path. Held-out generality 19/45 (rules) -> 36/45 (writer v1); writer v2 tuned only on `writer_dev.py` (31/32).
+- **Memory generality audit (2026-10-15):** `evals/memory/generality.py` (held out). At 20K messages: rules 3/9, mood 2/6, taste 2/6, dates 3/7 (plus a wrong 'day after tomorrow'), outdated facts always served unmarked, agent statements 0/2, long docs and Hinglish fail, ~500 ms latency. Next: save-time memory writer (one general mechanism replacing the keyword detectors), then supersession, agent-statements-by-kind, sentence chunks, mixed training data, incremental index.
+- **Self-built recall engine and Hermes (2026-10-14).** Snippets: LongMemEval-S 60 Qs evidence covered 88.2 → 90.2 % (500 tok), 90.8 → 94.6 % (1000); LoCoMo test end to end (116 shared, Codex J) snippets 87.1 % vs whole turns 85.3 % (p = 0.82) vs full 93.1 % (−6.0, p = 0.12). Of 11 losses to full with whole turns, 6 had all evidence sent: 3 relative dates ("last year"), 2 grader noise, 1 two-turn join. **Deployed** the engine as the owner's Hermes memory on AWS (`deploy/hermes/`: `memory_service.py` on 127.0.0.1:8765 + `embed_memory` plugin; built-in memory off, backup kept); a new chat recalled a fact told in an earlier one. `evals/memory/mail_recall.py` reads a Gmail Takeout for the inbox head-to-head (waiting on the export). 2026-10-15: Hermes's brain moved to Qwen3-14B-AWQ on vLLM (64K context via YaRN; Hermes refuses <64K) on a g5.xlarge in Stockholm ($1.07/h; Mumbai and Stockholm g6 were sold out), reached through an SSH tunnel from Mumbai (`deploy/hermes/stockholm_model.sh up|switch|revert|stop`); tool call 2.5 s, 39 tok/s, memory recall works through Hermes. 2026-10-15: WhatsApp connected to Hermes (self-chat, allow-list = the linked account only, silent to everyone else). Next: owner's first real WhatsApp test, relative-date rewriting at save time.
 - **Public memory benchmarks on Cursor composer-2.5 with a Codex judge (2026-10-09):** LoCoMo J Horizon 85.5 % / plain retrieval 64.5 % / full 91.9 %; LongMemEval-S 90.0 / 88.3 (Codex-judged). BEAM rerun with rubric scoring in `/tmp/mem-eval-v2/` (resume: `/tmp/mem-eval-v2/run.sh`, then `finish_horizon.sh`). Table in `docs/MEMORY_BENCHMARKS.md`.
-- **Fair-protocol rerun (started 2026-10-11 09:30):** `OUT=/tmp/mem-eval-v3 ./evals/memory/run_protocol.sh`, all four arms of LoCoMo 150, BEAM 80, LongMemEval test 100 and FactConsolidation 2×50, one benchmark at a time (expected about 10-12 hours). Results land in `/tmp/mem-eval-v3/compare.txt`; resume by rerunning the same command.
+- **Fair-protocol rerun (restarted 2026-10-11 14:44, paused 2026-10-12 ~05:00):** the first run in `/tmp/mem-eval-v3` was lost to a reboot (macOS clears `/tmp`); restarted as `OUT=~/horizon-evals/mem-eval-v3 ./evals/memory/run_protocol.sh`. Both runs are **frozen in place** (SIGSTOP): resume with `~/horizon-evals/pause.sh cont`; after a reboot, rerun the same command (resume-safe).
+  - **LoCoMo done** (`compare.py`, 116 shared questions, J cats 1-4): Horizon 85.3 %, hybrid 75.9 % (**+9.5 [+1.7, +17.2], p = 0.027**), rag 71.6 % (**+13.8 [+6.9, +20.7], p < 0.001**), full 93.1 % (−7.8 [−14.7, −1.7], p = 0.035) at ~21× the prompt (960 vs 20K tokens). Category 5: 30-32/33 every arm.
+  - **BEAM:** horizon done, pass 64/80 = 80.0 % (rubric 76.3 %; weakest: event ordering 5/11, abstention 5/9); hybrid at 32/80; rag, full, LongMemEval and FactConsolidation still to run.
+  - **Mem0 arm on LoCoMo** (branch `v2/mem0-arm`, worktree `../lht-mem0`, not merged): running beside the protocol from the worktree, 41 of ~272 sessions saved, 0/150 answered. Score it with the worktree's `compare.py` on `~/horizon-evals/mem-eval-v3/locomo`.
+  - Overnight stall: with the lid closed on battery the Mac sleeps despite `caffeinate -i`; keep it on power with the lid open.
 - **Memory audit (2026-10-11, session 28), before any decision-layer work.** The five bugs below are **fixed** (see Completed, session 28); the eval-protocol items are still open:
   - `factmem.search` sorts hits by the date *string*: on BEAM ("April-02" before "March-15") and LoCoMo ("10:37 am on 27 June" before "1:56 pm on 8 May") memories reach the reader out of order, so "latest version last" is false there. LongMemEval's dates sort correctly.
   - `factmem.search`'s Jev-down fallback drops `current_only` and `hops`: superseded facts are served as current.
@@ -598,6 +699,63 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
 - **Decision layer (next engineering track):** code built (`HORIZON_DECIDE`, Session 25); product default waits on Sonnet cost/quality or owner sign-off (see `docs/EVALS.md` decision gate).
 
 ## Decisions made
+
+- 2026-10-17: runner lessons are silent by default. The owner's standing rules always go in. Beyond them, only items
+  of kind advice, lesson or fear, with relevance score >= 0.5, current, at most 3, plus up to 2 fears. Step prompts
+  cap lessons at 900 chars (was 1500). The 0.5 bar comes from run 2's real memory scored against run 2's goals:
+  same-kind items had a median of 0.63 (p25 0.60), other kinds a median of 0.31. Under the filter, nothing run 2
+  injected would pass, since it was all "what worked: via first try N/N" statistics and "owner confirmed it passed"
+  records. ponytail: one global bar; calibrate per kind from outcomes if it proves too blunt.
+- 2026-10-17: the runner's own notes are written as advice ("When a <kind> step fails with <error> -> what fixed it:
+  <output>"), only when a retry fixed the step, and stored through `/add` with `kind: "advice"`, so no writer call.
+  `/search` items now carry their `score`. Both changes are backward compatible, so Hermes's live memrouter
+  (`/opt/embed-memory`) was left alone. The new code lives in `/opt/longrun/fb4/memsvc`.
+- 2026-10-17: the benchmark has a `rules` arm: memrouter with the runner's `--rules-only`, so only the owner's rules
+  are taken. The report pairs every arm against `none`.
+
+- 2026-10-17 (set before fast-benchmark run 2 finished): how run 2 is read. If the no-memory arm solves >85% of
+  jobs, the tasks are too easy to show a gap, and the next test is a harder set: owner conventions not in the goal
+  (learned only from delivery feedback) that recur across tasks, recurring environment traps, and a no-memory solve
+  rate of about 50%. If no-memory is between 40% and 80% and memory doesn't beat it, that is a real negative
+  result: fix memory, not the benchmark.
+- 2026-10-17 (set before the conventions run started): how the conventions run (`bench.py run --set house`,
+  `/home/hermes/housebench`) is read. Primary: paired mem − none difference in house-rule checks passed, late half
+  (jobs 9–16). Memory has shown it learns from outcomes only if that 95% CI's lower bound is above 0. Supporting:
+  memory's house-check rate rises early→late while no-memory's stays flat, and memory's other hidden tests are no
+  worse. If memory doesn't beat no-memory, learning from feedback is broken: diagnose whether the rule was stored,
+  shown, then followed. This replaces "no-memory solve rate about 50%" above: with 3 unwritten rules per task,
+  no-memory's full-solve rate is near 0 by design, so per-check rate is the measure.
+- 2026-10-17: the runner now shows memrouter's standing owner rules (`/search` → `rules`) first in its lessons, for
+  every job. They were returned before but dropped, so rules from owner feedback never reached the model.
+- 2026-10-17: in the conventions set the simulated owner states a broken rule ("From now on, in every program you
+  build for me: …") through `/add` with `detect_rule`. On the server, the Qwen writer turns that into a standing rule,
+  checked on a throwaway memrouter. That's memrouter's real path, not a shortcut.
+- 2026-10-17: our own judge replaces Jev as the intended default scorer (`own`); `none` stays the shipped default until
+  the evaluation gate (principle 5); `jev` and `llm` remain as comparisons.
+
+- 2026-10-16 (owner): our self-built memory engine IS the memory layer and takes the name **memrouter**. Features still
+  needed from the old `src/horizon/memrouter` (episodes from real outcomes, surprise against the forecast, sleep
+  consolidation, lessons/fears/strategies, decay) are brought into it NOW and the decided memory steps completed;
+  only THEN is memory put on hold and work moves to the next layer.
+
+- 2026-10-16 (owner): the self-built engine (`deploy/hermes/memory_service.py` + `evals/memory/`) is the ONLY memory system from now on; Horizon's original memory (`memrouter`/`factmem`/Jev) is set aside, not merged.
+
+- 2026-10-15: Hermes rails are a general plugin (`deploy/hermes/rails/`, enabled via `plugins.enabled`) using `pre_tool_call` block/approve directives, not prompt rules (the 14B model ignored prompt rules). Food = COD only + owner approval on order buttons; travel = never book/pay; payment-gateway pages and card/OTP typing blocked; Hermes secrets unreadable; tunnels need approval; STOP/RESUME via pre_llm_call (after auth). Clicks are matched to button labels via the last snapshot. ₹1,500 food cap is prompt-level only (amount not visible to the hook); the owner's approval is the hard check.
+
+- 2026-10-15: standing rules are a separate memory type (`rules` table): user messages matching instruction patterns ("from now on", "don't show…", "your messages should…", curly apostrophes too) become rules sent with EVERY reply, because similarity recall missed the owner's rule on unrelated tasks ("landing page"); Hermes gets remember_rule/forget_rule/list_rules tools. Scheduled-job (`cron_*`) prompts are no longer saved and are skipped at recall. Keyword detector is a known ceiling (false positives can be forgotten).
+
+- 2026-10-15: our embedding memory is Claude Code's default memory in this repo (owner): `deploy/claude/embed_memory_mcp.py` (MCP tools remember/recall, mcp 2.x `MCPServer`) registered in `.mcp.json`; seeded one memory per bullet from the auto-memory files (35). Recall is weaker on note-style memories than on chat (ranker trained on LoCoMo turns).
+
+- 2026-10-15: Hermes memory stores the agent's own replies but no longer recalls them (`skip` in `/search`): recalled wrong replies ("I have no internet", "encrypted disk" as its memory) made the 14B model repeat them. Plugin also describes the memory system in Hermes's system prompt.
+
+- 2026-10-15: Hermes model server in Stockholm, not Mumbai: Mumbai had no GPU capacity and the 150 ms link adds ~0.2-0.8 s per reply; model reached only through an SSH tunnel from Mumbai's fixed IP (owner chose this over VPC peering).
+- 2026-10-15: Qwen3-14B-AWQ (tool calling via vLLM's hermes parser) stretched to 64K with YaRN because Hermes refuses models under 64K context.
+
+- 2026-10-14: Hermes memory runs as a separate local HTTP service plus a thin plugin (not inside Hermes's venv): torch stays out of Hermes, and memory fails open if the service dies.
+- 2026-10-14: the memory service rebuilds its index after each write (global lock); fine for one person's messages, make BM25 incremental if it slows.
+- 2026-10-14: Hermes's old MEMORY.md/USER.md/LEARNED.md entries were copied into the new memory as "saved note" turns before switching built-in memory off.
+- 2026-10-14: mail reader skips Spam, Trash and Promotions; ~120-word pieces carrying the subject.
+- 2026-10-14: `learned_recall.features` computes the per-session max vectorised (identical output; an inbox has tens of thousands of sessions); `import locomo` moved into the CLIs of `fast_recall`/`learned_recall` so the engine deploys without benchmark code.
 
 **v2 session 28**
 - **Baseline reranker `ms-marco-MiniLM-L-6-v2`, no relevance floor.** bge-reranker-base took 350-500 s per question on CPU; MiniLM is the standard passage reranker (~7 s). Its scores aren't calibrated like Jev's, so it ranks only; Horizon keeps the floor it abstains with.
@@ -1024,6 +1182,11 @@ Updated at the end of every session. See `CLAUDE.md` for the working rules and `
   - ε = 1e-9.
   - The Parquet export runs with each consolidation run.
 - **"Similar episodes"** for the fallback success probability means the Phase 2 basic similarity recall (§6 step 2), over episodes that aren't archived.
+- **Mem0 arm (2026-10-12):** Mem0 OSS 2.2.1 with **composer-2.5 as its extraction LLM** (owner: "use the same we used"; no OpenAI spend), the factmem embedder (bge-small), on-disk Qdrant per conversation, top 12 from Mem0's own `search`. Each session is one `add` with speakers named in the text. Telemetry off (`MEM0_TELEMETRY=False`).
+- **Mem0 dates grounded at the session date:** OSS dates extraction "today" (it wrote 2026 for a 2023 "yesterday"); the arm passes the session date as Mem0's current/observation date, as its Platform `timestamp` does. `mem0ai[nlp]` (spaCy) installed so its keyword and entity search run. Both make the baseline stronger, not weaker.
+- **`mem0` is an `EXTERNAL_ARMS` entry, LoCoMo only:** the other runners would have run `--arm mem0` silently as plain retrieval.
+- **Mem0 ran in parallel with BEAM (owner's call, to save time):** costs BEAM latency numbers during the overlap, not accuracy.
+- **Raw CLIs from LongMemEval on (2026-10-12 08:52, owner: "make it fully raw"):** the benchmark's Cursor and Codex calls had loaded the owner's MCP servers (Codex's included `memrouter`, Horizon's own memory server), skills and global `AGENTS.md` into every answer and grade. With `~/horizon-evals/raw/ON` present, `longmemeval.raw_env` runs them from clean config folders (login only; Cursor's via a keychain link). Switched on between benchmarks: LoCoMo and BEAM ran with the old setup in every arm, LongMemEval and FactConsolidation fully raw; the Mem0 arm (worktree code) stays on the old setup, like the LoCoMo arms it's compared with. Codex: 7.5 → 4.6 s a call; Cursor: no faster (~24 s is the agent CLI itself).
 
 ## Open questions
 
@@ -1103,17 +1266,31 @@ Every question raised in sessions 0–11, resolved in the session 12 review unle
 | 80 | Lean now runs a hook before every shell command (about 0.2 s), even with `HORIZON_DEAD_ENDS` off | Default: accept it; lean already runs one after every command. If it matters, the installer could add the `Bash` matcher only when the setting is on. |
 | 78 | Marathon showed no difference on tickets 1–6, where little goes wrong | Default: the informative stretch is later tickets, where CI policies trip (question 67's plan): `--resume` from a lean run at ticket 7, tickets 7–14, one arm at a time so the usage limit doesn't cut both. **Owner** (subscription). |
 | 64 | `pip install` is reachable through `Bash(python:*)` in every scenario | Unchanged from v1 (both arms get the same tools). The stall environment trap uses a system binary, so no package install can "fix" it, and no scenario tempts a package name that could be squatted. |
+| 92 | LoCoMo runner drops image captions (1,226 of 5,882 turns; e.g. "chocolate chip cookies" is only in a caption) | Default: left as is for this run (same for every arm). Official LoCoMo shows them as "[shares a photo of …]"; add for the next run, all arms. |
+| 93 | LoCoMo fixes found from Horizon's 17 misses: ±1 neighbouring turn around kept memories (~9 misses), relative dates resolved at write time (3), list questions on the counting budget (2) | Default: not built; tune on a LoCoMo dev split of conversations and report on held-out ones, after the current run (no `src/horizon` changes mid-run). |
+| 94 | Zep (Graphiti) and Letta arms | **Owner.** Need Docker (Neo4j, Letta server) or cloud accounts. Default: Mem0 first. |
 
 **Needs the owner** (credentials, money or an irreversible decision): 91 (the real RentEase product's accounts, licensed partner and legal opinion), 87 (Jev as lean's default splitter needs a TypeSafe key per install), 78 (marathon's later tickets) or 76 (extend stall detection), 68 (rotate the TypeSafe key), 27–28 (real benchmark runs), 37 (Jev pricing and terms), 38 (running the small-LLM scorer), 47 (the erasure policy), 48 (pricing and payments), 50 (tracing), making the repo public, and the hosting provider.
 
 ## Next step
+
+**Session 2026-10-14..16 (memory engine, Hermes, long-horizon v0).** Next, in order:
+1. Long-horizon runner (todo-CLI job, Qwen3-14B): one go = nothing usable; v0 stopped at step 4/10 (impossible
+   check), v0.1 at 2/10 (quoting in check), v0.2 at 7/8 (add/list work; 6/7 tests fail on `done`, verified by
+   running pytest). Next: cap disputes at 2 per step (32 of 33 were rejected spam), a dependency-setup first step
+   (pytest missing), tests-first planning so code is made to fit one fixed test file; then plan reuse from memory.
+2. Before the decision layer leans on memory: provenance + confidence on every memory record, one memory backbone
+   (Horizon's `memrouter`/`factmem` vs the self-built engine in `deploy/hermes` + `evals/memory`), a correction /
+   forget API, incremental index (no full rebuild per write), and committing this session's uncommitted work.
+3. Hermes (owner's 5 skills): short skills next (find-it-cheaper, instant projects with live URL); food ordering and
+   flights wait for the long-horizon runner. Stockholm g5.xlarge bills $1.07/h while on.
 
 **v2 (this copy), state on 2026-10-07.** Lean memory proof is documented in `docs/EVALS.md` (five metrics). Head-to-head `r1` shows competitors with explicit memory instructions tie Horizon on rules; **`r2`** serial repeat is queued after the usage limit. Phase 3 gate (candidate stack) still found no beat over lean on marathon; **Phase 4 foresight** waits on principle 5. **Decision layer** is implemented; next work is evals and defaults on `boxoffice` / `lessons`, not ward/rental.
 
 What the evidence supports: **lean + Jev carries rules without telling the agent to keep a notes file**; **notes/mcpmem match rules when instructed** (`RESULTS.md` head-to-head). Pitfall replays and fix-up economics unchanged.
 
 Next:
-0. **Memory gate before the decision layer (owner, 2026-10-11):** the five audit bugs are fixed and the fair protocol is built and running (`/tmp/mem-eval-v3`). Next: read its `compare.txt`; decide from it whether Jev's relevance judging earns its place over the `hybrid` baseline; then BEAM 1M and LongMemEval-S all 500.
+0. **Memory gate before the decision layer (owner, 2026-10-11):** the five audit bugs are fixed and the fair protocol is running (`~/horizon-evals/mem-eval-v3`, frozen; resume `~/horizon-evals/pause.sh cont`). On LoCoMo Jev's judging beats `hybrid` significantly (+9.5, p = 0.027). Next: let BEAM, LongMemEval and FactConsolidation finish; score Mem0 against Horizon on LoCoMo; finish the worktree's full `pytest` (stopped at 81 %, no failures, to free the CPU) and merge `v2/mem0-arm`; update `docs/MEMORY_BENCHMARKS.md`; then BEAM 1M and LongMemEval-S all 500.
 1. **Finish `h2h` `r2`** (`h2h_wait_r2.sh` or manual after ~4:20am IST limit reset); append combined verdict to `RESULTS.md`.
 2. **Decision layer:** run Sonnet `boxoffice`/`lessons` with `HORIZON_DECIDE=on` + `--mcp` vs lean; target ≤ +10 % cost with trap quality ≥ lean (`docs/EVALS.md`).
 3. **Owner:** Jev as default splitter (Q87), branch review, public repo (`LAUNCH.md`).
