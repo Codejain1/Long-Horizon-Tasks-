@@ -87,6 +87,14 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Running now (2026-10-18 ~23:30 UTC)
+- **`/home/hermes/backlog-j`** (code v3j): rental tickets 1–3, plain / runner / mem, 20-min budget, no exploration.
+  The runner now has `edit_file`, a tests step shown the existing tests, and a quick fix before escalation. Check:
+  `bash bench/backlog_progress.sh backlog-j report`.
+- **`/home/hermes/web4`** (code v3k): research tasks, plain vs runner, 2 reps, with the new `fetch` tool and places
+  scored by Nominatim. Check: `cd /opt/longrun/v3k && python bench/web.py report --out /home/hermes/web4`.
+- **Done:** a daily Hermes container cleanup (systemd timer; 55 old containers removed now).
+
 ## Latest live results (2026-10-18, Qwen3-14B)
 - **Brownfield rental, tickets 1–3 (backlog-smoke-e):** plain 0/4 hidden at the end (5.6 min, 0.14M tokens);
   runner 0/4 (64 min, 1.21M tokens); runner + memory: package import broken, 0/0 (40 min, 0.56M tokens). No arm
