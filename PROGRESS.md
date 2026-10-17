@@ -70,10 +70,24 @@ Evidence from the code and from the live Hermes memory (read-only):
   likely concurrent memory writes on one SQLite connection. Default: leave as is until it bites.
 - **Stockholm GPU billing** ($1.07/h): default is to keep it on while housebench2 runs.
 
-## Next step
-1. Report housebench2.
-2. Runner baseline: a plain Qwen tool loop vs the runner on the basic set. Also make the runner stop as soon as the
-   deliverable passes its own tests.
-3. A notes-file arm against memrouter on the house set (`IDEAS.md` #2), and recurring-failure warnings in place of
-   raw-pytest advice (#1).
-4. Decide what the experience layer stores, based on 2 and 3.
+## Next step (plan agreed for review, 2026-10-18)
+0. **Stop the harm (≤ 1 day):**
+   - remove the 4 wrong live rules and the wrong profile entry (owner's yes needed);
+   - fix SQLite concurrency (connection per request + WAL);
+   - finish housebench2.
+1. **Measurement loop (largest, ~4–5 days):**
+   - a real benchmark: the ward and rental multi-ticket projects adapted to the runner;
+   - the metric is cost to working software (fix-up rounds until the hidden tests pass);
+   - arms: plain Qwen loop, runner, runner + notes file, runner + memrouter;
+   - benchmarks run only when Hermes is idle.
+2. **Memory redesign (~4 days):**
+   - directives: owner-confirmed, scoped, revocable;
+   - experience: keyed by failure signature, written only from ground truth with the recall link, shown as
+     concrete warnings;
+   - conversation recall unchanged;
+   - food and location move into their own Hermes tool.
+3. **Lean runner (~2 days):** code and tests written together; stop when the deliverable passes; spec review only
+   when stuck.
+4. **Hermes outcomes (~1 day, after 2):** owner accepts or corrects a reply → an experience record.
+5. **Model and compute only where 1 shows a need:** a stronger writer or spec model, or a second GPU for benchmark
+   days.
