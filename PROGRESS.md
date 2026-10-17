@@ -37,12 +37,12 @@ The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, He
   of the conventions win is the rules alone. Check it with `bash bench/progress.sh housebench2 [report]`. The server
   runs the pre-restructure copy in `/opt/longrun/fb4`.
 - **Restructure (branch `v3/lean-repo`):** the live code moved to `memrouter/ runner/ bench/ hermes/ claude/`.
-  The runner's write-only Horizon event log was removed, and 128 tests pass. Still waiting on the owner: removing
-  the old tracked folders `src/ evals/ docs/`, the Docker files, `.env.example`, `:memory:.ses` and the one-off
-  `hermes/forget_wrong_self_answer.sh`.
+  The runner's write-only Horizon event log was removed, and 128 tests pass. With the owner's OK, the old code
+  (`src/ evals/ docs/`, Docker files, one-off scripts) was deleted after harvesting what is reusable into `IDEAS.md`.
 
 ## Decisions made
-- 2026-10-18: repo restructured to only what runs. Everything else is in the tag `snapshot-pre-restructure`.
+- 2026-10-18: repo restructured to only what runs. Everything else is in the tag `snapshot-pre-restructure`;
+  `IDEAS.md` lists what is worth reusing from it, with evidence and paths.
 - 2026-10-18: the runner no longer writes Horizon events (`--events-db` removed): nothing read them.
 - 2026-10-18: `stall.py` trimmed to `Run` + `stuck`, the only parts the runner uses.
 - 2026-10-18: LoCoMo loading for training is now `memrouter/locomo_data.py`. Training scripts use fastembed
@@ -51,7 +51,6 @@ The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, He
   score ≥ 0.5, at most 3.
 
 ## Open questions
-- **Delete the old tracked folders** (listed under In progress)? Default: wait for the owner's yes.
 - **Flaky test:** `test_experience_loop_through_memrouter` fails about 1 in 5 full-suite runs, never alone. It's
   likely concurrent memory writes on one SQLite connection. Default: leave as is until it bites.
 - **Stockholm GPU billing** ($1.07/h): default is to keep it on while housebench2 runs.
@@ -60,5 +59,6 @@ The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, He
 1. Report housebench2.
 2. Runner baseline: a plain Qwen tool loop vs the runner on the basic set. Also make the runner stop as soon as the
    deliverable passes its own tests.
-3. A notes-file arm against memrouter on the house set.
+3. A notes-file arm against memrouter on the house set (`IDEAS.md` #2), and recurring-failure warnings in place of
+   raw-pytest advice (#1).
 4. Decide what the experience layer stores, based on 2 and 3.

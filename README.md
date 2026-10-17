@@ -44,4 +44,5 @@ bash bench/progress.sh <run-dir> [report]            # a run on the Hermes serve
 Up to 2026-10-18 this repo also held Horizon v1/v2: an MCP server and Claude Code hooks, a Postgres memrouter with
 spreading activation, the Jev decision layer, a world model, a SWE-bench harness and the memory benchmark harnesses
 (LoCoMo, LongMemEval, BEAM). None of it was running, so it was removed. All of it is in the git tag
-`snapshot-pre-restructure`: `git checkout snapshot-pre-restructure -- <path>` brings any file back.
+`snapshot-pre-restructure`: `git checkout snapshot-pre-restructure -- <path>` brings any file back. `IDEAS.md` lists what in it is
+worth reusing, with the evidence.
