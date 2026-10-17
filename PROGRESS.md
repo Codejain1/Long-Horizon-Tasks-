@@ -47,6 +47,26 @@ Evidence from the code and from the live Hermes memory (read-only):
 - **The memory service also does geocoding, food search, mood and location.**
 - **Hermes, the writer and every benchmark stream share one A10G.**
 
+## Long-horizon parts 1-5 (2026-10-18, design in docs/LONG_HORIZON.md)
+1. **Design doc:** written.
+2. **Judge (`runner/judge.py`):** built.
+   - Backfill over 250 past jobs, job_done verdicts held out: Brier raw 0.323 (worse than the base rate 0.250, ECE
+     0.32: overconfident), calibrated 0.220, ECE 0.004. **The acceptance criterion is met.**
+   - Benchmarks now label every job's verdict with its hidden result.
+3. **Research jobs:** `--kind research`, the evidence check (each quote must be on its page) and `bench/web.py`
+   (versions / places / flight prep, scored against independent truth). Live run `/home/hermes/web1` (plain vs
+   runner, 2 reps) has started; results pending.
+4. **Big-model arm:** per-role endpoints (`--planner/--spec/--judge URL,MODEL,KEY_ENV`, `--api-key-env`), tokens
+   per model, backlog `--label/--extra`. The live headline run needs the owner's OK to use an API key (Hermes's
+   OpenRouter key exists on the server).
+5. **World model (`runner/forecast.py`):** built and tested on synthetic logs. The real replay (fastbench2/3,
+   housebench, housebench2) was not run: the AWS session expired. Next:
+   `forecast.py train --runs ... --out forecast.json`.
+- **Brownfield:** the smoke showed every arm failed rental ticket 1 by rebuilding the project. The runner now has a
+  project map, existing tests fixed from the start and re-run, writes that drop names or shadow the package refused,
+  and an extend-don't-rebuild plan shape. The guard was seen working live (it refused a rewrite that dropped
+  `KINDS`). The v3e smoke `/home/hermes/backlog-smoke-e` (rental 1-3, plain / runner / mem) is running.
+
 ## In progress
 - **Step 0 (stop the harm):**
   - **Concurrency fix (done):** every SQLite statement runs under one lock with its rows fetched whole, and the
