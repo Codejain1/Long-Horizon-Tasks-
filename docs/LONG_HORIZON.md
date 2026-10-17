@@ -120,18 +120,41 @@ headline experiment runs the same backlog:
 Metric: cost to working software (fix-up rounds, minutes, tokens and dollars at list prices). A frontier model
 needs an API key and spends money, so it is the owner's call.
 
-## 9. World model (part 5)
+## 9. World model (part 5): all ours, trained only on our logs
 
-`runner/forecast.py`. From past jobs (run logs + hidden outcomes), at any point in a job:
-- **Features:** minutes so far, steps done / planned, checks failed, escalations, re-plans, the last test pass rate
-  and its trend, the job family's base rate.
-- **Model:** logistic regression in numpy (L2), trained on job states sampled every few events and labelled with
-  the job's final hidden-test result.
-- **Gate:** leave-one-run-out replay, compared with the family base rate. It must be clearly better on Brier
-  (paired, 95 %) before it acts.
-- **Use, after the gate:**
-  - stop a job whose P(solved) < 0.1 after 40 % of its budget (saves GPU), or escalate it instead;
-  - pick which jobs get the big model.
+**Level 1, outcome forecaster (`runner/forecast.py`, built).** It answers: from the task and the job's state so far,
+what is P(the job ends solved)?
+- **Task prior:** how similar past jobs ended. Similarity comes from TF-IDF, or from our fine-tuned bge encoder.
+  The prior is shrunk to the base rate.
+- **State:** expressed as rates, so "busy" and "stuck" are told apart.
+- **Fits:** one per phase of the job, then isotonic calibration.
+- **Gate:** the replay holds out whole tasks.
+- **Doom stop:** its policy is chosen on the replay, stopping at most 2 % of jobs that would have been solved.
+
+Measured 2026-10-18 on 250 jobs from 40 tasks:
+
+| Version | Brier vs base rate | AUC by phase | Doom stop |
+|---|---|---|---|
+| v0 (no task prior) | 0.235 vs 0.250 | 0.44 / 0.61 / 0.68 | never fired |
+| v1 TF-IDF | 0.224 vs 0.265 (+0.041 [0.020, 0.061]) | 0.61 / 0.70 / 0.65 | 17 stopped (2 were solved), 55 min saved |
+| v1 our encoder | 0.216 (+0.049 [0.031, 0.066]) | 0.64 / 0.71 / 0.64 | 13 stopped (2 were solved) |
+
+- The target AUC of 0.75 from minute 2 is **not met yet**. More jobs (each benchmark run adds about 64) and
+  brownfield and research jobs should help.
+- The runner serves only TF-IDF models (`load` refuses an encoder-trained model without the encoder).
+- The doom stop stays **off in A/B benchmarks**, so the arms aren't changed.
+
+**Level 2, the action model (data collecting).** It answers: for each action the watcher can take now (continue,
+escalate, revise spec, re-plan, a bigger model, stop), what are P(solved) and the minutes left?
+- The watcher would then pick the action with the best expected value per minute.
+- Data: every benchmark runs with `--explore 0.2`. On a failed check the watcher takes a random allowed action
+  20 % of the time and logs the rule's choice, the allowed set and the pick's probability (inverse-propensity
+  weighting removes the rules' bias).
+- Never used on the owner's real jobs.
+- Build it once a few hundred explored decisions exist.
+
+**Level 3 (later):** a step-level model of the project and tests (state, action → next state) for imagining plans
+before running them. It needs thousands of logged steps.
 
 ## 10. Rails (Hermes)
 

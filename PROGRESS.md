@@ -62,11 +62,14 @@ Evidence from the code and from the live Hermes memory (read-only):
      (rental tickets 1–3): `big` = nvidia/nemotron-3-ultra-550b-a55b:free alone (plain loop), `bigplan` = runner +
      memory with that model as planner only.
    - The judge stays on local Qwen in every arm.
-5. **World model (`runner/forecast.py`):** trained on 250 real jobs (fastbench2/3, housebench, housebench2).
-   - Grouped replay: Brier 0.235 vs base rate 0.250, gain +0.0145 [+0.004, +0.025]. **The gate passes.**
-   - The doom policy (stop if P < 0.1 after 40 % of the budget) never fires: the model is never that sure, so it
-     saves nothing yet.
-   - Model at `/home/hermes/forecast/forecast.json`.
+5. **World model (`runner/forecast.py`):** v0 was weak: AUC 0.44 early, 0.61 mid (no better than test pass rate
+   alone), no task knowledge, and it read "more failed checks" as good. **v1 (owner: "do it")** adds a task prior,
+   rate features, per-phase fits and calibration, gated on held-out tasks. Gain over the base rate +0.041 (TF-IDF)
+   / +0.049 (our encoder); AUC 0.70–0.71 from minute 2 (target 0.75, not met yet). The doom stop now fires (17 jobs,
+   2 of them solved, 55 min saved).
+   - Model: `/home/hermes/forecast/forecast-v1.json`.
+   - Level 2 data: every benchmark explores 20 % of watcher decisions with logged propensities. See
+     docs/LONG_HORIZON.md §9.
 - **Research live run web1 (invalid):**
   - the planner used `true` checks;
   - Qwen wrote versions from memory (Python 3.11.6 vs the true 3.15.0);
