@@ -99,12 +99,20 @@ class EmbedMemoryProvider(MemoryProvider):
                 + "\n".join(lines) + "\nAt a natural point, ask the owner once, in one short line, whether to keep "
                 "each. Yes: confirm_rule / confirm_preference with its #id. No: forget_rule / forget_preference.")
 
+    @staticmethod
+    def _mistakes_block(warnings: list) -> str:
+        if not warnings:
+            return ""
+        return ("## Mistakes the owner corrected before (don't repeat them)\n"
+                + "\n".join(f"- {w['error'] or w['check']}" + (f" (corrected {w['seen']}x)" if w["seen"] > 1 else "")
+                             for w in warnings))
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         try:
             # Hermes's own past replies are stored but not recalled (a wrong reply would come back as "evidence"),
             # nor are scheduled jobs' prompts (cron_* sessions: not the user talking)
             r = _post("/search", {"query": query, "budget": 500, "skip": ["Hermes"], "skip_chats": ["cron_"],
-                                  "skip_kinds": ["agent_claim", "chitchat"]}, timeout=2)
+                                  "skip_kinds": ["agent_claim", "chitchat"], "scope": "hermes"}, timeout=2)
         except Exception as exc:
             logger.debug("embed_memory search failed: %s", exc)
             return ""
@@ -112,6 +120,7 @@ class EmbedMemoryProvider(MemoryProvider):
         cur = r.get("current", {})
         parts = [self._rules_block(r.get("rules", [])),
                  self._pending_block(r.get("pending_rules", []), r.get("pending_profile", [])),
+                 self._mistakes_block(r.get("warnings", [])),
                  self._profile_block(cur.get("profile", []), cur.get("mood")),
                  self._location_block(cur.get("location")),
                  f"## What you remember (from past conversations)\n{ctx}" if ctx else ""]

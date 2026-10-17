@@ -266,6 +266,8 @@ class Memory:
                     self.add_rule(m["memory"], ts, confirmed=False)
                 elif owner and m["kind"] == "preference":
                     self.add_profile(m["memory"], ts, confirmed=False)
+                elif owner and m["kind"] == "correction":  # the owner's verdict on the assistant: real experience
+                    self.fails.record("hermes", [{"check": m["slot"] or m["memory"][:60], "error": m["memory"]}], ts=ts)
                 elif owner and m["kind"] == "mood":
                     with self.lock:
                         self.db.execute("INSERT OR REPLACE INTO state (key, ts, value) VALUES ('mood', ?, ?)",

@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dates as D  # noqa: E402
 
-KINDS = ("fact", "event", "plan", "rule", "preference", "mood", "agent_action", "agent_claim", "chitchat")
+KINDS = ("fact", "event", "plan", "rule", "preference", "mood", "agent_action", "agent_claim", "correction", "chitchat")
 MOODS = ("happy", "celebrating", "sad", "tired", "stressed", "bored", "angry", "sick", "relaxed")
 
 PROMPT = """You maintain a personal assistant's long-term memory. Turn the NEW MESSAGE into memories.
@@ -49,6 +49,9 @@ kind (pick the best one per memory):
   mood even when it uses feeling words ("the movie was sad" is an event, not the owner being sad).
 - agent_action: something the ASSISTANT did, created, booked, sent or promised (keep links, times, ids)
 - agent_claim: what the ASSISTANT said about itself, its abilities or opinions
+- correction: the OWNER says something the assistant said or did was wrong or not what they wanted ("no, that
+  place is closed", "I said under 200", "wrong file"). memory: what was wrong and what they want instead; slot: the
+  topic it is about ("food picks: budget"). A new instruction for the future is a rule, not a correction.
 - chitchat: greetings, filler, nothing worth remembering
 
 memory: one clean English sentence that still makes sense months later: translate Hinglish/other languages,

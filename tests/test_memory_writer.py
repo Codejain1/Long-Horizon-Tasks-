@@ -162,3 +162,34 @@ def test_search_does_not_wait_for_a_big_rebuild(tmp_path, monkeypatch):
             break
         __import__("time").sleep(0.05)
     assert "Ooty" not in first and "Ooty" in mem.search("ooty", 100)["context"]
+
+
+def test_owner_corrections_become_hermes_experience_and_reach_the_next_reply(tmp_path, monkeypatch):
+    import threading
+    import time
+    import types
+    wr = ScriptedWriter({
+        "no, I said under 200 rupees": [{"kind": "correction", "slot": "food picks: budget",
+                                         "memory": "The picks were over budget; the owner wants dishes under ₹200."}],
+        "again too expensive, under 200!": [{"kind": "correction", "slot": "food picks: budget",
+                                             "memory": "Picks again over ₹200; keep every dish under ₹200."}],
+        "the assistant was wrong, says the friend": [{"kind": "correction", "slot": "x", "memory": "not the owner"}],
+    })
+    mem = M.Memory(tmp_path, fake_encode, KeywordRanker(), writer=wr)
+    mem.add("no, I said under 200 rupees", "Kartik", "c", 1_700_000_000, owner=True)
+    mem.add("again too expensive, under 200!", "Kartik", "c", 1_700_000_100, owner=True)
+    mem.add("the assistant was wrong, says the friend", "Riya", "c", 1_700_000_200)  # not the owner: no verdict
+    assert [(s["check"], s["seen"]) for s in mem.fails.stats("hermes")] == [("food picks: budget", 2)]
+
+    stub = types.ModuleType("agent.memory_provider")
+    stub.MemoryProvider = object
+    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
+    sys.path.insert(0, str(ROOT / "hermes"))
+    import embed_memory as P
+    threading.Thread(target=M.serve, args=(mem, 18832), daemon=True).start()
+    time.sleep(0.3)
+    monkeypatch.setenv("EMBED_MEMORY_URL", "http://127.0.0.1:18832")
+    out = P.EmbedMemoryProvider().prefetch("suggest dessert near me")
+    assert "## Mistakes the owner corrected before" in out
+    assert "keep every dish under ₹200. (corrected 2x)" in out
