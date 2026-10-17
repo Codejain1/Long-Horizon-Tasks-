@@ -31,6 +31,7 @@ PLAN_PROMPT = """You plan work for a careful but small assistant that does ONE s
 Every step needs a check that a program can run to prove it is done, one of:
   {{"cmd": "<shell command that exits 0 only when the step is done>"}}   (preferred: tests, python -c asserts, grep)
   {{"file": "<path that must exist>"}}
+  {{"evidence": "<json file of claims>"}}   (research: every claim's quote must be on its page)
   {{"judge": "<a yes/no question about the result>"}}   (ONLY when no command can check it)
 Checks must be SELF-CONTAINED: a check runs on its own, so if it inspects data it must first create that data itself
 (e.g. "python todo.py add milk && python todo.py list | grep -q milk"), never rely on an earlier manual action.
@@ -62,6 +63,16 @@ passing. No SPEC.md: the contract is the existing code plus the goal. Order:
   2. "build" steps adding the new code inside the existing modules (and exporting it where the goal says), each
      checked by running the new test file (python -m pytest -q <new test file>);
   3. a final "verify" step running the project's own test command (./ci.sh if there is one, else pytest)."""
+
+ORDER_RESEARCH = """This is a RESEARCH task: the answer comes from real web sources (use the run tool with curl, or python
+with urllib; read the pages), never from memory. Write the result to answer.json:
+  {"answer": <the answer, structured>, "claims": [{"claim": "<one fact>", "url": "<the page it is on>",
+    "quote": "<an exact short phrase copied from that page that shows the fact>"}]}
+Every fact in the answer needs a claim. Steps:
+  1. "build" steps that gather from sources, each checked with {"evidence": "answer.json"} once it has claims
+     (the watcher fetches every url itself and checks the quote is on it);
+  2. a final "verify" step checked with {"judge": "<does answer.json fully answer the goal?>"}.
+Never pay, book, order or send anything: prepare it (links, options) for the owner."""
 
 SKIP_DIRS = {".git", "venv", ".venv", "env", "__pycache__", "node_modules", ".pytest_cache", "logs"}
 
@@ -352,7 +363,7 @@ class Runner:
 
     def __init__(self, goal: str, sandbox, llm, log: Path, constraints: str = "", memory=None, max_calls: int = 12,
                  memrouter: Memrouter | None = None, spec_llm=None,
-                 max_minutes: float | None = None, judge=None):
+                 max_minutes: float | None = None, judge=None, kind: str = "code"):
         self.goal, self.box, self.llm, self.log = goal, sandbox, llm, log
         self.constraints = constraints or "none"
         self.memory = memory  # optional: callable(query) -> facts text (our embed memory)
@@ -372,6 +383,7 @@ class Runner:
         self.warning_id = None  # the experience warnings this job was shown: the scorer credits them
         self.memory_warnings: list = []
         self.judge, self.step_writes = judge, []  # judge: runner/judge.py, for checks no command can make
+        self.kind = kind  # code (greenfield or brownfield, detected) | research (sources, evidence, judge)
         self.brownfield, self.base_names, self.existing_tests, self.existing_ok = False, {}, set(), False
         self.decisions: list[dict] = []
 
@@ -396,8 +408,8 @@ class Runner:
             except Exception as e:
                 self._log(event="memrouter_error", error=repr(e)[:200])
         project = f"THE PROJECT AS IT IS NOW:\n{project_map(self.box.root)}\n" if self.brownfield else ""
-        prompt = PLAN_PROMPT.format(goal=self.goal, extra=extra, lessons=lessons, project=project,
-                                    order=ORDER_EXISTING if self.brownfield else ORDER_NEW)
+        order = ORDER_RESEARCH if self.kind == "research" else ORDER_EXISTING if self.brownfield else ORDER_NEW
+        prompt = PLAN_PROMPT.format(goal=self.goal, extra=extra, lessons=lessons, project=project, order=order)
         msg = self.llm([{"role": "user", "content": prompt}], json_mode=True)
         steps = []
         for i, s in enumerate(_json(msg.get("content", "")).get("steps", [])[:10], 1):
@@ -410,6 +422,8 @@ class Runner:
         return steps
 
     def check(self, step: Step) -> tuple[bool, str]:
+        if "evidence" in step.check:
+            return self.check_evidence(step.check["evidence"])
         if "judge" in step.check:
             if not self.judge:
                 return False, "a judge check, but this run has no judge: use a command check"
@@ -597,6 +611,38 @@ class Runner:
             return True
         return False  # still impossible: nothing is locked, the watcher stops and asks rather than build on it
 
+    def check_evidence(self, path: str) -> tuple[bool, str]:
+        """Research done-check: every claim's url is fetched from the sandbox and its quote must be on the page. A
+        model can't pass it with invented facts or links."""
+        import html
+        import shlex
+
+        f = self.box.root / path
+        try:
+            claims = json.loads(f.read_text()).get("claims") or []
+        except (OSError, ValueError, AttributeError) as e:
+            return False, f"{path} is missing or not JSON with a claims list: {e}"
+        if not claims:
+            return False, f"{path} has no claims: every fact needs a url and an exact quote"
+        norm = lambda t: " ".join(html.unescape(re.sub(r"<[^>]+>", " ", t)).lower().split())  # noqa: E731
+        bad, pages = [], {}
+        for c in claims[:20]:
+            url, quote = str(c.get("url", "")), norm(str(c.get("quote", "")))
+            if not url.startswith(("http://", "https://")) or len(quote) < 8:
+                bad.append(f"{c.get('claim', '?')[:80]}: needs an http(s) url and a quote of 8+ characters")
+                continue
+            if url not in pages:
+                code, out = self.box.run(f"curl -sL --max-time 20 -A 'Mozilla/5.0' {shlex.quote(url)} | head -c 3000000",
+                                         timeout=40)
+                pages[url] = norm(out) if code == 0 else ""
+            if not pages[url]:
+                bad.append(f"{url}: could not be fetched")
+            elif quote not in pages[url]:
+                bad.append(f"{c.get('claim', '?')[:80]}: the quote is not on {url}")
+        if bad:
+            return False, "EVIDENCE CHECK FAILED (fix or drop these claims):\n- " + "\n- ".join(bad[:8])
+        return True, f"all {len(claims[:20])} claims found on their pages"
+
     def _names_lost(self, path: str, content: str) -> str:
         """Brownfield guard: a write may not drop an existing module's public names, nor add a module that shadows a
         package (`rentals.py` next to `rentals/`): the 2026-10-18 smoke run's failure."""
@@ -628,6 +674,8 @@ class Runner:
     def _start(self):
         """Look at the workspace before planning: an existing project (code already there) is extended, never rebuilt."""
         root = self.box.root
+        if self.kind == "research":
+            return
         code = [f for f in _py_files(root) if not _is_test(f.relative_to(root).as_posix())]
         self.brownfield = bool(code)
         if not self.brownfield:
@@ -845,6 +893,7 @@ def main() -> int:
     ap.add_argument("--spec-model", default="local")
     ap.add_argument("--max-minutes", type=float, default=None, help="stop the job after this long")
     ap.add_argument("--plain", action="store_true", help="baseline: no plan, contract, locked tests or watcher")
+    ap.add_argument("--kind", choices=["code", "research"], default="code")
     ap.add_argument("--judge-db", default="", help="the judge's log (runner/judge.py): judge checks and a verdict per job")
     args = ap.parse_args()
     import signal
@@ -862,7 +911,7 @@ def main() -> int:
             from judge import Judge
             judge = Judge(llm, args.judge_db)
         runner = Runner(args.goal, box, llm, wd / "run.jsonl", memrouter=memrouter, spec_llm=spec_llm,
-                        max_minutes=args.max_minutes, judge=judge)
+                        max_minutes=args.max_minutes, judge=judge, kind=args.kind)
         r = runner.run_plain() if args.plain else runner.run()
     finally:
         box.close()
