@@ -32,6 +32,21 @@ The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, He
 - About half the jobs end on the 10-min budget, and 31 of those had already passed the hidden tests.
 - Contract, tests and spec review take 56–62 % of the time on ~40-line programs.
 
+## Architecture review (2026-10-18)
+Evidence from the code and from the live Hermes memory (read-only):
+- **Experience isn't wired to Hermes:** 0 episodes and 0 credited recalls in 214 memories since 5 Sep. Only the
+  benchmark records outcomes.
+- **Wrong standing rules are injected into every reply:** "The assistant can find Japanese, Mexican or Italian
+  dessert options" and 3 similar capability statements are stored as rules. A profile entry is a question ("which is
+  better, paddu or idli").
+- **The writer drops numbers or names in 35 of 59 writes** (`checked = mismatch`).
+- **Credit uses the runner's own step results:** the hidden-test outcome is sent without a `recall_id`, so it never
+  reaches the memories that were recalled.
+- **Consolidated "strategies" are the retry label** ("build via first try succeeded in 5/6"), with no content.
+- **One SQLite connection shared across server threads,** with reads outside the lock (the flaky test).
+- **The memory service also does geocoding, food search, mood and location.**
+- **Hermes, the writer and every benchmark stream share one A10G.**
+
 ## In progress
 - **housebench2** (`/home/hermes/housebench2`): the house set with mem / rules / none × 2 seeds. It shows how much
   of the conventions win is the rules alone. Check it with `bash bench/progress.sh housebench2 [report]`. The server
