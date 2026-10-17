@@ -97,6 +97,17 @@ Evidence from the code and from the live Hermes memory (read-only):
 - **Free frontier model:** blocked by the 50 requests/day free-tier limit.
 
 ## In progress
+- **New memory deployed to live Hermes (2026-10-18, owner's OK):** v3 memory service (pending directives,
+  failures/corrections, concurrency fix, food search moved to the plugin) and the plugin (`confirm_rule`,
+  `confirm_preference`, `forget_preference`, mistakes block, `places.py`).
+  - Before it: a dry run on a copy of the live DB (214 memories, 1 rule, 4 tastes, search 45 ms, no errors).
+  - After it: both services active, the plugin prefetch returns the rule, tastes and location, and the WhatsApp
+    bridge is `connected`.
+  - Backups: `/opt/embed-memory/backup-20261017-230031/`, `~/.hermes/backup-plugin-embed_memory-20261017-230031`.
+- **Hermes container cleanup:**
+  - The stopped and created `hermes-*` containers (195 of 265) were removed.
+  - Removing the running ones older than a day (about 70, idle `sleep infinity`, from `container_persistent: true`)
+    was blocked by the permission check: the owner runs it.
 - **Wrong live rules removed (2026-10-18, owner's instruction):** rules 3–6 and profile 5 are deactivated; live
   Hermes now has 1 rule and 4 taste entries. The backup is `memory.db.bak-20261017-203609`.
 - **Step 0 (stop the harm):**
