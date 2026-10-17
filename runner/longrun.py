@@ -31,6 +31,7 @@ PLAN_PROMPT = """You plan work for a careful but small assistant that does ONE s
 Every step needs a check that a program can run to prove it is done, one of:
   {{"cmd": "<shell command that exits 0 only when the step is done>"}}   (preferred: tests, python -c asserts, grep)
   {{"file": "<path that must exist>"}}
+  {{"judge": "<a yes/no question about the result>"}}   (ONLY when no command can check it)
 Checks must be SELF-CONTAINED: a check runs on its own, so if it inspects data it must first create that data itself
 (e.g. "python todo.py add milk && python todo.py list | grep -q milk"), never rely on an earlier manual action.
 {order}
@@ -264,6 +265,18 @@ def _json(text: str) -> dict:
 
 
 # ---------------------------------------------------------------- memory (optional)
+JOB_DONE = ("Is the job done correctly: does the delivered work fully meet the goal, so that an independent "
+            "acceptance test would pass?")
+
+
+def job_evidence(goal: str, report: dict, checks: list[dict], files: str) -> str:
+    """What the judge sees about a finished job (also rebuilt from old run logs for calibration)."""
+    last = [f"{e.get('step')}: ok={e.get('ok')} {str(e.get('detail', ''))[-300:]}" for e in checks][-6:]
+    verdict = "done" if report.get("ok") else str(report.get("reason", ""))[:400]
+    return (f"GOAL: {goal}\nSTEPS: {report.get('steps')}\nRUNNER'S VERDICT: {verdict}\nLAST CHECKS:\n"
+            + "\n".join(last) + f"\nFILES:\n{files[:1500]}")
+
+
 class Memrouter:
     """Our memory service (memrouter/memory_service.py), read before the work: the owner's standing rules, the checks
     that failed in earlier jobs of this scope (experience from real outcomes), and what the owner said earlier that
@@ -335,10 +348,11 @@ class Step:
 
 class Runner:
     PYTEST = "python -m pytest"  # inside the sandbox image
+    JUDGE_PASS = 0.7
 
     def __init__(self, goal: str, sandbox, llm, log: Path, constraints: str = "", memory=None, max_calls: int = 12,
                  memrouter: Memrouter | None = None, spec_llm=None,
-                 max_minutes: float | None = None):
+                 max_minutes: float | None = None, judge=None):
         self.goal, self.box, self.llm, self.log = goal, sandbox, llm, log
         self.constraints = constraints or "none"
         self.memory = memory  # optional: callable(query) -> facts text (our embed memory)
@@ -357,8 +371,14 @@ class Runner:
         self.deadline = time.time() + max_minutes * 60 if max_minutes is not None else None
         self.warning_id = None  # the experience warnings this job was shown: the scorer credits them
         self.memory_warnings: list = []
+        self.judge, self.step_writes = judge, []  # judge: runner/judge.py, for checks no command can make
         self.brownfield, self.base_names, self.existing_tests, self.existing_ok = False, {}, set(), False
         self.decisions: list[dict] = []
+
+    def _events(self, kind: str) -> list[dict]:
+        if not self.log.exists():
+            return []
+        return [e for e in (json.loads(x) for x in self.log.read_text().splitlines() if x.strip()) if e.get("event") == kind]
 
     def _log(self, **rec):
         with self.log.open("a") as f:
@@ -382,7 +402,7 @@ class Runner:
         steps = []
         for i, s in enumerate(_json(msg.get("content", "")).get("steps", [])[:10], 1):
             check = s.get("check") if isinstance(s.get("check"), dict) else {}
-            if not (check.get("cmd") or check.get("file")):
+            if not (check.get("cmd") or check.get("file") or check.get("judge")):
                 check = {"cmd": "true"}  # unverifiable step: the watcher can only trust the executor here
             steps.append(Step(str(s.get("id") or f"s{i}"), str(s.get("do", "")), check, list(s.get("uses") or []),
                               str(s.get("kind") or "build")))
@@ -390,6 +410,15 @@ class Runner:
         return steps
 
     def check(self, step: Step) -> tuple[bool, str]:
+        if "judge" in step.check:
+            if not self.judge:
+                return False, "a judge check, but this run has no judge: use a command check"
+            files = "".join(f"--- {f}\n{self.box.read(f)[:1500]}\n" for f in dict.fromkeys(self.step_writes)
+                            if (self.box.root / f).exists())
+            r = self.judge.ask("step", step.check["judge"], f"GOAL: {self.goal}\nSTEP: {step.do}\n"
+                                                             f"DOER'S SUMMARY: {step.output}\n{files}")
+            ok = r["p"] >= self.JUDGE_PASS
+            return ok, f"judge says p={r['p']:.2f} (needs {self.JUDGE_PASS}): {r['reason']}"
         if "file" in step.check:
             ok = (self.box.root / step.check["file"]).exists()
             return ok, "" if ok else f"file {step.check['file']} does not exist"
@@ -398,6 +427,7 @@ class Runner:
         return code == 0, f"check `{step.check['cmd']}` exited {code}:\n{out[-1500:]}"
 
     def execute(self, step: Step, error: str = "", deep: bool = False, hint: str = "") -> str:
+        self.step_writes = []
         uses = "".join(f"OUTPUT OF {u}: {s.output}\n" for u in step.uses for s in self.steps if s.id == u and s.output)
         facts = ""
         if self.memory:
@@ -504,6 +534,7 @@ class Runner:
                 return f"exit {code}\n{out[-2500:]}{note}"
             if name == "write_file":
                 path = str(a["path"]).lstrip("./")
+                self.step_writes.append(path)
                 if path in self.existing_tests:
                     return f"refused: {path} is one of the project's existing tests. They must keep passing unchanged."
                 lost = self._names_lost(path, str(a.get("content", "")))
@@ -791,6 +822,10 @@ class Runner:
         r = {"goal": self.goal, "ok": stopped is None, "steps": [(s.id, s.status, s.do[:80]) for s in self.steps],
              "stopped_at": stopped.id if stopped else None, "reason": reason[-800:], "decisions": self.decisions,
              "usage": dict(USAGE), "warning_id": self.warning_id}
+        if self.judge:  # the judge's verdict on the whole job; the scorer labels it with the real outcome
+            j = self.judge.ask("job_done", JOB_DONE, job_evidence(self.goal, r, self._events("check"),
+                                                                  self.box.run("ls -R | head -60")[1]))
+            r.update(judge_id=j["id"], judge_p=j["p"])
         if stopped:  # out of options: the owner decides (the gateway / CLI shows this)
             r["ask_owner"] = f"Stuck at {stopped.id} ({stopped.do[:120]}): {reason[:300]}"
         self._log(event="report", **r)
@@ -810,6 +845,7 @@ def main() -> int:
     ap.add_argument("--spec-model", default="local")
     ap.add_argument("--max-minutes", type=float, default=None, help="stop the job after this long")
     ap.add_argument("--plain", action="store_true", help="baseline: no plan, contract, locked tests or watcher")
+    ap.add_argument("--judge-db", default="", help="the judge's log (runner/judge.py): judge checks and a verdict per job")
     args = ap.parse_args()
     import signal
 
@@ -820,8 +856,13 @@ def main() -> int:
     try:
         spec_llm = (lambda m, **k: chat(args.spec_model_url, m, model=args.spec_model, **k)) if args.spec_model_url \
             else None
-        runner = Runner(args.goal, box, lambda m, **k: chat(args.model_url, m, **k), wd / "run.jsonl",
-                        memrouter=memrouter, spec_llm=spec_llm, max_minutes=args.max_minutes)
+        llm = lambda m, **k: chat(args.model_url, m, **k)  # noqa: E731
+        judge = None
+        if args.judge_db:
+            from judge import Judge
+            judge = Judge(llm, args.judge_db)
+        runner = Runner(args.goal, box, llm, wd / "run.jsonl", memrouter=memrouter, spec_llm=spec_llm,
+                        max_minutes=args.max_minutes, judge=judge)
         r = runner.run_plain() if args.plain else runner.run()
     finally:
         box.close()

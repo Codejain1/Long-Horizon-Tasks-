@@ -103,6 +103,14 @@ def tell_memory(port: int, task: T.Task, passed: int, total: int, out: str, scop
         post("/rule", {"text": f"From now on, in every program you build for me: {rule}"})
 
 
+def label_judge(db: Path, judge_id: int | None, outcome: bool) -> None:
+    """The judge said how likely the job was done; the hidden tests say whether it was: its calibration data."""
+    if judge_id:
+        sys.path.insert(0, str(RUNNER.parent))
+        import judge as J
+        J.Judge(None, db).label(judge_id, float(outcome))
+
+
 def start_memrouter(cmd: str, home: Path, port: int) -> subprocess.Popen:
     shutil.rmtree(home, ignore_errors=True)
     p = subprocess.Popen(cmd.format(home=home, port=port).split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -127,7 +135,7 @@ def run_stream(arm: str, seed: int, args, port: int):
             wd = out / "work" / f"{arm}-{seed}" / f"{pos:02d}-{task.id}"
             shutil.rmtree(wd, ignore_errors=True)
             cmd = [sys.executable, str(RUNNER), task.goal, "--model-url", args.model_url, "--workdir", str(wd),
-                   "--max-minutes", str(args.max_minutes)]
+                   "--max-minutes", str(args.max_minutes), "--judge-db", str(out / "judge.db")]
             if args.local:
                 cmd.append("--local")
             if mem:
@@ -153,6 +161,7 @@ def run_stream(arm: str, seed: int, args, port: int):
                     tell_memory(port, task, passed, total, out_text, args.set, rep.get("warning_id"))
                 except Exception as e:
                     print(f"feedback to memory failed: {e!r}", flush=True)
+            label_judge(out / "judge.db", rep.get("judge_id"), passed == total and total > 0)
             rec = {"arm": arm, "seed": seed, "pos": pos, "task": task.id, "family": task.family, "passed": passed,
                    "total": total, "solved": passed == total and total > 0, "minutes": round(minutes, 2),
                    "interventions": len(rep.get("decisions") or []), "runner_ok": bool(rep.get("ok")),

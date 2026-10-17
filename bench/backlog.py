@@ -78,7 +78,7 @@ def qa_report(ticket: int, out: str) -> str:
 def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None) -> dict:
     """One runner (or plain) job in the repo; returns minutes, tokens and the runner's own verdict."""
     cmd = [sys.executable, str(RUNNER), goal, "--model-url", args.model_url, "--workdir", str(repo),
-           "--max-minutes", str(args.max_minutes)]
+           "--max-minutes", str(args.max_minutes), "--judge-db", str(Path(args.out) / "judge.db")]
     cmd += ["--plain"] if args.arm == "plain" else []
     cmd += ["--memory-url", f"http://127.0.0.1:{port}", "--scope", args.scenario] if port else []
     cmd += ["--local"] if args.local else []
@@ -100,6 +100,7 @@ def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None)
     rep = next((e for e in reversed(events) if e.get("event") == "report"), {})
     u = rep.get("usage") or {}
     return {"minutes": round((time.time() - t0) / 60, 2), "ok": bool(rep.get("ok")), "warning_id": rep.get("warning_id"),
+            "judge_id": rep.get("judge_id"),
             "tokens": u.get("prompt_tokens", 0) + u.get("completion_tokens", 0)}
 
 
@@ -148,6 +149,7 @@ def run(args, job=run_job) -> list[dict]:
             tell(port, ticket, rule=True)
             passed, failed, out = hidden(sdir, i, repo, work, args.image)
             outcome(port, args.scenario, passed, out, build)
+            B.label_judge(Path(args.out) / "judge.db", build.get("judge_id"), not failed)
             row = {"arm": args.arm, "scenario": args.scenario, "ticket": i, "build_min": build["minutes"],
                    "build_tokens": build["tokens"], "runner_ok": build["ok"], "after_build": len(passed),
                    "total": len(passed) + len(failed), "fixup_rounds": 0, "fixup_min": 0.0, "fixup_tokens": 0}
@@ -162,6 +164,7 @@ def run(args, job=run_job) -> list[dict]:
                 tell(port, report, rule=False)
                 passed, failed, out = hidden(sdir, i, repo, work, args.image)
                 outcome(port, args.scenario, passed, out, fix)
+                B.label_judge(Path(args.out) / "judge.db", fix.get("judge_id"), not failed)
                 row["fixup_rounds"], row["fixup_min"] = r, round(row["fixup_min"] + fix["minutes"], 2)
                 row["fixup_tokens"] += fix["tokens"]
             row.update(passed=passed, failed=failed, final=len(passed),
