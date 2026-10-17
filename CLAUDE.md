@@ -4,7 +4,8 @@ Instructions for every Claude session in this repository.
 
 ## Before any work
 
-- Read `README.md` (what each folder is, what runs where) and `PROGRESS.md` (status, decisions, open questions).
+- Read `README.md` (what each folder is, what runs where), `docs/LONG_HORIZON.md` (the design: roles, done-checks,
+  watcher policy, judge, world model, evaluation) and `PROGRESS.md` (status, decisions, open questions).
 - The old design docs (`docs/PROJECT.md`, `docs/MEMROUTER.md`) and Horizon v1/v2 code are in the git tag
   `snapshot-pre-restructure`. Treat them as history and ideas, not as specs.
 
