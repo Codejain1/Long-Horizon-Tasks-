@@ -59,7 +59,8 @@ ORDER_EXISTING = """This is an EXISTING project (its map is below): EXTEND it. N
 functions or exports, and never create a module that shadows the package. The existing tests are FIXED and must keep
 passing. No SPEC.md: the contract is the existing code plus the goal. Order:
   1. a "tests" step: tests for the NEW behaviour only, in a NEW test file next to the existing ones, importing the
-     package the way the existing tests do; checked with "python -m pytest --collect-only -q";
+     package the way the existing tests do; checked with {"file": "<the new test file>"} (its imports can only
+     work once the code exists: don't check them here). pytest is already installed;
   2. "build" steps adding the new code inside the existing modules (and exporting it where the goal says), each
      checked by running the new test file (python -m pytest -q <new test file>);
   3. a final "verify" step running the project's own test command (./ci.sh if there is one, else pytest)."""
@@ -684,6 +685,8 @@ class Runner:
                            for f in code}
         self.existing_tests = {f.relative_to(root).as_posix() for f in _py_files(root)
                                if _is_test(f.relative_to(root).as_posix()) and f.name != "conftest.py"}
+        if self.existing_tests:  # the watcher's own tool: without it the starting state can't be measured
+            self.box.run(f"{self.PYTEST} --version >/dev/null 2>&1 || pip install -q pytest", timeout=300)
         if self.existing_tests:
             self.existing_ok = self.box.run(f"{self.PYTEST} -q -p no:cacheprovider "
                                             + " ".join(sorted(self.existing_tests)))[0] == 0
