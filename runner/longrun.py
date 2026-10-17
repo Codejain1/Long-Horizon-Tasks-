@@ -382,7 +382,7 @@ class Runner:
 
     def __init__(self, goal: str, sandbox, llm, log: Path, constraints: str = "", memory=None, max_calls: int = 12,
                  memrouter: Memrouter | None = None, spec_llm=None,
-                 max_minutes: float | None = None, judge=None, kind: str = "code", planner_llm=None):
+                 max_minutes: float | None = None, judge=None, kind: str = "code", planner_llm=None, forecast=None):
         self.goal, self.box, self.llm, self.log = goal, sandbox, llm, log
         self.constraints = constraints or "none"
         self.memory = memory  # optional: callable(query) -> facts text (our embed memory)
@@ -404,8 +404,25 @@ class Runner:
         self.judge, self.step_writes = judge, []  # judge: runner/judge.py, for checks no command can make
         self.kind = kind  # code (greenfield or brownfield, detected) | research (sources, evidence, judge)
         self.planner_llm = planner_llm or llm  # a bigger model may plan while the small one does the steps
+        self.forecast, self.budget = forecast, max_minutes  # forecast: runner/forecast.py, only if its gate passed
         self.brownfield, self.base_names, self.existing_tests, self.existing_ok = False, {}, set(), False
         self.decisions: list[dict] = []
+
+    DOOM_AFTER, DOOM_BELOW = 0.4, 0.1  # of the time budget; P(solved)
+
+    def _doomed(self) -> str:
+        """The world model's stop: past DOOM_AFTER of the budget, P(this job ends solved) below DOOM_BELOW."""
+        if not (self.forecast and self.budget) or not self.log.exists():
+            return ""
+        from forecast import matrix, states
+        events = [json.loads(x) for x in self.log.read_text().splitlines() if x.strip()]
+        st = states(events)
+        if not st or st[-1]["minutes"] < self.DOOM_AFTER * self.budget:
+            return ""
+        p = float(self.forecast.predict(matrix(st[-1:]))[0])
+        self._log(event="forecast", p_solved=round(p, 3))
+        return f"forecast: P(solved) = {p:.2f} after {st[-1]['minutes']:.1f} min: stopped to save the budget" \
+            if p < self.DOOM_BELOW else ""
 
     def _events(self, kind: str) -> list[dict]:
         if not self.log.exists():
@@ -792,6 +809,11 @@ class Runner:
                     error = ("WATCHER: you changed the fixed test files; they were restored. Change the code, not "
                              "the tests.\n") + (error or "")
                 ok, error = self.check(step)
+                doomed = self._doomed()
+                if doomed:
+                    step.status = "failed"
+                    self._log(event="stopped", step=step.id, reason=doomed)
+                    return self.report(stopped=step, reason=doomed)
                 if ok and self.brownfield and step.kind in ("build", "verify"):
                     guard = self._brownfield_guard()
                     ok, error = (False, guard) if guard else (ok, error)
@@ -918,6 +940,7 @@ def main() -> int:
     ap.add_argument("--max-minutes", type=float, default=None, help="stop the job after this long")
     ap.add_argument("--plain", action="store_true", help="baseline: no plan, contract, locked tests or watcher")
     ap.add_argument("--kind", choices=["code", "research"], default="code")
+    ap.add_argument("--forecast", default="", help="world model (runner/forecast.py train); used only if its gate passed")
     ap.add_argument("--judge-db", default="", help="the judge's log (runner/judge.py): judge checks and a verdict per job")
     args = ap.parse_args()
     import signal
@@ -932,7 +955,12 @@ def main() -> int:
         if args.judge_db:
             from judge import Judge
             judge = Judge(endpoint(args.judge) if args.judge else llm, args.judge_db)
-        runner = Runner(args.goal, box, llm, wd / "run.jsonl", memrouter=memrouter,
+        forecast = None
+        if args.forecast:
+            from forecast import Model
+            spec = json.loads(Path(args.forecast).read_text())
+            forecast = Model.from_json(spec) if spec.get("gate", {}).get("passes") else None
+        runner = Runner(args.goal, box, llm, wd / "run.jsonl", memrouter=memrouter, forecast=forecast,
                         spec_llm=endpoint(args.spec) if args.spec else None, max_minutes=args.max_minutes,
                         judge=judge, kind=args.kind, planner_llm=endpoint(args.planner) if args.planner else None)
         r = runner.run_plain() if args.plain else runner.run()
