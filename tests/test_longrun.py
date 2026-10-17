@@ -150,3 +150,33 @@ def test_time_budget_holds_inside_an_attempt(tmp_path):
     rn = LR.Runner("g", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl", max_minutes=1)
     rn.deadline = __import__("time").time() - 1  # the budget is already gone mid-run
     assert rn.execute(LR.Step("s1", "x", {"cmd": "false"})) == "(time budget used up)" and len(m.turns) == 50
+
+
+def test_plain_baseline_is_one_tool_loop_without_plan_or_watcher(tmp_path):
+    m = FakeModel([], [[call("write_file", path="greet.py", content="print('hello')\n")],
+                       [call("run", cmd="python3 greet.py")], [call("done", summary="prints hello")]])
+    r = runner(tmp_path, m).run_plain()
+    assert r["ok"] and m.plan_prompts == [] and (tmp_path / "ws" / "greet.py").exists()
+    assert "TASK: make greet.py print hello" in m.step_prompts[0] and "usage" in r
+
+
+def test_plain_baseline_stops_when_out_of_calls(tmp_path):
+    m = FakeModel([], [[call("run", cmd="true")]] * 3)
+    r = runner(tmp_path, m).run_plain(max_calls=3)
+    assert not r["ok"] and r["reason"] == "ran out of tool calls"
+
+
+def test_chat_counts_tokens(monkeypatch):
+    import io
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    body = {"choices": [{"message": {"content": "hi"}}], "usage": {"prompt_tokens": 7, "completion_tokens": 3}}
+    monkeypatch.setattr(LR.urllib.request, "urlopen", lambda *a, **k: Resp(json.dumps(body).encode()))
+    monkeypatch.setattr(LR, "USAGE", {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+    assert LR.chat("http://x", [{"role": "user", "content": "hi"}]) == {"content": "hi"}
+    assert LR.USAGE == {"calls": 1, "prompt_tokens": 7, "completion_tokens": 3}

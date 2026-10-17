@@ -51,6 +51,12 @@ Return JSON: {{"steps": [{{"id": "s1", "kind": "setup|contract|tests|build|verif
 GOAL: {goal}
 {lessons}{extra}"""
 
+PLAIN_PROMPT = """You are a coding agent in a Linux sandbox (Python 3.11, bash). Do the task below with the tools: read
+the existing code first, make the change, run the tests, and fix what fails. Call `done` with a short summary when
+the task is finished.
+
+TASK: {goal}"""
+
 STEP_PROMPT = """You are doing ONE step of a bigger job. Use the tools; when the step is done call `done` with a short
 summary of what you produced (file names, commands, ports). Work in the current directory. Keep files small.
 
@@ -172,7 +178,15 @@ def chat(url: str, messages: list, tools=None, json_mode=False, model="local", t
     req = urllib.request.Request(url.rstrip("/") + "/chat/completions", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())["choices"][0]["message"]
+        out = json.loads(r.read())
+    u = out.get("usage") or {}
+    USAGE["calls"] += 1
+    USAGE["prompt_tokens"] += u.get("prompt_tokens", 0)
+    USAGE["completion_tokens"] += u.get("completion_tokens", 0)
+    return out["choices"][0]["message"]
+
+
+USAGE = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}  # this process = one job: what the model really did
 
 
 def _json(text: str) -> dict:
@@ -648,9 +662,39 @@ class Runner:
             self._bg(self.memrouter.note,
                      f"When a {step.kind} step (like '{step.do[:120]}') fails with: {first} -> what fixed it: {fix}")
 
+    def run_plain(self, max_calls: int = 60) -> dict:
+        """The baseline: the same model and tools with no plan, contract, locked tests or watcher. It works until it
+        calls done, runs out of calls or the time budget: what the runner's machinery has to beat."""
+        step = self.current = Step("s1", self.goal, {"cmd": "true"})
+        self.steps = [step]
+        msgs = [{"role": "user", "content": PLAIN_PROMPT.format(goal=self.goal)}]
+        for _ in range(max_calls):
+            if self.deadline and time.time() > self.deadline:
+                return self.report(stopped=step, reason="time budget used up")
+            msg = self.llm(msgs, tools=[t for t in TOOLS if t["function"]["name"] != "dispute_check"])
+            calls = msg.get("tool_calls") or []
+            msgs.append({"role": "assistant", "content": msg.get("content") or "", **({"tool_calls": calls} if calls else {})})
+            if not calls:
+                msgs.append({"role": "user", "content": "Use the tools to do the task, then call done."})
+                continue
+            for c in calls:
+                name = c["function"]["name"]
+                try:
+                    a = json.loads(c["function"].get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    a = {}
+                if name == "done":
+                    step.status, step.output = "done", str(a.get("summary", ""))[:800]
+                    return self.report()
+                result = self._tool(name, a)
+                self._log(event="tool", step=step.id, tool=name, args=json.dumps(a)[:300], result=result[:300])
+                msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result[-3000:]})
+        return self.report(stopped=step, reason="ran out of tool calls")
+
     def report(self, stopped: Step | None = None, reason: str = "") -> dict:
         r = {"goal": self.goal, "ok": stopped is None, "steps": [(s.id, s.status, s.do[:80]) for s in self.steps],
-             "stopped_at": stopped.id if stopped else None, "reason": reason[-800:], "decisions": self.decisions}
+             "stopped_at": stopped.id if stopped else None, "reason": reason[-800:], "decisions": self.decisions,
+             "usage": dict(USAGE)}
         if stopped:  # out of options: the owner decides (the gateway / CLI shows this)
             r["ask_owner"] = f"Stuck at {stopped.id} ({stopped.do[:120]}): {reason[:300]}"
         self._log(event="report", **r)
@@ -680,6 +724,7 @@ def main() -> int:
     ap.add_argument("--spec-model-url", default="", help="a bigger model for the contract and tests steps")
     ap.add_argument("--spec-model", default="local")
     ap.add_argument("--max-minutes", type=float, default=None, help="stop the job after this long")
+    ap.add_argument("--plain", action="store_true", help="baseline: no plan, contract, locked tests or watcher")
     args = ap.parse_args()
     import signal
 
@@ -690,8 +735,9 @@ def main() -> int:
     try:
         spec_llm = (lambda m, **k: chat(args.spec_model_url, m, model=args.spec_model, **k)) if args.spec_model_url \
             else None
-        r = Runner(args.goal, box, lambda m, **k: chat(args.model_url, m, **k), wd / "run.jsonl",
-                   memrouter=memrouter, spec_llm=spec_llm, max_minutes=args.max_minutes).run()
+        runner = Runner(args.goal, box, lambda m, **k: chat(args.model_url, m, **k), wd / "run.jsonl",
+                        memrouter=memrouter, spec_llm=spec_llm, max_minutes=args.max_minutes)
+        r = runner.run_plain() if args.plain else runner.run()
     finally:
         box.close()
     print(json.dumps(r, indent=1))
