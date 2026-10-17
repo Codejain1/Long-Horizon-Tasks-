@@ -57,8 +57,11 @@ Evidence from the code and from the live Hermes memory (read-only):
    (versions / places / flight prep, scored against independent truth). Live run `/home/hermes/web1` (plain vs
    runner, 2 reps) has started; results pending.
 4. **Big-model arm:** per-role endpoints (`--planner/--spec/--judge URL,MODEL,KEY_ENV`, `--api-key-env`), tokens
-   per model, backlog `--label/--extra`. The live headline run needs the owner's OK to use an API key (Hermes's
-   OpenRouter key exists on the server).
+   per model, backlog `--label/--extra`, retries on rate limits.
+   - **Owner OK'd the free OpenRouter model.** Running in `/home/hermes/backlog-smoke-e` next to plain / runner / mem
+     (rental tickets 1–3): `big` = nvidia/nemotron-3-ultra-550b-a55b:free alone (plain loop), `bigplan` = runner +
+     memory with that model as planner only.
+   - The judge stays on local Qwen in every arm.
 5. **World model (`runner/forecast.py`):** trained on 250 real jobs (fastbench2/3, housebench, housebench2).
    - Grouped replay: Brier 0.235 vs base rate 0.250, gain +0.0145 [+0.004, +0.025]. **The gate passes.**
    - The doom policy (stop if P < 0.1 after 40 % of the budget) never fires: the model is never that sure, so it
@@ -82,6 +85,8 @@ Evidence from the code and from the live Hermes memory (read-only):
   - These are now model-quality failures, not harness bugs.
 
 ## In progress
+- **Wrong live rules removed (2026-10-18, owner's instruction):** rules 3–6 and profile 5 are deactivated; live
+  Hermes now has 1 rule and 4 taste entries. The backup is `memory.db.bak-20261017-203609`.
 - **Step 0 (stop the harm):**
   - **Concurrency fix (done):** every SQLite statement runs under one lock with its rows fetched whole, and the
     HTTP accept queue went from 5 to 128. A new stress test (8 threads × 60 requests) passes; the old flaky test
