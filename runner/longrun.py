@@ -196,19 +196,13 @@ def _json(text: str) -> dict:
 
 # ---------------------------------------------------------------- memory (optional)
 class Memrouter:
-    """Our memory service: lessons before planning, episodes and notes after (memrouter/memory_service.py)."""
+    """Our memory service (memrouter/memory_service.py), read before the work: the owner's standing rules, the checks
+    that failed in earlier jobs of this scope (experience from real outcomes), and what the owner said earlier that
+    may apply. The runner writes nothing back: its own verdict on its work is not ground truth. Whoever scores the
+    delivery (the owner, a benchmark) posts the real outcome to /outcome with this job's `warning_id`."""
 
-    # Silent by default (benchmark run 2: search fills its budget with whatever is nearest, and pasting that in as
-    # "lessons" made a 14B model fail more steps). The owner's standing rules always go in; beyond them only advice
-    # ("when X, do Y"), failure lessons and fears, and only when the ranker finds them relevant: nothing is better
-    # than noise. ponytail: one global score bar, a per-kind calibration from outcomes if it proves too blunt
-    ADVICE = ("advice", "lesson", "fear")
-    MIN_SCORE = 0.5
-    MAX_ITEMS = 3
-
-    def __init__(self, url: str, min_score: float | None = None, rules_only: bool = False):
-        self.url = url.rstrip("/")
-        self.min_score = self.MIN_SCORE if min_score is None else min_score
+    def __init__(self, url: str, scope: str = "", rules_only: bool = False):
+        self.url, self.scope = url.rstrip("/"), scope
         self.rules_only = rules_only  # the benchmark's "rules" arm: the owner's rules and nothing else
 
     def _post(self, path: str, body: dict, timeout: float = 120) -> dict:
@@ -216,22 +210,28 @@ class Memrouter:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
 
-    def lessons(self, goal: str) -> tuple[str, int | None]:
-        r = self._post("/search", {"query": goal, "budget": 600, "skip_kinds": ["chitchat", "agent_claim"]})
-        keep = [it for it in r.get("items", []) if it["kind"] in self.ADVICE and it.get("current", True)
-                and it.get("score", 1.0) >= self.min_score]
-        keep = sorted(keep, key=lambda it: -it.get("score", 0))[:self.MAX_ITEMS]
-        lines = [] if self.rules_only else [f"- {f['text']}" for f in r.get("fears", [])[:2]] + [f"- {it['text']}" for it in keep]
-        rules = [f"- {x['text']}" for x in r.get("rules", [])]  # standing owner rules apply to every job, matched or not
-        text = ("OWNER'S STANDING RULES (always follow):\n" + "\n".join(rules) + "\n" if rules else "") + "\n".join(lines)
-        return (text.strip(), r.get("recall_id"))
+    def read(self, query: str, warnings: bool = True) -> dict:
+        """warnings: include (and log) this scope's failed checks; once per job is enough, at planning."""
+        r = self._post("/search", {"query": query, "budget": 500, "skip_kinds": ["chitchat", "agent_claim"],
+                                   "scope": self.scope if warnings and not self.rules_only else ""})
+        said = [it["text"] for it in r.get("items", []) if it.get("speaker") == "owner" and it.get("current", True)]
+        return {"rules": [x["text"] for x in r.get("rules", [])],
+                "warnings": [] if self.rules_only else r.get("warnings", []),
+                "said": [] if self.rules_only else said, "warning_id": r.get("warning_id")}
 
-    def episode(self, **body) -> dict:
-        return self._post("/episode", body)
-
-    def note(self, text: str) -> None:
-        """Advice the runner wrote itself: stored as is, no writer model call (it is already structured)."""
-        self._post("/add", {"text": text, "speaker": "runner", "chat": "runner-experience", "kind": "advice"})
+    @staticmethod
+    def text(parts: dict) -> str:
+        out = []
+        if parts["rules"]:  # standing owner rules apply to every job, matched or not
+            out.append("OWNER'S STANDING RULES (always follow):\n" + "\n".join(f"- {t}" for t in parts["rules"]))
+        if parts["warnings"]:
+            out.append("CHECKS THAT FAILED IN EARLIER JOBS HERE (get them right the first time):\n" + "\n".join(
+                f"- {w['check']} (failed {w['seen']}x){': ' + w['error'] if w.get('error') else ''}"
+                for w in parts["warnings"]))
+        if parts["said"]:
+            out.append("WHAT THE OWNER SAID EARLIER (requirements that may apply here):\n"
+                       + "\n".join(f"- {t}" for t in parts["said"]))
+        return "\n".join(out)
 
 
 def classify_failure(output: str) -> str:
@@ -284,41 +284,23 @@ class Runner:
         # a bigger model if one is given, else the same model thinking first
         self.spec_llm = spec_llm
         self.deadline = time.time() + max_minutes * 60 if max_minutes is not None else None
-        self.recall_id = None
+        self.warning_id = None  # the experience warnings this job was shown: the scorer credits them
+        self.memory_warnings: list = []
         self.decisions: list[dict] = []
-        self._pending: list = []  # memory writes in flight: the work never waits on the memory writer
 
     def _log(self, **rec):
         with self.log.open("a") as f:
             f.write(json.dumps({"t": round(time.time(), 1), **rec}) + "\n")
 
-    def _bg(self, fn, *a, **kw):
-        """Run a memory write in the background (the writer is a model call: blocking on it cost jobs their time
-        budget in benchmark run 2); `_flush` waits for them only when the job is over."""
-        import threading
-
-        def go():
-            try:
-                fn(*a, **kw)
-            except Exception as e:
-                self._log(event="memrouter_error", error=repr(e)[:200])
-        t = threading.Thread(target=go, daemon=True)
-        t.start()
-        self._pending.append(t)
-
-    def _flush(self, timeout: float = 180):
-        end = time.time() + timeout
-        for t in self._pending:
-            t.join(max(0.0, end - time.time()))
-        self._pending = [t for t in self._pending if t.is_alive()]
-
     def plan(self, extra: str = "") -> list[Step]:
         lessons = ""
         if self.memrouter:
             try:
-                got, rid = self.memrouter.lessons(self.goal)
-                self.recall_id = self.recall_id or rid
-                lessons = f"LESSONS FROM PAST RUNS (use them):\n{got}\n" if got else ""
+                parts = self.memrouter.read(self.goal)
+                self.warning_id = self.warning_id or parts["warning_id"]
+                self.memory_warnings = self.memory_warnings or parts["warnings"]
+                got = self.memrouter.text(parts)
+                lessons = f"FROM MEMORY:\n{got}\n" if got else ""
             except Exception as e:
                 self._log(event="memrouter_error", error=repr(e)[:200])
         msg = self.llm([{"role": "user", "content": PLAN_PROMPT.format(goal=self.goal, extra=extra, lessons=lessons)}],
@@ -349,8 +331,9 @@ class Runner:
             facts = f"FACTS YOU MAY NEED:\n{got}\n" if got else ""
         if self.memrouter:  # lessons for THIS step reach the doer, not only the planner
             try:
-                got, _ = self.memrouter.lessons(f"{self.goal[:200]} {step.kind}: {step.do}")
-                facts += f"LESSONS FOR THIS KIND OF STEP (past runs and owner feedback):\n{got[:900]}\n" if got else ""
+                parts = self.memrouter.read(f"{self.goal[:200]} {step.kind}: {step.do}", warnings=False)
+                got = self.memrouter.text({**parts, "warnings": self.memory_warnings})
+                facts += f"FROM MEMORY:\n{got[:1500]}\n" if got else ""
             except Exception as e:
                 self._log(event="memrouter_error", error=repr(e)[:200])
         err = f"LAST ATTEMPT FAILED, fix this:\n{error}\n" if error else ""
@@ -560,7 +543,6 @@ class Runner:
                 if self.deadline and time.time() > self.deadline:  # a time budget: one stuck job can't eat the run
                     step.status = "failed"
                     self._log(event="stopped", step=step.id, reason="time budget")
-                    self._experience(step, history) if history else None
                     return self.report(stopped=step, reason="time budget used up")
                 self.current = step
                 step.output = self.execute(step, error, deep=option in ("escalate", "spec_fix_deep"), hint=hint)
@@ -580,7 +562,6 @@ class Runner:
                         option, why = "stop", "the tests could not be made possible: needs the owner"
                         self._log(event="decision", step=step.id, option=option, why=why)
                         step.status = "failed"
-                        self._experience(step, history)
                         return self.report(stopped=step, reason=why + ":\n- " + "\n- ".join(problems))
                     if problems:  # an impossible spec must not be locked: redo the tests step with the problems
                         ok, error = False, "THE TESTS CANNOT PASS AS WRITTEN:\n- " + "\n- ".join(problems)
@@ -593,7 +574,6 @@ class Runner:
                     step.status = "done"
                     if step.kind == "tests":
                         self._lock_tests()
-                    self._experience(step, history)
                     break
                 option, why = self.decide(step, history, replans, max_replans)
                 self.decisions.append({"step": step.id, "option": option, "why": why})
@@ -622,7 +602,6 @@ class Runner:
             if option == "stop":
                 step.status = "failed"
                 self._log(event="stopped", step=step.id, reason=error[-500:])
-                self._experience(step, history)
                 return self.report(stopped=step, reason=f"{why}. Last error:\n{error}")
             replans += 1
             done = [s for s in self.steps[:i] if s.status == "done"]
@@ -643,24 +622,6 @@ class Runner:
             self.steps = done + [s for s in new if s.id not in {d.id for d in done}]
             i = len(done)
         return self.report()
-
-    def _experience(self, step: Step, history: list[dict]):
-        """Each step's outcome into memrouter: an episode (what was tried, did it work), and a plain note when it
-        needed more than one try (what failed first, what fixed it), so the next run's planner can use it."""
-        if not self.memrouter:
-            return
-        ok = step.status == "done"
-        how = history[-1]["option"]
-        first = " ".join(history[0]["error"].splitlines()[-4:])[-300:] if not history[0]["ok"] else ""
-        self._bg(self.memrouter.episode, situation=f"{self.goal[:200]} || {step.kind}: {step.do[:200]}",
-                 action=f"{step.kind} via {how}",
-                 actual={"success": 1.0 if ok else 0.0, "approach": (step.output or "")[:300], "error": first},
-                 conditions={"step_kind": step.kind}, signal="auto")
-        if len(history) > 1 and ok:  # advice only from a fix that worked; a failure is in the episode already
-            first = " ".join(history[0]["error"].splitlines()[-4:])[-300:]
-            fix = (step.output or how)[:300]
-            self._bg(self.memrouter.note,
-                     f"When a {step.kind} step (like '{step.do[:120]}') fails with: {first} -> what fixed it: {fix}")
 
     def run_plain(self, max_calls: int = 60) -> dict:
         """The baseline: the same model and tools with no plan, contract, locked tests or watcher. It works until it
@@ -694,20 +655,10 @@ class Runner:
     def report(self, stopped: Step | None = None, reason: str = "") -> dict:
         r = {"goal": self.goal, "ok": stopped is None, "steps": [(s.id, s.status, s.do[:80]) for s in self.steps],
              "stopped_at": stopped.id if stopped else None, "reason": reason[-800:], "decisions": self.decisions,
-             "usage": dict(USAGE)}
+             "usage": dict(USAGE), "warning_id": self.warning_id}
         if stopped:  # out of options: the owner decides (the gateway / CLI shows this)
             r["ask_owner"] = f"Stuck at {stopped.id} ({stopped.do[:120]}): {reason[:300]}"
         self._log(event="report", **r)
-        if self.memrouter:
-            done = sum(s.status == "done" for s in self.steps)
-
-            def finish():
-                self.memrouter.episode(situation=self.goal[:300], action="long-horizon run",
-                                       actual={"success": 1.0 if r["ok"] else done / max(len(self.steps), 1)},
-                                       recall_id=self.recall_id, signal="auto")
-                self.memrouter._post("/consolidate", {})  # sleep after every run: lessons ready for the next one
-            self._bg(finish)
-            self._flush()  # the job is over: let its memory writes land before the process exits
         return r
 
 
@@ -717,9 +668,8 @@ def main() -> int:
     ap.add_argument("--model-url", required=True)
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--local", action="store_true", help="no container (trusted use only)")
-    ap.add_argument("--memory-url", default="", help="memrouter service: lessons before planning, episodes after")
-    ap.add_argument("--lesson-min-score", type=float, default=None,
-                    help=f"relevance bar for lessons beyond the owner's rules (default {Memrouter.MIN_SCORE})")
+    ap.add_argument("--memory-url", default="", help="memrouter service: rules, warnings and what the owner said")
+    ap.add_argument("--scope", default="", help="experience scope (a project or task set) for failure warnings")
     ap.add_argument("--rules-only", action="store_true", help="from memory, only the owner's standing rules")
     ap.add_argument("--spec-model-url", default="", help="a bigger model for the contract and tests steps")
     ap.add_argument("--spec-model", default="local")
@@ -731,7 +681,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # stopped from outside: still clean up the sandbox
     wd = Path(args.workdir)
     box = LocalSandbox(wd) if args.local else PodmanSandbox(wd)
-    memrouter = Memrouter(args.memory_url, args.lesson_min_score, args.rules_only) if args.memory_url else None
+    memrouter = Memrouter(args.memory_url, args.scope, args.rules_only) if args.memory_url else None
     try:
         spec_llm = (lambda m, **k: chat(args.spec_model_url, m, model=args.spec_model, **k)) if args.spec_model_url \
             else None

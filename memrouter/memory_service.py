@@ -1,6 +1,10 @@
-"""memrouter: Horizon's memory layer (owner, 2026-10-16). Recall (fine-tuned bge-small + learned ranker), the
-memory writer, provenance and correction live here; learning from outcomes lives in experience.py. Runs as a
-private local service (here for Hermes).
+"""memrouter: the memory service. Three kinds of memory, each with its own contract:
+- directives: the owner's standing rules and taste profile. Ones a model inferred from chat wait as "pending" until
+  the owner confirms them (a wrong rule is shown in every reply, so none gets in unconfirmed); ones the owner gave
+  explicitly (/rule, /profile) are active at once;
+- conversation: what was said, found by meaning (fine-tuned bge-small + learned ranker), with provenance and
+  correction;
+- experience (failures.py): the checks that failed in real outcomes, per scope, shown as warnings.
 
     python memory_service.py --home ~/.embed-memory --model ./embed-test --ranker ./ranker.pkl [--port 8765]
 
@@ -10,7 +14,10 @@ POST /search {"query", "budget"?=500, "skip"?, "skip_chats"?} -> {"context", "n"
 POST /add    {..., "detect_rule"?: true, "role"?, "kind"?} -> owner's message (rules/taste/mood/location); role "assistant";
              kind: structured text from a program, stored as is (no writer)
              With --writer-url every message goes through the memory writer (writer.py) first.
-POST /rule {"text"} | POST /rule/forget {"id"} | GET /rules
+POST /rule {"text"} | POST /rule/confirm {"id"} | POST /rule/forget {"id"} | GET /rules (active and pending)
+POST /profile {"text"} | POST /profile/confirm {"id"} | POST /profile/forget {"id"}
+POST /search {..., "scope"?} -> also "warnings" (checks that failed before in that scope) and "warning_id"
+POST /outcome {"scope", "failed": [{"check", "error"}], "passed"?: [...], "warning_id"?} (real outcomes only)
 GET  /health                                     -> {"turns"}
 
 Messages live in SQLite (one row per ~120-word piece, with its vector). For search they are laid out as the
@@ -41,7 +48,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import dates as D  # noqa: E402
-import experience as X  # noqa: E402
+import failures as FL  # noqa: E402
 import fast_recall as F  # noqa: E402
 import learned_recall as L  # noqa: E402
 
@@ -191,6 +198,9 @@ class Memory:
         self.db.execute("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, ts REAL, value TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS profile (id INTEGER PRIMARY KEY, ts REAL, text TEXT, "
                         "active INTEGER DEFAULT 1)")
+        for table in ("rules", "profile"):  # confirmed = the owner gave or approved it (older rows count as given)
+            if "confirmed" not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN confirmed INTEGER DEFAULT 1")
         have = {r[1] for r in self.db.execute("PRAGMA table_info(turns)")}
         for col, typ in (("kind", "TEXT DEFAULT ''"), ("slot", "TEXT DEFAULT ''"), ("raw", "TEXT"), ("replaced_ts", "REAL"),
                          ("method", "TEXT DEFAULT ''"), ("checked", "TEXT DEFAULT ''"), ("confidence", "REAL"),
@@ -199,7 +209,7 @@ class Memory:
                 self.db.execute(f"ALTER TABLE turns ADD COLUMN {col} {typ}")
         self.encode, self.ranker, self.tz, self.fetch, self.writer = encode, ranker, ZoneInfo(tz), fetch, writer
         self.conv, self.dirty, self.rebuilding = None, True, False
-        self.exp = X.Experience(self)  # outcomes -> surprise, credit, lessons, fears
+        self.fails = FL.Failures(self.db)  # experience: what failed in real outcomes, per scope
 
     SYNC_BELOW = 5000  # below this many memories the index rebuilds before a search (milliseconds); above, in the
     # background while search uses the last index (the newest messages are in the live chat anyway)
@@ -242,9 +252,9 @@ class Memory:
         if mems is None:
             if owner:
                 if is_rule(text):
-                    self.add_rule(text, ts)
+                    self.add_rule(text, ts, confirmed=False)
                 if is_profile(text):
-                    self.add_profile(text, ts)
+                    self.add_profile(text, ts, confirmed=False)
                 self.note_mood(text, ts)
             # "last Friday" read months later has lost its "now": store "last Friday (Friday 15 September 2023)"
             rows = [(p, "", "", "", CONFIDENCE["agent" if role == "assistant" else "rules"])
@@ -253,9 +263,9 @@ class Memory:
             rows = []
             for m in mems:
                 if owner and m["kind"] == "rule":
-                    self.add_rule(m["memory"], ts)
+                    self.add_rule(m["memory"], ts, confirmed=False)
                 elif owner and m["kind"] == "preference":
-                    self.add_profile(m["memory"], ts)
+                    self.add_profile(m["memory"], ts, confirmed=False)
                 elif owner and m["kind"] == "mood":
                     with self.lock:
                         self.db.execute("INSERT OR REPLACE INTO state (key, ts, value) VALUES ('mood', ?, ?)",
@@ -312,14 +322,34 @@ class Memory:
             self.dirty = True
         return n > 0
 
-    def add_rule(self, text: str, ts: float | None = None) -> int:
-        text = " ".join((text or "").split())[:600]
+    def add_rule(self, text: str, ts: float | None = None, confirmed: bool = True) -> int:
+        """confirmed: the owner gave it explicitly. A rule a model inferred from chat waits as pending."""
+        return self._add_directive("rules", text, 600, ts, confirmed)
+
+    def _add_directive(self, table: str, text: str, cap: int, ts: float | None, confirmed: bool) -> int:
+        text = " ".join((text or "").split())[:cap]
         with self.lock:
-            if not text or self.db.execute("SELECT 1 FROM rules WHERE text = ? AND active = 1", (text,)).fetchone():
+            old = self.db.execute(f"SELECT id, confirmed FROM {table} WHERE text = ? AND active = 1", (text,)).fetchone()
+            if not text or (old and (old[1] or not confirmed)):
                 return 0
-            cur = self.db.execute("INSERT INTO rules (ts, text) VALUES (?, ?)", (ts or time.time(), text))
+            if old:  # the owner now states explicitly what was pending: it becomes active
+                self.db.execute(f"UPDATE {table} SET confirmed = 1 WHERE id = ?", (old[0],))
+                self.db.commit()
+                return old[0]
+            cur = self.db.execute(f"INSERT INTO {table} (ts, text, confirmed) VALUES (?, ?, ?)",
+                                  (ts or time.time(), text, int(confirmed)))
             self.db.commit()
             return cur.lastrowid
+
+    def confirm(self, table: str, did: int) -> bool:
+        with self.lock:
+            n = self.db.execute(f"UPDATE {table} SET confirmed = 1 WHERE id = ? AND active = 1", (did,)).rowcount
+            self.db.commit()
+        return n > 0
+
+    def pending(self, table: str) -> list[dict]:
+        return [{"id": r[0], "text": r[1]} for r in
+                self.db.execute(f"SELECT id, text FROM {table} WHERE active = 1 AND confirmed = 0 ORDER BY ts")]
 
     def note_location(self, text: str, ts: float | None = None) -> dict | None:
         """A WhatsApp location share ("[Location: Name 12.97,77.64]") becomes the one current location."""
@@ -349,18 +379,12 @@ class Memory:
                 self.db.commit()
         return mood
 
-    def add_profile(self, text: str, ts: float | None = None) -> int:
-        text = " ".join((text or "").split())[:400]
-        with self.lock:
-            if not text or self.db.execute("SELECT 1 FROM profile WHERE text = ? AND active = 1", (text,)).fetchone():
-                return 0
-            cur = self.db.execute("INSERT INTO profile (ts, text) VALUES (?, ?)", (ts or time.time(), text))
-            self.db.commit()
-            return cur.lastrowid
+    def add_profile(self, text: str, ts: float | None = None, confirmed: bool = True) -> int:
+        return self._add_directive("profile", text, 400, ts, confirmed)
 
     def profile(self) -> list[dict]:
         return [{"id": r[0], "text": r[1]} for r in
-                self.db.execute("SELECT id, text FROM profile WHERE active = 1 ORDER BY ts")]
+                self.db.execute("SELECT id, text FROM profile WHERE active = 1 AND confirmed = 1 ORDER BY ts")]
 
     def forget_profile(self, pid: int) -> bool:
         with self.lock:
@@ -435,7 +459,8 @@ class Memory:
         return out
 
     def rules(self, limit: int = 20) -> list[dict]:
-        rows = self.db.execute("SELECT id, ts, text FROM rules WHERE active = 1 ORDER BY ts DESC LIMIT ?", (limit,))
+        rows = self.db.execute("SELECT id, ts, text FROM rules WHERE active = 1 AND confirmed = 1 ORDER BY ts DESC "
+                               "LIMIT ?", (limit,))
         return [{"id": r[0], "date": datetime.fromtimestamp(r[1], self.tz).strftime("%-d %b %Y"), "text": r[2]}
                 for r in rows][::-1]
 
@@ -448,8 +473,8 @@ class Memory:
     def _index(self):
         # ponytail: full rebuild after each write (~1 s at 50K pieces); make BM25 incremental if that starts to bite
         rows = self.db.execute("SELECT id, ts, chat, speaker, text, vec, kind, replaced_ts, method, checked, confidence, "
-                               "status, strength, conditions FROM turns WHERE COALESCE(status, '') NOT IN "
-                               "('forgotten', 'cleared') ORDER BY ts, id").fetchall()
+                               "status FROM turns WHERE COALESCE(status, '') NOT IN ('forgotten', 'cleared') "
+                               "ORDER BY ts, id").fetchall()
         if not rows:
             return None
         sessions: dict[tuple, list] = {}
@@ -468,9 +493,7 @@ class Memory:
         conv.kind = {str(r[0]): r[6] or "" for r in rows}
         conv.replaced = {str(r[0]): r[7] for r in rows if r[7]}
         conv.prov = {str(r[0]): {"method": r[8] or "legacy", "checked": r[9] or "", "status": r[11] or "",
-                                 "confidence": r[10] if r[10] is not None else 0.6,
-                                 "strength": r[12] if r[12] is not None else 0.5} for r in rows}
-        conv.conds = {str(r[0]): json.loads(r[13]) for r in rows if r[13]}
+                                 "confidence": r[10] if r[10] is not None else 0.6} for r in rows}
         return conv
 
     def _rebuild(self):
@@ -492,13 +515,15 @@ class Memory:
             return self.conv
 
     def search(self, query: str, budget: int = 500, skip: tuple = (), skip_chats: tuple = (),
-               skip_kinds: tuple = (), conditions: dict | None = None) -> dict:
+               skip_kinds: tuple = (), scope: str = "") -> dict:
+        """scope: also return the checks that failed before in that scope (experience), as warnings."""
         t = time.perf_counter()
         conv = self._current_index()
-        rules, now = self.rules(), {**self.current(), "profile": self.profile()}
+        warnings, wid = self.fails.warn(scope)
+        base = {"rules": self.rules(), "pending_rules": self.pending("rules"), "pending_profile": self.pending("profile"),
+                "current": {**self.current(), "profile": self.profile()}, "warnings": warnings, "warning_id": wid}
         if conv is None or not query.strip():
-            return {"context": "", "n": 0, "ms": 0.0, "rules": rules, "current": now, "items": [],
-                    "fears": self.exp.fears(query, conditions), "recall_id": None}
+            return {"context": "", "n": 0, "ms": 0.0, "items": [], **base}
         qv = self.encode([QUERY + query], max_len=64)[0]
         probs = self.ranker.predict(L.features(conv, query, qv))
         # skip_kinds: e.g. agent_claim (what the agent said about itself makes one wrong answer repeat itself);
@@ -509,11 +534,6 @@ class Memory:
             return (k not in skip_kinds and not (k == "" and t_["speaker"] in skip)
                     and not conv.chat[t_["id"]].startswith(tuple(skip_chats) or ("\0",)))
         keep = np.array([ok(t_) for t_ in conv.turns])
-        # experience: proven memories rank higher, bounded so learning reorders but never erases a relevant memory
-        # (0.2 + 0.8 x strength), and lessons whose conditions don't fit the situation sink
-        probs = probs * np.array([0.2 + 0.8 * conv.prov[t_["id"]]["strength"] for t_ in conv.turns])
-        if conditions:
-            probs = probs * np.array([X.condition_match(conv.conds.get(t_["id"], {}), conditions) for t_ in conv.turns])
         probs = np.where(keep, probs, -np.inf)
         picked = set(L.select(conv, probs, budget)[0])
         picked = {t_["id"] for t_, k in zip(conv.turns, keep) if k and t_["id"] in picked}  # select() fills spare budget
@@ -528,10 +548,8 @@ class Memory:
         score = dict(zip((t_["id"] for t_ in conv.turns), probs))
         items = [{"id": int(t_["id"]), "date": t_["date"], "speaker": t_["speaker"], "kind": conv.kind[t_["id"]],
                   "text": t_["text"], "score": round(float(score[t_["id"]]), 4), "current": t_["id"] not in conv.replaced, **conv.prov[t_["id"]]} for t_ in chosen]
-        fears = self.exp.fears(query, conditions)
-        recall_id = self.exp.log_recall(query, [it["id"] for it in items] + [f["id"] for f in fears])
         return {"context": "\n".join(lines), "n": len(lines), "ms": round(1000 * (time.perf_counter() - t), 1),
-                "rules": rules, "current": now, "items": items, "fears": fears, "recall_id": recall_id}
+                "items": items, **base}
 
 
 def serve(mem: Memory, port: int):
@@ -548,9 +566,7 @@ def serve(mem: Memory, port: int):
             if self.path == "/health":
                 return self._send({"turns": mem.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0]})
             if self.path == "/rules":
-                return self._send({"rules": mem.rules(100)})
-            if self.path == "/lessons":
-                return self._send({"lessons": mem.exp.lessons()})
+                return self._send({"rules": mem.rules(100), "pending": mem.pending("rules")})
             self._send({"error": "not found"}, 404)
 
         def do_POST(self):
@@ -565,15 +581,13 @@ def serve(mem: Memory, port: int):
                     return self._send(out)
                 if self.path == "/rule":
                     return self._send({"rule": mem.add_rule(a.get("text", ""))})
-                if self.path == "/episode":
-                    return self._send(mem.exp.record_episode(
-                        str(a.get("situation", "")), str(a.get("action", "")), dict(a.get("actual") or {}),
-                        a.get("predicted"), a.get("conditions"), str(a.get("signal", "auto")), str(a.get("severity", "")),
-                        a.get("recall_id"), str(a.get("source", ""))))
-                if self.path == "/consolidate":
-                    return self._send(mem.exp.consolidate())
-                if self.path == "/fear/clear":
-                    return self._send({"cleared": mem.exp.clear_fear(int(a.get("id", 0)), str(a.get("by", "")))})
+                if self.path == "/rule/confirm":
+                    return self._send({"confirmed": mem.confirm("rules", int(a.get("id", 0)))})
+                if self.path == "/profile/confirm":
+                    return self._send({"confirmed": mem.confirm("profile", int(a.get("id", 0)))})
+                if self.path == "/outcome":
+                    return self._send(mem.fails.record(str(a.get("scope", "")), list(a.get("failed") or []),
+                                                       list(a.get("passed") or []), a.get("warning_id")))
                 if self.path == "/memory/correct":
                     return self._send({"id": mem.correct(int(a.get("id", 0)), str(a.get("text", "")))})
                 if self.path == "/memory/forget":
@@ -589,7 +603,7 @@ def serve(mem: Memory, port: int):
                 if self.path == "/search":
                     return self._send(mem.search(a.get("query", ""), int(a.get("budget", 500)), tuple(a.get("skip", ())),
                                                  tuple(a.get("skip_chats", ())), tuple(a.get("skip_kinds", ())),
-                                                 a.get("conditions")))
+                                                 str(a.get("scope", ""))))
                 self._send({"error": "not found"}, 404)
             except Exception as exc:  # a bad request must not take the service down
                 self._send({"error": repr(exc)}, 400)

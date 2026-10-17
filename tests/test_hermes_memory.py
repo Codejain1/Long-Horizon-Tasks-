@@ -137,11 +137,16 @@ def test_plugin_rules_every_reply_and_cron_kept_out(tmp_path, monkeypatch):
                 session_id="cron_abc_1")
     mem.add("noise - target ERROR monitor prompt", "user", "cron_old_job")  # saved before the fix
     for _ in range(50):
-        if mem.rules():
+        if mem.pending("rules"):
             break
         time.sleep(0.05)
     time.sleep(0.2)
-    assert len(mem.rules()) == 1  # the cron prompt said "never" but is not the user: not a rule, not saved
+    pending = mem.pending("rules")
+    assert len(pending) == 1 and mem.rules() == []  # inferred from chat: waits for the owner's OK
+    assert "cron" not in pending[0]["text"]  # the cron prompt said "never" but is not the user: not a rule
+    ask = p.prefetch("Build me a landing page for my chai stall and deploy it")
+    assert "Standing rules" not in ask and "waiting for the owner's OK" in ask and f"#{pending[0]['id']}" in ask
+    assert '"confirmed": true' in p.handle_tool_call("confirm_rule", {"id": pending[0]["id"]})
     out = p.prefetch("Build me a landing page for my chai stall and deploy it")
     assert out.startswith("## Standing rules from the user") and "on it sir" in out
     assert "cron" not in out and "noise - target" not in p.prefetch("noise target ERROR monitor")
@@ -279,7 +284,7 @@ def test_concurrent_requests_lose_nothing(tmp_path):
     def worker(k):
         for i in range(15):
             post("/add", {"text": f"note {k}-{i} about the rent and the lease", "speaker": "owner", "chat": f"c{k}"})
-            post("/episode", {"situation": f"job {k}-{i}", "action": "build via first try", "actual": {"success": 1.0}})
+            post("/outcome", {"scope": "s", "failed": [{"check": f"test_{k}_{i}", "error": "assert 1 == 2"}]})
             post("/search", {"query": "rent lease", "budget": 200})
             post("/rule", {"text": f"rule {k}-{i}"})
     threads = [threading.Thread(target=worker, args=(k,)) for k in range(8)]
@@ -289,5 +294,5 @@ def test_concurrent_requests_lose_nothing(tmp_path):
         t.join()
     assert errors == []
     assert mem.db.execute("SELECT COUNT(*) FROM turns WHERE chat LIKE 'c%'").fetchone()[0] == 120
-    assert mem.db.execute("SELECT COUNT(*) FROM episodes").fetchone()[0] == 120
+    assert mem.db.execute("SELECT COUNT(*) FROM failures").fetchone()[0] == 120
     assert len(mem.rules(1000)) == 120

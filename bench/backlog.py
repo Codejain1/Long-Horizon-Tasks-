@@ -13,7 +13,8 @@ Arms, all on the same model and tools:
   plain   one tool loop, no plan/contract/watcher (runner --plain)
   runner  the long-horizon runner, no memory
   notes   the runner; every ticket and QA report is appended to NOTES.md in the repo, and the goal says to read it
-  mem     the runner with its own fresh memrouter: tickets and QA reports go in as the owner's messages
+  mem     the runner with its own fresh memrouter: each ticket and QA report goes in as the owner's message once
+          its job is done (a job never retrieves its own goal), and every hidden-test result as a real outcome
 """
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None)
     cmd = [sys.executable, str(RUNNER), goal, "--model-url", args.model_url, "--workdir", str(repo),
            "--max-minutes", str(args.max_minutes)]
     cmd += ["--plain"] if args.arm == "plain" else []
-    cmd += ["--memory-url", f"http://127.0.0.1:{port}"] if port else []
+    cmd += ["--memory-url", f"http://127.0.0.1:{port}", "--scope", args.scenario] if port else []
     cmd += ["--local"] if args.local else []
     t0 = time.time()
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -98,16 +99,30 @@ def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None)
         shutil.move(str(log), logs / f"{tag}.jsonl")
     rep = next((e for e in reversed(events) if e.get("event") == "report"), {})
     u = rep.get("usage") or {}
-    return {"minutes": round((time.time() - t0) / 60, 2), "ok": bool(rep.get("ok")),
+    return {"minutes": round((time.time() - t0) / 60, 2), "ok": bool(rep.get("ok")), "warning_id": rep.get("warning_id"),
             "tokens": u.get("prompt_tokens", 0) + u.get("completion_tokens", 0)}
 
 
-def tell(port: int | None, text: str, rule: bool) -> None:
+def _post(port: int | None, path: str, body: dict) -> None:
     if port:
         import urllib.request
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/add", json.dumps(
-            {"text": text, "speaker": "owner", "chat": "backlog", "detect_rule": rule}).encode())
-        urllib.request.urlopen(req, timeout=180).read()
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}{path}", json.dumps(body).encode()),
+                               timeout=180).read()
+
+
+def tell(port: int | None, text: str, rule: bool) -> None:
+    _post(port, "/add", {"text": text, "speaker": "owner", "chat": "backlog", "detect_rule": rule})
+
+
+def outcome(port: int | None, scope: str, passed: list[str], out: str, job: dict) -> None:
+    """The real result of a job: its failing checks (with their messages) become experience for the scope."""
+    if not port:
+        return
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "memrouter"))
+    import failures as FL
+
+    _post(port, "/outcome", {"scope": scope, "failed": FL.from_pytest(out), "passed": passed,
+                             "warning_id": job.get("warning_id")})
 
 
 def run(args, job=run_job) -> list[dict]:
@@ -129,9 +144,10 @@ def run(args, job=run_job) -> list[dict]:
                 with (repo / "NOTES.md").open("a") as f:
                     f.write(f"## Ticket #{i}\n{ticket}\n\n")
                 goal += NOTES_HINT
-            tell(port, ticket, rule=True)
             build = job(goal, repo, logs, f"t{i:02d}", args, port)
+            tell(port, ticket, rule=True)
             passed, failed, out = hidden(sdir, i, repo, work, args.image)
+            outcome(port, args.scenario, passed, out, build)
             row = {"arm": args.arm, "scenario": args.scenario, "ticket": i, "build_min": build["minutes"],
                    "build_tokens": build["tokens"], "runner_ok": build["ok"], "after_build": len(passed),
                    "total": len(passed) + len(failed), "fixup_rounds": 0, "fixup_min": 0.0, "fixup_tokens": 0}
@@ -142,9 +158,10 @@ def run(args, job=run_job) -> list[dict]:
                 if args.arm == "notes":
                     with (repo / "NOTES.md").open("a") as f:
                         f.write(f"## {report}\n\n")
-                tell(port, report, rule=False)
                 fix = job(report + (NOTES_HINT if args.arm == "notes" else ""), repo, logs, f"t{i:02d}-fix{r}", args, port)
+                tell(port, report, rule=False)
                 passed, failed, out = hidden(sdir, i, repo, work, args.image)
+                outcome(port, args.scenario, passed, out, fix)
                 row["fixup_rounds"], row["fixup_min"] = r, round(row["fixup_min"] + fix["minutes"], 2)
                 row["fixup_tokens"] += fix["tokens"]
             row.update(passed=passed, failed=failed, final=len(passed),

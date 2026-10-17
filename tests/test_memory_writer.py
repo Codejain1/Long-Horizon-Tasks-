@@ -75,9 +75,13 @@ def test_writer_routes_supersedes_and_filters(tmp_path):
         mem.add(text, "Kartik", "c", t0 + (31 + k) * DAY, owner=True)
     mem.add("Your app is live at https://a.trycloudflare.com", "Hermes", "c", t0 + 40 * DAY, role="assistant")
     mem.add("I cannot access the internet", "Hermes", "c", t0 + 41 * DAY, role="assistant")
-    assert [r["text"] for r in mem.rules()] == ["Never use emojis in replies."]
-    assert mem.current()["mood"]["mood"] == "tired"
+    # a model inferred these from chat: they wait for the owner's OK before they shape every reply
+    assert mem.rules() == [] and [r["text"] for r in mem.pending("rules")] == ["Never use emojis in replies."]
+    assert mem.profile() == [] and [p["text"] for p in mem.pending("profile")] == ["The owner has been vegetarian since 2022."]
+    assert mem.confirm("rules", mem.pending("rules")[0]["id"]) and mem.confirm("profile", mem.pending("profile")[0]["id"])
+    assert [r["text"] for r in mem.rules()] == ["Never use emojis in replies."] and mem.pending("rules") == []
     assert [p["text"] for p in mem.profile()] == ["The owner has been vegetarian since 2022."]
+    assert mem.current()["mood"]["mood"] == "tired"
 
     r = mem.search("who is our internet provider?", 500, ("Hermes",), (), ("agent_claim", "chitchat"))
     ctx = r["context"]

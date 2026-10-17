@@ -60,7 +60,7 @@ def test_notes_arm_keeps_every_ticket_and_report_in_the_repo(tmp_path, monkeypat
     def job(goal, repo, logs, tag, a, port):
         seen.append(goal)
         return {"minutes": 0.5, "ok": False, "tokens": 0}
-    BL.run(args(tmp_path, "notes", ), job=job)
+    BL.run(args(tmp_path, "notes"), job=job)
     notes = (tmp_path / "out" / "notes" / "repo" / "NOTES.md").read_text()
     assert "Ticket #1" in notes and "whole rupees" in notes and "QA report after ticket #2" in notes
     assert all(g.endswith(BL.NOTES_HINT) for g in seen)
@@ -72,3 +72,29 @@ def test_real_scenarios_are_whole_and_start_unsolved(tmp_path):
         assert len(list(sdir.glob("hidden/test_s*.py"))) == len(sc["sessions"])
         passed, failed, _ = BL.hidden(sdir, len(sc["sessions"]), sdir / "start", tmp_path / name, None)
         assert passed == [] and len(failed) >= 23 and set(sc["rule_checks"]) <= set(failed), name
+
+
+def test_mem_arm_stores_each_ticket_after_its_job_and_real_outcomes(tmp_path, monkeypatch):
+    import threading
+    import time
+    sys.path[:0] = [str(Path(__file__).parent.parent / "memrouter"), str(Path(__file__).parent)]
+    import memory_service as M
+    from test_hermes_memory import KeywordRanker, fake_encode
+    scenario(tmp_path)
+    monkeypatch.setattr(BL, "HERE", tmp_path)
+    mem = M.Memory(tmp_path / "m", fake_encode, KeywordRanker())
+    threading.Thread(target=M.serve, args=(mem, 18831), daemon=True).start()
+    time.sleep(0.3)
+    monkeypatch.setattr(BL.B, "start_memrouter", lambda cmd, home, port: SimpleNamespace(terminate=lambda: None))
+    monkeypatch.setattr(BL, "HERE", tmp_path)
+    stored = []
+
+    def job(goal, repo, logs, tag, a, port):
+        stored.append([r[0] for r in mem.db.execute("SELECT text FROM turns")])
+        return {"minutes": 0.1, "ok": True, "tokens": 0, "warning_id": None}
+    a = args(tmp_path, "mem")
+    a.port, a.fixups = 18831, 1
+    BL.run(a, job=job)
+    assert stored[0] == []  # ticket 1's job did not get its own ticket back from memory
+    assert any("price(n) = 10" in t for t in stored[1])  # ticket 2's job can recall ticket 1
+    assert {x["check"] for x in mem.fails.stats("shop")} == {"test_price", "test_total_is_whole_rupees"}

@@ -89,6 +89,16 @@ class EmbedMemoryProvider(MemoryProvider):
         return ("## Standing rules from the user: follow these in EVERY reply, they override your usual habits\n"
                 f"{lines}")
 
+    @staticmethod
+    def _pending_block(rules: list, profile: list) -> str:
+        """What a model inferred from chat as a standing rule or taste: not followed until the owner says yes."""
+        lines = [f"- rule #{r['id']}: {r['text']}" for r in rules] + [f"- taste #{p['id']}: {p['text']}" for p in profile]
+        if not lines:
+            return ""
+        return ("## Possible standing rules and tastes, waiting for the owner's OK (do NOT follow them yet)\n"
+                + "\n".join(lines) + "\nAt a natural point, ask the owner once, in one short line, whether to keep "
+                "each. Yes: confirm_rule / confirm_preference with its #id. No: forget_rule / forget_preference.")
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         try:
             # Hermes's own past replies are stored but not recalled (a wrong reply would come back as "evidence"),
@@ -100,9 +110,9 @@ class EmbedMemoryProvider(MemoryProvider):
             return ""
         ctx = r.get("context", "")
         cur = r.get("current", {})
-        fears = "\n".join(f"- #{f['id']} {f['text']}" for f in r.get("fears", []))
         parts = [self._rules_block(r.get("rules", [])),
-                 f"## Warnings from experience (a past action caused a severe failure here)\n{fears}" if fears else "", self._profile_block(cur.get("profile", []), cur.get("mood")),
+                 self._pending_block(r.get("pending_rules", []), r.get("pending_profile", [])),
+                 self._profile_block(cur.get("profile", []), cur.get("mood")),
                  self._location_block(cur.get("location")),
                  f"## What you remember (from past conversations)\n{ctx}" if ctx else ""]
         return "\n\n".join(p for p in parts if p)
@@ -131,6 +141,12 @@ class EmbedMemoryProvider(MemoryProvider):
                  "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
                 {"name": "forget_rule",
                  "description": "Stop following a standing rule (by its id from list_rules) when the user revokes it.",
+                 "parameters": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}},
+                {"name": "confirm_rule", "description": "The owner said yes to a pending standing rule (by its #id).",
+                 "parameters": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}},
+                {"name": "confirm_preference", "description": "The owner said yes to a pending taste (by its #id).",
+                 "parameters": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}},
+                {"name": "forget_preference", "description": "Drop a taste (pending or kept) by its #id.",
                  "parameters": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}},
                 {"name": "list_rules", "description": "List the user's standing rules with their ids.",
                  "parameters": {"type": "object", "properties": {}}},
@@ -170,6 +186,11 @@ class EmbedMemoryProvider(MemoryProvider):
                 return json.dumps(_post("/memory/forget", {"id": int(args["id"])}, timeout=10))
             if tool_name == "remember_preference":
                 return json.dumps(_post("/profile", {"text": args["text"]}, timeout=10))
+            if tool_name in ("confirm_rule", "confirm_preference"):
+                path = "/rule/confirm" if tool_name == "confirm_rule" else "/profile/confirm"
+                return json.dumps(_post(path, {"id": int(args["id"])}, timeout=10))
+            if tool_name == "forget_preference":
+                return json.dumps(_post("/profile/forget", {"id": int(args["id"])}, timeout=10))
             if tool_name == "forget_rule":
                 return json.dumps(_post("/rule/forget", {"id": int(args["id"])}, timeout=10))
             if tool_name == "list_rules":

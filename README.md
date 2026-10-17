@@ -7,9 +7,9 @@ running somewhere today; what isn't was removed (see "History" below).
 
 | Folder | What it is | Where it runs |
 |---|---|---|
-| `memrouter/` | The memory service: `memory_service.py` (HTTP API on 127.0.0.1, SQLite store, fine-tuned bge-small encoder + learned MLP ranker, Qwen memory writer, standing rules), `experience.py` (episodes, surprise, credit, consolidation into strategies, lessons and fears), the recall engine (`fast_recall.py`, `learned_recall.py`), `dates.py`, `writer.py`, and the training scripts (`finetune_embed.py`, `locomo_data.py`) | Hermes server `/opt/embed-memory`; one fresh instance per benchmark stream; Claude Code (via `claude/`) |
+| `memrouter/` | The memory service: `memory_service.py` (HTTP API on 127.0.0.1, SQLite store, fine-tuned bge-small encoder + learned MLP ranker, Qwen memory writer; directives = standing rules and taste profile, pending until the owner confirms ones a model inferred), `failures.py` (experience: checks that failed in real outcomes, per scope, shown as warnings, with whether each warning helped), the recall engine (`fast_recall.py`, `learned_recall.py`), `dates.py`, `writer.py`, and the training scripts (`finetune_embed.py`, `locomo_data.py`) | Hermes server `/opt/embed-memory`; one fresh instance per benchmark stream; Claude Code (via `claude/`) |
 | `runner/` | The long-horizon runner `longrun.py`: plan → contract (SPEC.md) → tests (locked) → build → verify, with a watcher that runs every check and decides retry / escalate / revise spec / re-plan / stop. `stall.py` and `testparse.py` are its helpers. Talks to memrouter for rules and lessons. | Hermes server, inside podman sandboxes, against the Stockholm GPU |
-| `bench/` | The fast benchmark: `tasks.py` (basic and house-convention task sets, each with hidden tests), `bench.py` (paired seeded streams: mem / rules / none, report with a paired bootstrap), `progress.sh` (check a run over SSM) | Hermes server `/opt/longrun/...`, results in `/home/hermes/<run>` |
+| `bench/` | `backlog.py`: real multi-ticket projects (`scenarios/rental`, `scenarios/ward`) worked in one repo, hidden tests after each ticket, QA fix-up rounds (cost to working software), arms plain / runner / notes / mem. The fast benchmark: `tasks.py` (basic and house-convention task sets), `bench.py` (paired seeded streams: mem / rules / none, paired bootstrap). `progress.sh` (check a run over SSM) | Hermes server `/opt/longrun/...`, results in `/home/hermes/<run>` |
 | `hermes/` | The Hermes agent's plugins (`embed_memory` memory provider, `rails` hard safety rails), `install.sh` for the memory service, `stockholm_model.sh` for the GPU model server | Hermes server (Mumbai, ap-south-1) |
 | `claude/` | `embed_memory_mcp.py`: memrouter as Claude Code's memory over MCP (`.mcp.json`) | This Mac |
 | `tests/` | pytest for all of the above | `.venv/bin/pytest` |
@@ -22,9 +22,10 @@ WhatsApp ─► Hermes agent ─► embed_memory plugin ─► memrouter (/add, 
                      └─► model: Qwen3-14B-AWQ on vLLM (Stockholm g5, SSH tunnel to 127.0.0.1:8000)
 
 bench.py ─► runner/longrun.py (one job) ─► Qwen3-14B ─► podman sandbox
-     │            │  before planning and each step: /search → owner's standing rules + relevant advice/lessons/fears
-     │            └► after each step and the job: /episode, /add (advice), /consolidate
-     └► hidden tests score the job ─► owner feedback into memrouter (/episode, /add, rules the job broke)
+     │            │  before planning and each step: /search → owner's standing rules, the scope's failed checks
+     │            │  (warnings), what the owner said earlier. The runner writes nothing back.
+     └► hidden tests score the job ─► /outcome (failing checks + the job's warning_id), the owner's words (/add),
+                                      a rule the job broke (/rule)
 ```
 
 ## Run

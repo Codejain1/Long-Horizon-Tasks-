@@ -51,45 +51,54 @@ def test_escalation_uses_thinking_and_the_spec_reaches_build_steps(tmp_path):
 
 
 
-def test_experience_loop_through_memrouter(tmp_path):
+def test_memory_loop_real_outcomes_become_warnings_for_the_next_job(tmp_path):
+    """The runner only reads memory. The scorer posts the real outcome; the next job in that scope is warned about
+    the check that failed, and the outcome after it says whether the warning helped."""
     mem = M.Memory(tmp_path / "mem", fake_encode, KeywordRanker())
     threading.Thread(target=M.serve, args=(mem, 18799), daemon=True).start()
     time.sleep(0.3)
-    mr = LR.Memrouter("http://127.0.0.1:18799", min_score=0.0)  # the keyword stand-in ranker isn't on the MLP's scale
-    goal = "make greet return hello"
+    mr = LR.Memrouter("http://127.0.0.1:18799", scope="greet")
+    mem.add("Greetings must be lowercase hello, never Hi", "owner", "tickets")
+    mem.add_rule("Errors go to stderr")
     turns = [[call("write_file", path="test_g.py", content=TEST)], [call("done", summary="tests")],
-             [call("write_file", path="g.py", content="def hi():\n    return 'hi'\n")], [call("done", summary="v1")],
-             [call("write_file", path="g.py", content="def hi():\n    return 'hello'\n")], [call("done", summary="v2")]]
-    m1 = FakeModel([PLAN], turns)
-    assert LR.Runner(goal, LR.LocalSandbox(tmp_path / "ws1"), m1, tmp_path / "r1.jsonl", memrouter=mr).run()["ok"]
-    assert mem.db.execute("SELECT COUNT(*) FROM episodes").fetchone()[0] == 3  # 2 steps + the run
-    notes = mem.db.execute("SELECT text, kind, method FROM turns WHERE chat = 'runner-experience'").fetchall()
-    assert [(k, m) for _, k, m in notes] == [("advice", "program")]  # stored as advice, no writer call
-    assert notes[0][0].startswith("When a build step") and "what fixed it: v2" in notes[0][0]
+             [call("write_file", path="g.py", content="def hi():\n    return 'hello'\n")], [call("done", summary="v1")]]
+    m1 = FakeModel([PLAN], [t for t in turns])
+    r1 = LR.Runner("make greet return hello", LR.LocalSandbox(tmp_path / "ws1"), m1, tmp_path / "r1.jsonl",
+                   memrouter=mr).run()
+    assert r1["ok"] and r1["warning_id"] is None  # nothing failed yet in this scope
+    assert mem.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 1  # the runner wrote nothing
+    assert "OWNER'S STANDING RULES" in m1.plan_prompts[0] and "Greetings must be lowercase hello" in m1.plan_prompts[0]
 
+    mem.fails.record("greet", [{"check": "test_greeting_is_lowercase", "error": "assert 'Hi' == 'hello'"}])
     m2 = FakeModel([PLAN], [t for t in turns])
-    LR.Runner(goal, LR.LocalSandbox(tmp_path / "ws2"), m2, tmp_path / "r2.jsonl", memrouter=mr).run()
-    assert "LESSONS FROM PAST RUNS" in m2.plan_prompts[0] and "what fixed it: v2" in m2.plan_prompts[0]  # run 2 learns
+    r2 = LR.Runner("make greet return hello", LR.LocalSandbox(tmp_path / "ws2"), m2, tmp_path / "r2.jsonl",
+                   memrouter=mr).run()
+    assert "test_greeting_is_lowercase (failed 1x): assert 'Hi' == 'hello'" in m2.plan_prompts[0]
+    assert "test_greeting_is_lowercase" in m2.step_prompts[1]  # every step sees the warnings, not only the planner
+    out = mem.fails.record("greet", [], ["test_greeting_is_lowercase"], r2["warning_id"])
+    assert out["credited"] == ["test_greeting_is_lowercase"]
+    assert mem.fails.stats("greet")[0]["then_passed"] == 1
 
 
-def test_lessons_are_silent_unless_rules_or_relevant_advice():
-    """Benchmark run 2: pasting whatever search returned made the model worse. Only the owner's rules always go in;
-    other memories only when they are advice, a failure lesson or a fear AND the ranker scores them relevant."""
-    mr = LR.Memrouter("http://x", min_score=0.5)
-    items = [{"kind": "fact", "text": "Owner feedback: 1/3 checks passed", "score": 0.95},  # a record, not advice
-             {"kind": "advice", "text": "When tests fail with ModuleNotFoundError -> pip install pytest", "score": 0.8},
-             {"kind": "advice", "text": "irrelevant advice", "score": 0.2},
-             {"kind": "lesson", "text": "What failed: build via first try", "score": 0.6},
-             {"kind": "advice", "text": "outdated advice", "score": 0.9, "current": False},
-             *[{"kind": "advice", "text": f"more {k}", "score": 0.55} for k in range(3)]]
-    mr._post = lambda path, body: {"items": items, "rules": [], "fears": [], "recall_id": 4}
-    text, rid = mr.lessons("build a store")
-    assert rid == 4 and text.splitlines() == ["- When tests fail with ModuleNotFoundError -> pip install pytest",
-                                              "- What failed: build via first try", "- more 0"]  # top 3 by score
-    items[:] = items[:1] + items[2:3]  # nothing worth saying: no lessons at all
-    assert mr.lessons("build a store")[0] == ""
-    mr._post = lambda path, body: {"items": [], "rules": [{"text": "errors go to stderr"}], "fears": []}
-    assert mr.lessons("anything")[0] == "OWNER'S STANDING RULES (always follow):\n- errors go to stderr"
+def test_memory_text_has_rules_warnings_and_what_the_owner_said():
+    mr = LR.Memrouter("http://x", scope="house")
+    reply = {"rules": [{"text": "errors go to stderr"}], "warning_id": 4,
+             "warnings": [{"check": "test_house_empty", "seen": 2, "error": "assert '' == '(empty)'"}],
+             "items": [{"speaker": "owner", "text": "deposits are 4 months' rent"},
+                       {"speaker": "owner", "text": "old rate", "current": False},
+                       {"speaker": "Hermes", "text": "the assistant said something"}]}
+    sent = []
+    mr._post = lambda path, body: sent.append(body) or reply
+    parts = mr.read("build a store")
+    assert sent[0]["scope"] == "house" and parts["warning_id"] == 4
+    assert mr.text(parts).splitlines() == [
+        "OWNER'S STANDING RULES (always follow):", "- errors go to stderr",
+        "CHECKS THAT FAILED IN EARLIER JOBS HERE (get them right the first time):",
+        "- test_house_empty (failed 2x): assert '' == '(empty)'",
+        "WHAT THE OWNER SAID EARLIER (requirements that may apply here):", "- deposits are 4 months' rent"]
+    mr.read("a step", warnings=False)
+    assert sent[1]["scope"] == ""  # warnings are fetched (and logged) once per job
+    assert mr.text({"rules": [], "warnings": [], "said": []}) == ""
 
 
 IMPOSSIBLE = ("import json, subprocess, tempfile\n\ndef test_add():\n    p = tempfile.mktemp()\n    open(p, 'w').write('[]')\n"
@@ -176,58 +185,26 @@ class FakeMemrouter:
     def __init__(self):
         self.queries = []
 
-    def lessons(self, q):
+    def read(self, q, warnings=True):
         self.queries.append(q)
-        return "- add must keep all the words of the text", 7
+        return {"rules": [], "said": ["add must keep all the words of the text"], "warning_id": 7,
+                "warnings": [{"check": "test_add_keeps_words", "seen": 1, "error": ""}] if warnings else []}
 
-    def episode(self, **kw):
-        return {}
-
-    def note(self, text):
-        pass
-
-    def _post(self, path, body):
-        return {}
+    text = staticmethod(LR.Memrouter.text)
 
 
-def test_lessons_reach_each_step_not_only_the_planner(tmp_path):
+def test_memory_reaches_each_step_not_only_the_planner(tmp_path):
     plan = [{"id": "b", "kind": "build", "do": "build the add command", "check": {"cmd": "true"}}]
     m = FakeModel([plan], [[call("done", summary="built")]])
     mr = FakeMemrouter()
-    LR.Runner("store", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl", memrouter=mr).run()
-    assert "LESSONS FOR THIS KIND OF STEP" in m.step_prompts[0] and "keep all the words" in m.step_prompts[0]
+    r = LR.Runner("store", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl", memrouter=mr).run()
+    assert "FROM MEMORY" in m.step_prompts[0] and "keep all the words" in m.step_prompts[0]
+    assert "test_add_keeps_words" in m.step_prompts[0] and r["warning_id"] == 7
     assert any("build: build the add command" in q for q in mr.queries)
-
-
-class SlowMemrouter(FakeMemrouter):
-    def __init__(self):
-        super().__init__()
-        self.saved = []
-
-    def episode(self, **kw):
-        __import__("time").sleep(0.5)  # the memory writer is a model call
-        self.saved.append(kw["action"])
-        return {}
-
-    def note(self, text):
-        __import__("time").sleep(0.5)
-        self.saved.append("note")
-
-
-def test_memory_writes_do_not_block_the_work_and_are_not_lost(tmp_path):
-    import time
-    plan = [{"id": f"b{k}", "kind": "build", "do": f"step {k}", "check": {"cmd": "true"}} for k in range(4)]
-    m = FakeModel([plan], [[call("done", summary=f"s{k}")] for k in range(4)])
-    mr = SlowMemrouter()
-    rn = LR.Runner("g", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl", memrouter=mr)
-    t = time.time()
-    assert rn.run()["ok"]
-    assert time.time() - t < 2.0  # 5 writes x 0.5 s would be 2.5 s if the work waited on them
-    assert sorted(mr.saved) == sorted(["build via first try"] * 4 + ["long-horizon run"])  # all landed by the end
 
 
 def test_rules_only_memory_gives_the_owners_rules_and_nothing_else():
     mr = LR.Memrouter("http://x", rules_only=True)
-    mr._post = lambda path, body: {"items": [{"kind": "advice", "text": "relevant advice", "score": 0.9}],
-                                   "fears": [{"text": "WARNING: x"}], "rules": [{"text": "errors go to stderr"}]}
-    assert mr.lessons("build")[0] == "OWNER'S STANDING RULES (always follow):\n- errors go to stderr"
+    mr._post = lambda path, body: {"items": [{"speaker": "owner", "text": "relevant"}], "warning_id": None,
+                                   "warnings": [{"check": "x", "seen": 1}], "rules": [{"text": "errors go to stderr"}]}
+    assert mr.text(mr.read("build")) == "OWNER'S STANDING RULES (always follow):\n- errors go to stderr"

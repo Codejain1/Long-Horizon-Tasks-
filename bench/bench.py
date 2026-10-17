@@ -79,9 +79,11 @@ def feedback(out: str) -> str:
     return "; ".join(dict.fromkeys(fails))[:600]
 
 
-def tell_memory(port: int, task: T.Task, passed: int, total: int, out: str) -> None:
-    """Ground truth back into memrouter after delivery (simulated owner feedback): memory learns from the real outcome,
-    not only from the agent's own checks (benchmark run 1 showed self-reported success hides wrong readings)."""
+def tell_memory(port: int, task: T.Task, passed: int, total: int, out: str, scope: str = "",
+                warning_id: int | None = None) -> None:
+    """Ground truth back into memrouter after delivery (simulated owner feedback): the failing checks become
+    experience for the scope (crediting the warnings this job was shown), the owner's words are kept, and a house
+    rule the delivery broke is stated by the owner as a standing rule."""
     import urllib.request
 
     def post(path, body):
@@ -90,13 +92,15 @@ def tell_memory(port: int, task: T.Task, passed: int, total: int, out: str) -> N
         urllib.request.urlopen(req, timeout=120).read()
     ok = passed == total and total > 0
     what = "all acceptance checks passed" if ok else f"{passed}/{total} acceptance checks passed. Failed: {feedback(out)}"
-    post("/episode", {"situation": task.goal[:300], "action": "delivered job", "actual": {"success": passed / max(total, 1)},
-                      "signal": "human"})
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "memrouter"))
+    import failures as FL
+
+    post("/outcome", {"scope": scope, "failed": FL.from_pytest(out), "warning_id": warning_id,
+                      "passed": re.findall(r"^PASSED \S+::(\w+)", out, re.M)})
     post("/add", {"text": f"Owner feedback after delivery of '{task.goal[:160]}': {what}", "speaker": "owner",
                   "chat": "acceptance-feedback", "detect_rule": False})
     for rule in T.broken_rules(failed_tests(out)):  # the owner states the convention the delivery broke, as a person would
-        post("/add", {"text": f"From now on, in every program you build for me: {rule}", "speaker": "owner",
-                      "chat": "acceptance-feedback", "detect_rule": True})
+        post("/rule", {"text": f"From now on, in every program you build for me: {rule}"})
 
 
 def start_memrouter(cmd: str, home: Path, port: int) -> subprocess.Popen:
@@ -127,7 +131,7 @@ def run_stream(arm: str, seed: int, args, port: int):
             if args.local:
                 cmd.append("--local")
             if mem:
-                cmd += ["--memory-url", f"http://127.0.0.1:{port}"]
+                cmd += ["--memory-url", f"http://127.0.0.1:{port}", "--scope", args.set]
                 if arm == "rules":
                     cmd.append("--rules-only")
             t0 = time.time()
@@ -142,13 +146,13 @@ def run_stream(arm: str, seed: int, args, port: int):
                     proc.kill()
             minutes = (time.time() - t0) / 60
             passed, total, out_text = score(task, wd, args.image)
-            if mem:
-                try:
-                    tell_memory(port, task, passed, total, out_text)
-                except Exception as e:
-                    print(f"feedback to memory failed: {e!r}", flush=True)
             run = [json.loads(x) for x in (wd / "run.jsonl").read_text().splitlines()] if (wd / "run.jsonl").exists() else []
             rep = next((e for e in reversed(run) if e.get("event") == "report"), {})
+            if mem:
+                try:
+                    tell_memory(port, task, passed, total, out_text, args.set, rep.get("warning_id"))
+                except Exception as e:
+                    print(f"feedback to memory failed: {e!r}", flush=True)
             rec = {"arm": arm, "seed": seed, "pos": pos, "task": task.id, "family": task.family, "passed": passed,
                    "total": total, "solved": passed == total and total > 0, "minutes": round(minutes, 2),
                    "interventions": len(rep.get("decisions") or []), "runner_ok": bool(rep.get("ok")),

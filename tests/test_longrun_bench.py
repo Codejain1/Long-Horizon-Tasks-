@@ -54,9 +54,12 @@ def test_true_outcome_reaches_memory(tmp_path):
     threading.Thread(target=M.serve, args=(mem, 18810), daemon=True).start()
     time.sleep(0.3)
     task = T.all_tasks()[0]
-    B.tell_memory(18810, task, 2, 3, OUT)
-    ep = mem.db.execute("SELECT action, success, signal FROM episodes").fetchone()
-    assert ep == ("delivered job", 2 / 3, "human")
+    _, wid = mem.fails.warn("basic")
+    B.tell_memory(18810, task, 2, 3, OUT, "basic", wid)
+    stats = {x["check"]: x for x in mem.fails.stats("basic")}
+    assert set(stats) == {"test_add_and_list", "test_count"} and stats["test_count"]["seen"] == 1
+    assert mem.db.execute("SELECT error FROM failures WHERE check_id = 'test_add_and_list'").fetchone()[0] == \
+        "AssertionError: assert ['1. first'] == ['1. first item']"
     note = mem.db.execute("SELECT text FROM turns WHERE chat = 'acceptance-feedback'").fetchone()[0]
     assert "2/3 acceptance checks passed" in note and "first item" in note
 
@@ -112,11 +115,13 @@ def test_broken_house_rule_becomes_a_standing_rule_the_runner_sees(tmp_path):
     time.sleep(0.3)
     t = T.all_tasks("house")[0]
     out = "FAILED test_hidden_acceptance.py::test_house_errors - assert 1 == 2\n1 failed, 4 passed"
-    B.tell_memory(18811, t, 4, 5, out)
+    B.tell_memory(18811, t, 4, 5, out, "house")
     rule = f"From now on, in every program you build for me: {T.HOUSE_RULES['errors']}"
-    assert [r["text"] for r in mem.rules()] == [rule]
-    text, _ = LR.Memrouter("http://127.0.0.1:18811").lessons("Write summary_average.py, a CSV report")
+    assert [r["text"] for r in mem.rules()] == [rule]  # stated by the owner: active at once
+    mr = LR.Memrouter("http://127.0.0.1:18811", scope="house")
+    text = mr.text(mr.read("Write summary_average.py, a CSV report"))
     assert text.startswith("OWNER'S STANDING RULES (always follow):\n- From now on") and "exits with code 2" in text
+    assert "test_house_errors (failed 1x): assert 1 == 2" in text
 
 
 def test_report_shows_house_rule_learning(tmp_path):
