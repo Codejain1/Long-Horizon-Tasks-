@@ -48,12 +48,33 @@ Evidence from the code and from the live Hermes memory (read-only):
 - **Hermes, the writer and every benchmark stream share one A10G.**
 
 ## In progress
-- **housebench2** (`/home/hermes/housebench2`): the house set with mem / rules / none × 2 seeds. It shows how much
-  of the conventions win is the rules alone. Check it with `bash bench/progress.sh housebench2 [report]`. The server
-  runs the pre-restructure copy in `/opt/longrun/fb4`.
-- **Restructure (branch `v3/lean-repo`):** the live code moved to `memrouter/ runner/ bench/ hermes/ claude/`.
-  The runner's write-only Horizon event log was removed, and 128 tests pass. With the owner's OK, the old code
-  (`src/ evals/ docs/`, Docker files, one-off scripts) was deleted after harvesting what is reusable into `IDEAS.md`.
+- **Step 0 (stop the harm):**
+  - **Concurrency fix (done):** every SQLite statement runs under one lock with its rows fetched whole, and the
+    HTTP accept queue went from 5 to 128. A new stress test (8 threads × 60 requests) passes; the old flaky test
+    passed 10/10.
+  - **Wrong live rules (not done):** removing rules 3–6 and profile 5 on live Hermes was approved by the owner but
+    blocked by the permission check. The owner runs it (command in the session summary). A backup exists:
+    `/home/hermes/.embed-memory/memory.db.bak-20261017-203609`.
+- **Step 1, measurement (built, smoke running):**
+  - `bench/backlog.py` runs the rental and ward multi-ticket scenarios in one repo, with hidden tests after each
+    ticket and QA fix-up rounds.
+  - Arms: plain / runner / notes / mem. The runner gained `--plain` and token accounting.
+  - The scenarios are checked: rental's 23 and ward's 31 hidden tests pass on the reference and fail on the start.
+  - Smoke runs (rental tickets 1–2): `/home/hermes/backlog-smoke` (v3a = the system before the redesign) and
+    `backlog-smoke-b` (v3b = after). Check with `bash bench/backlog_progress.sh backlog-smoke backlog-smoke-b [report]`.
+- **Step 2, memory redesign (built):**
+  - Directives inferred by a model wait as pending; Hermes asks the owner (`confirm_rule`, `confirm_preference`).
+  - `failures.py` replaces `experience.py`: failing checks from real outcomes, per scope, become warnings, credited by
+    `warning_id`.
+  - The runner reads rules, warnings and what the owner said, and writes nothing back.
+  - Not yet deployed to live Hermes. The food/location move waits for that deploy.
+- **Step 3, lean runner (built):** it finishes when every fixed test passes, reviews the spec only when stuck, and
+  thinks only on escalation.
+- **housebench2 (stopped at ~60 %, old memory design):**
+  - mem vs none solved +38.9 [+16.7, +61.1], house checks +42.6 [+20.4, +64.8];
+  - rules-only vs none solved +15.8 [+0.0, +31.6], house checks +33.3 [+17.5, +49.1].
+  - Rules alone carry most of the rule-following. Full memory solved more, likely via the feedback naming failing
+    checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
 - 2026-10-18: repo restructured to only what runs. Everything else is in the tag `snapshot-pre-restructure`;
