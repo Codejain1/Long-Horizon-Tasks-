@@ -1,6 +1,10 @@
+import sys
+from pathlib import Path
+
 import pytest
 
-from horizon.testparse import is_test_command, may_run_tests, parse_test_output
+sys.path.insert(0, str(Path(__file__).parent.parent / "runner"))
+from testparse import is_test_command, may_run_tests, parse_test_output  # noqa: E402
 
 
 @pytest.mark.parametrize("cmd", ["./ci.sh", "cd app && ./ci.sh -q", "sh scripts/test.sh", "bash ci.sh",

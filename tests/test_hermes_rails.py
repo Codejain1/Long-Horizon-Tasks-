@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "deploy" / "hermes"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
 import rails as R  # noqa: E402
 
 SWIGGY_CART = """- heading "Checkout" [ref=e1]

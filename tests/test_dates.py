@@ -4,7 +4,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "evals" / "memory"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "memrouter"))
 import dates  # noqa: E402
 
 SUN_17_SEP_2023 = date(2023, 9, 17)

@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "evals" / "longrun"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "bench"))
 import bench as B  # noqa: E402
 import tasks as T  # noqa: E402
 
@@ -47,7 +47,7 @@ def test_feedback_reads_like_a_user_report():
 def test_true_outcome_reaches_memory(tmp_path):
     import threading
     import time
-    sys.path[:0] = [str(Path(__file__).parent.parent / "deploy" / "hermes"), str(Path(__file__).parent)]
+    sys.path[:0] = [str(Path(__file__).parent.parent / "memrouter"), str(Path(__file__).parent)]
     import memory_service as M
     from test_hermes_memory import KeywordRanker, fake_encode
     mem = M.Memory(tmp_path, fake_encode, KeywordRanker())
@@ -102,8 +102,8 @@ def test_score_reads_each_house_check(tmp_path):
 def test_broken_house_rule_becomes_a_standing_rule_the_runner_sees(tmp_path):
     import threading
     import time
-    sys.path[:0] = [str(Path(__file__).parent.parent / "deploy" / "hermes"), str(Path(__file__).parent),
-                    str(Path(__file__).parent.parent / "deploy" / "longrun")]
+    sys.path[:0] = [str(Path(__file__).parent.parent / "memrouter"), str(Path(__file__).parent),
+                    str(Path(__file__).parent.parent / "runner")]
     import longrun as LR
     import memory_service as M
     from test_hermes_memory import KeywordRanker, fake_encode

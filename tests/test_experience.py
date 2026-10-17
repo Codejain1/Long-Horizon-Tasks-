@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-sys.path[:0] = [str(ROOT / "evals" / "memory"), str(ROOT / "deploy" / "hermes")]
+sys.path[:0] = [str(ROOT / "memrouter"), str(ROOT / "memrouter")]
 import experience as X  # noqa: E402
 from test_hermes_memory import KeywordRanker, fake_encode  # noqa: E402
 
