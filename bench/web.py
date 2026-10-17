@@ -65,24 +65,34 @@ def score_versions(answer: dict, fetch=get_json):
     return ok, 3, notes
 
 
-def osm_names(lat: float, lng: float, radius: int = 2500, fetch=get_json) -> set[str]:
-    q = (f'[out:json][timeout:25];nwr(around:{radius},{lat},{lng})["amenity"~"^(restaurant|cafe|fast_food)$"]["name"];'
-         "out tags 500;")
-    for url in ("https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"):
-        try:
-            els = fetch(url, urllib.parse.urlencode({"data": q}).encode()).get("elements", [])
-            return {e["tags"]["name"].strip().lower() for e in els}
-        except Exception:
-            continue
-    raise RuntimeError("OpenStreetMap (Overpass) unreachable: score this task later")
+def osm_place(name: str, lat: float, lng: float, radius_km: float = 2.5, fetch=get_json) -> bool:
+    """Is there an OpenStreetMap place with this name within radius_km of the point? (Nominatim search in a box
+    around it; Overpass was unreachable from the server on 2026-10-18.)"""
+    d = radius_km / 111
+    box = f"{lng - d},{lat + d},{lng + d},{lat - d}"
+    rows = fetch("https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+        {"q": name, "format": "jsonv2", "limit": 10, "bounded": 1, "viewbox": box}))
+    want = name.strip().lower()
+    return any(want in str(r.get("name", "")).lower() or str(r.get("name", "")).lower() in want
+               for r in rows if r.get("name") and _km(lat, lng, float(r["lat"]), float(r["lon"])) <= radius_km)
 
 
-def score_places(answer: dict, fetch=get_json):
-    names = osm_names(*HOME, fetch=fetch)
-    places = ((answer.get("answer") or {}).get("places") or [])[:3]
-    found = [str(p.get("name", "")).strip().lower() in names for p in places if isinstance(p, dict)]
-    return sum(found), 3, [f"{p.get('name')}: {'in OSM within 2.5 km' if f else 'NOT found'}"
-                           for p, f in zip(places, found)]
+def _km(a_lat, a_lng, b_lat, b_lng) -> float:
+    import math
+    p = math.pi / 180
+    h = (math.sin((b_lat - a_lat) * p / 2) ** 2 +
+         math.cos(a_lat * p) * math.cos(b_lat * p) * math.sin((b_lng - a_lng) * p / 2) ** 2)
+    return 12742 * math.asin(math.sqrt(h))
+
+
+def score_places(answer: dict, fetch=get_json, pause: float = 1.1):
+    places = [p for p in ((answer.get("answer") or {}).get("places") or [])[:3] if isinstance(p, dict)]
+    found = []
+    for i, p in enumerate(places):
+        if i:
+            time.sleep(pause)  # Nominatim's policy: one request a second
+        found.append(bool(str(p.get("name", "")).strip()) and osm_place(str(p["name"]), *HOME, fetch=fetch))
+    return sum(found), 3, [f"{p.get('name')}: {'in OSM within 2.5 km' if f else 'NOT found'}" for p, f in zip(places, found)]
 
 
 def score_flights(answer: dict, check=status):
@@ -106,8 +116,8 @@ TASKS = [
                         "release of the newest release line of each), from official or reliable sources. answer = "
                         '{"python": "x.y.z", "nodejs": "x.y.z", "postgresql": "x.y"}.', score_versions),
     WebTask("places", f"The owner is at {HOME[0]}, {HOME[1]} (Koramangala, Bengaluru) and wants to eat out. Find 3 "
-                      "restaurants or cafes within 2 km of that point, using OpenStreetMap data (for example the "
-                      "Overpass API). answer = {\"places\": [{\"name\": ..., \"lat\": ..., \"lng\": ...}]}.",
+                      "restaurants or cafes within 2 km of that point, using OpenStreetMap data (for example Nominatim: "
+                      "https://nominatim.openstreetmap.org/search?q=restaurant&format=jsonv2&bounded=1&viewbox=...). answer = {\"places\": [{\"name\": ..., \"lat\": ..., \"lng\": ...}]}.",
             score_places),
     WebTask("flights", "Prepare flight search links for 1 adult from Delhi (DEL) to Bengaluru (BLR) on 15 December "
                        "2026: one Google Flights link and one on an airline's own website, so the owner can compare "

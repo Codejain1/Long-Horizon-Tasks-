@@ -66,8 +66,8 @@ passing. No SPEC.md: the contract is the existing code plus the goal. Order:
      checked by running the new test file (python -m pytest -q <new test file>);
   3. a final "verify" step running the project's own test command (./ci.sh if there is one, else pytest)."""
 
-ORDER_RESEARCH = """This is a RESEARCH task: the answer comes from real web sources (use the run tool with curl, or python
-with urllib; read the pages), never from memory. Write the result to answer.json:
+ORDER_RESEARCH = """This is a RESEARCH task: the answer comes from real web sources, never from memory. Read pages with
+the fetch tool (fetch with find returns the passages around a phrase: copy quotes from them exactly). Write the result to answer.json:
   {"answer": <the answer, structured>, "claims": [{"claim": "<one fact>", "url": "<the page it is on>",
     "quote": "<an exact short phrase copied from that page that shows the fact>"}]}
 Every fact in the answer needs a claim. Steps:
@@ -105,6 +105,13 @@ def public_names(source: str, init: bool = False) -> set[str]:
         elif init and isinstance(n, ast.ImportFrom):
             names |= {a.asname or a.name for a in n.names}
     return {x for x in names if not x.startswith("_")}
+
+
+def page_text(html_text: str) -> str:
+    """Readable text of an HTML page: scripts, styles and tags dropped, entities decoded, spaces collapsed."""
+    import html
+    t = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html_text)
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", t)).split())
 
 
 def project_map(root: Path, limit: int = 3000) -> str:
@@ -184,6 +191,10 @@ TOOLS = [
                     "required": ["path", "content"]}}},
     {"type": "function", "function": {"name": "read_file", "description": "Read a text file.",
      "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {"name": "fetch", "description": "Fetch a web page as readable text (no HTML). "
+     "With `find`, only the passages around that phrase (case-insensitive): use them as exact quotes.",
+     "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "find": {"type": "string"}},
+                    "required": ["url"]}}},
     {"type": "function", "function": {"name": "edit_file", "description": "Change part of an existing file: replace "
      "the exact text `old` (copied from the file, appearing once) with `new`. To add code, use the lines it goes "
      "after as `old` and repeat them at the start of `new`. Prefer this to rewriting a whole file.",
@@ -629,6 +640,8 @@ class Runner:
                 return self.box.write(str(a["path"]), str(a.get("content", "")))
             if name == "read_file":
                 return self.box.read(str(a["path"]))
+            if name == "fetch":
+                return self.fetch_text(str(a.get("url", "")), str(a.get("find", "")))
             if name == "edit_file":
                 path = str(a.get("path", "")).lstrip("./")
                 if not (self.box.root / path).exists():
@@ -690,10 +703,27 @@ class Runner:
             return True
         return False  # still impossible: nothing is locked, the watcher stops and asks rather than build on it
 
+    def fetch_text(self, url: str, find: str = "") -> str:
+        """A page as the evidence check will see it (fetched from the sandbox, tags stripped): the whole text
+        (cut at 6000 characters), or with `find` the passages around each match."""
+        import shlex
+        if not url.startswith(("http://", "https://")):
+            return "error: give a full http(s) url"
+        code, out = self.box.run(f"curl -sL --compressed --max-time 20 -A 'Mozilla/5.0' {shlex.quote(url)} | head -c 3000000",
+                                 timeout=40)
+        if code != 0 or not out.strip():
+            return f"error: could not fetch {url} (exit {code})"
+        text = page_text(out)
+        if not find:
+            return text[:6000] + (f"\n... ({len(text)} characters in all; use find to search)" if len(text) > 6000 else "")
+        hits = [m.start() for m in re.finditer(re.escape(find.lower()), text.lower())][:6]
+        if not hits:
+            return f"'{find}' is not on {url} ({len(text)} characters of text)"
+        return "\n---\n".join(text[max(0, h - 200):h + len(find) + 200] for h in hits)
+
     def check_evidence(self, path: str) -> tuple[bool, str]:
         """Research done-check: every claim's url is fetched from the sandbox and its quote must be on the page. A
         model can't pass it with invented facts or links."""
-        import html
         import shlex
 
         f = self.box.root / path
@@ -703,7 +733,7 @@ class Runner:
             return False, f"{path} is missing or not JSON with a claims list: {e}"
         if not claims:
             return False, f"{path} has no claims: every fact needs a url and an exact quote"
-        norm = lambda t: " ".join(html.unescape(re.sub(r"<[^>]+>", " ", t)).lower().split())  # noqa: E731
+        norm = lambda t: page_text(t).lower()  # noqa: E731  (the same text the fetch tool shows)
         bad, pages = [], {}
         for c in claims[:20]:
             url, quote = str(c.get("url", "")), norm(str(c.get("quote", "")))

@@ -62,9 +62,13 @@ def test_tasks_score_against_independent_truth():
     truth = {"python": "3.14.0", "nodejs": "25.1.0", "postgresql": "18.0"}
     fetch = lambda url, data=None: [{"latest": truth[url.rsplit("/", 1)[1][:-5]]}]  # noqa: E731
     assert W.score_versions({"answer": {"python": "3.14.0", "nodejs": "v25.1.0", "postgresql": "17.6"}}, fetch)[:2] == (2, 3)
-    osm = lambda url, data=None: {"elements": [{"tags": {"name": "Sattvam"}}, {"tags": {"name": "Tokyo Table"}}]}  # noqa: E731
-    places = {"answer": {"places": [{"name": "sattvam"}, {"name": "Made Up Cafe"}, {"name": "Tokyo Table"}]}}
-    assert W.score_places(places, osm)[:2] == (2, 3)
+    near = {"sattvam": (12.936, 77.614), "tokyo table": (12.93, 77.62), "far cafe": (13.2, 77.9)}
+
+    def osm(url, data=None):
+        q = W.urllib.parse.parse_qs(W.urllib.parse.urlparse(url).query)["q"][0].lower()
+        return [{"name": q.title(), "lat": str(near[q][0]), "lon": str(near[q][1])}] if q in near else []
+    places = {"answer": {"places": [{"name": "Sattvam"}, {"name": "Made Up Cafe"}, {"name": "Far Cafe"}]}}
+    assert W.score_places(places, osm, pause=0)[:2] == (1, 3)  # invented and too far both fail
     links = {"answer": {"links": [
         {"site": "Google Flights", "url": "https://www.google.com/travel/flights?q=Flights%20from%20DEL%20to%20BLR%20on%202026-12-15"},
         {"site": "IndiGo", "url": "https://www.goindigo.in/booking?from=DEL&to=BLR&date=15/12/2026"}]}}
@@ -111,3 +115,16 @@ def test_every_arm_is_told_the_answer_format(tmp_path, monkeypatch):
     a = SimpleNamespace(out=str(tmp_path), model_url="x", max_minutes=1, local=True, explore=0.2)
     W.run_job(W.WebTask("t", "Find X.", lambda ans: (0, 1, [])), "plain", 1, a)
     assert cmds[0][2].startswith("Find X. Use live web sources") and '"claims"' in cmds[0][2]
+
+
+def test_fetch_tool_gives_readable_text_and_quotes_that_pass_the_evidence_check(tmp_path):
+    url = site()
+    rn = LR.Runner("g", LR.LocalSandbox(tmp_path / "ws"), None, tmp_path / "r.jsonl")
+    text = rn._tool("fetch", {"url": f"{url}/py"})
+    assert "Python 3.14.0 is the newest major release." in text and "<h1>" not in text
+    snippet = rn._tool("fetch", {"url": f"{url}/py", "find": "newest major"})
+    assert "Python 3.14.0 is the newest major release" in snippet
+    assert "is not on" in rn._tool("fetch", {"url": f"{url}/py", "find": "Python 9"})
+    quote = snippet.split("Python 3.14.0 is")[1][:20]
+    assert check(tmp_path, [{"claim": "py", "url": f"{url}/py", "quote": "Python 3.14.0 is" + quote}])[0]
+    assert LR.page_text("<p>a</p><script>var x=1;</script><style>p{}</style>b &amp; c") == "a b & c"
