@@ -97,6 +97,10 @@ def score_flights(answer: dict, check=status):
     return sum(checks), 4, [f"links {len(urls)}", f"resolve {checks[2]}", f"route+date in every link {checks[3]}"]
 
 
+FORMAT = (" Use live web sources (fetch the pages), not what you remember. Write the result to answer.json as "
+          '{"answer": <the answer above>, "claims": [{"claim": <one fact>, "url": <the page it is on>, "quote": <a short '
+          'phrase copied exactly from that page>}]}.')
+
 TASKS = [
     WebTask("versions", "Find the newest released version of Python, of Node.js and of PostgreSQL (the latest stable "
                         "release of the newest release line of each), from official or reliable sources. answer = "
@@ -116,7 +120,7 @@ def run_job(task: WebTask, arm: str, rep: int, args) -> dict:
     wd = Path(args.out) / "work" / f"{arm}-{rep}" / task.id
     shutil.rmtree(wd, ignore_errors=True)
     wd.mkdir(parents=True)
-    cmd = [sys.executable, str(RUNNER), task.goal, "--model-url", args.model_url, "--workdir", str(wd),
+    cmd = [sys.executable, str(RUNNER), task.goal + FORMAT, "--model-url", args.model_url, "--workdir", str(wd),
            "--max-minutes", str(args.max_minutes), "--judge-db", str(Path(args.out) / "judge.db")]
     cmd += ["--plain"] if arm == "plain" else ["--kind", "research"]
     cmd += ["--local"] if args.local else []

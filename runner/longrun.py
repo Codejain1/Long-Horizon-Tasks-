@@ -451,8 +451,10 @@ class Runner:
         steps = []
         for i, s in enumerate(_json(msg.get("content", "")).get("steps", [])[:10], 1):
             check = s.get("check") if isinstance(s.get("check"), dict) else {}
-            if not (check.get("cmd") or check.get("file") or check.get("judge")):
+            if not (check.get("cmd") or check.get("file") or check.get("judge") or check.get("evidence")):
                 check = {"cmd": "true"}  # unverifiable step: the watcher can only trust the executor here
+            if self.kind == "research" and check.get("cmd", "").strip() in ("true", ":", ""):
+                check = {"evidence": "answer.json"}  # research: facts are checked against their pages, never trusted
             steps.append(Step(str(s.get("id") or f"s{i}"), str(s.get("do", "")), check, list(s.get("uses") or []),
                               str(s.get("kind") or "build")))
         self._log(event="plan", steps=[s.__dict__ for s in steps], extra=extra[:300], lessons=lessons[:600])
@@ -467,7 +469,8 @@ class Runner:
             files = "".join(f"--- {f}\n{self.box.read(f)[:1500]}\n" for f in dict.fromkeys(self.step_writes)
                             if (self.box.root / f).exists())
             r = self.judge.ask("step", step.check["judge"], f"GOAL: {self.goal}\nSTEP: {step.do}\n"
-                                                             f"DOER'S SUMMARY: {step.output}\n{files}")
+                                                             f"DOER'S CLAIM (not evidence: judge it against the files "
+                                                             f"below): {step.output}\n{files}")
             ok = r["p"] >= self.JUDGE_PASS
             return ok, f"judge says p={r['p']:.2f} (needs {self.JUDGE_PASS}): {r['reason']}"
         if "file" in step.check:
@@ -795,8 +798,22 @@ class Runner:
     def run(self, max_replans: int = 2) -> dict:
         self._start()
         self.steps = self.plan()
-        replans, i = 0, 0
-        while i < len(self.steps):
+        replans, i, evidence_rounds = 0, 0, 0
+        while True:
+            if i >= len(self.steps):  # the plan is done; a research job also needs every claim verified on its page
+                if self.kind != "research":
+                    break
+                ok_e, why_e = self.check_evidence("answer.json")
+                if ok_e:
+                    break
+                if evidence_rounds >= 2:
+                    return self.report(stopped=self.steps[-1] if self.steps else None,
+                                       reason=f"answer.json never passed the evidence check: {why_e}")
+                evidence_rounds += 1
+                self.steps.append(Step(f"e{evidence_rounds}", "Fix answer.json so every fact has a claim whose url opens "
+                                       "and whose quote is copied exactly from that page (fetch the pages; drop facts you "
+                                       f"cannot source):\n{why_e[:800]}", {"evidence": "answer.json"}, kind="verify"))
+                self._log(event="evidence_gate", round=evidence_rounds, why=why_e[:500])
             step, error, history, option, hint = self.steps[i], "", [], "first try", ""
             while True:
                 if self.deadline and time.time() > self.deadline:  # a time budget: one stuck job can't eat the run
