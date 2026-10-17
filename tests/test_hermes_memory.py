@@ -254,3 +254,40 @@ def test_program_text_is_stored_as_is_with_its_kind_and_search_scores_items(tmp_
     assert row[:3] == ("When a build step fails with X -> what fixed it: Y", "advice", "program")
     [it] = mem.search("build step fails")["items"]
     assert it["kind"] == "advice" and isinstance(it["score"], float) and it["score"] > 0
+
+
+def test_concurrent_requests_lose_nothing(tmp_path):
+    """Hermes saves turns in background threads while the runner records episodes and searches: the server handles
+    each request on its own thread over one SQLite store. Nothing may fail or go missing."""
+    import json
+    import urllib.request
+
+    mem = memory(tmp_path)
+    threading.Thread(target=M.serve, args=(mem, 18820), daemon=True).start()
+    time.sleep(0.3)
+    errors = []
+
+    def post(path, body):
+        req = urllib.request.Request(f"http://127.0.0.1:18820{path}", json.dumps(body).encode())
+        try:
+            out = json.loads(urllib.request.urlopen(req, timeout=60).read())
+            if "error" in out:
+                errors.append(out["error"])
+        except Exception as e:  # noqa: BLE001
+            errors.append(repr(e))
+
+    def worker(k):
+        for i in range(15):
+            post("/add", {"text": f"note {k}-{i} about the rent and the lease", "speaker": "owner", "chat": f"c{k}"})
+            post("/episode", {"situation": f"job {k}-{i}", "action": "build via first try", "actual": {"success": 1.0}})
+            post("/search", {"query": "rent lease", "budget": 200})
+            post("/rule", {"text": f"rule {k}-{i}"})
+    threads = [threading.Thread(target=worker, args=(k,)) for k in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert mem.db.execute("SELECT COUNT(*) FROM turns WHERE chat LIKE 'c%'").fetchone()[0] == 120
+    assert mem.db.execute("SELECT COUNT(*) FROM episodes").fetchone()[0] == 120
+    assert len(mem.rules(1000)) == 120

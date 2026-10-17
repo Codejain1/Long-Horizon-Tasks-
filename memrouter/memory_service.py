@@ -140,10 +140,49 @@ def pieces(text: str, size: int = 120) -> list[str]:
     return [" ".join(w[i:i + size]) for i in range(0, len(w), size)]
 
 
+class _Rows:
+    """A finished query: rows already fetched, so no cursor is shared between threads."""
+
+    def __init__(self, cur):
+        self.rows = cur.fetchall() if cur.description else []
+        self.rowcount, self.lastrowid = cur.rowcount, cur.lastrowid
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return self.rows
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
+class _LockedDB:
+    """One SQLite connection used by every server thread: each statement runs and is fetched whole under one
+    re-entrant lock (interleaved cursors lost episodes and raised InterfaceError under concurrent requests).
+    ponytail: one lock for all statements; a writer queue or per-thread connections if throughput ever matters."""
+
+    def __init__(self, path, lock):
+        self.conn, self.lock = sqlite3.connect(path, check_same_thread=False), lock
+
+    def execute(self, sql, params=()):
+        with self.lock:
+            return _Rows(self.conn.execute(sql, params))
+
+    def executemany(self, sql, rows):
+        with self.lock:
+            return _Rows(self.conn.executemany(sql, rows))
+
+    def commit(self):
+        with self.lock:
+            self.conn.commit()
+
+
 class Memory:
     def __init__(self, home: Path, encode, ranker, tz: str = "Asia/Kolkata", fetch=_http_json, writer=None):
         home.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(home / "memory.db", check_same_thread=False)
+        self.lock = threading.RLock()  # ponytail: one lock for reads and writes; fine for one person's messages
+        self.db = _LockedDB(home / "memory.db", self.lock)
         self.db.execute("CREATE TABLE IF NOT EXISTS turns (id INTEGER PRIMARY KEY, ts REAL, chat TEXT, speaker TEXT, "
                         "text TEXT, vec BLOB)")
         self.db.execute("CREATE TABLE IF NOT EXISTS rules (id INTEGER PRIMARY KEY, ts REAL, text TEXT, "
@@ -159,7 +198,6 @@ class Memory:
             if col not in have:  # older stores: add the writer's columns in place, existing rows stay "unclassified"
                 self.db.execute(f"ALTER TABLE turns ADD COLUMN {col} {typ}")
         self.encode, self.ranker, self.tz, self.fetch, self.writer = encode, ranker, ZoneInfo(tz), fetch, writer
-        self.lock = threading.Lock()  # ponytail: one lock for reads and writes; fine for one person's messages
         self.conv, self.dirty, self.rebuilding = None, True, False
         self.exp = X.Experience(self)  # outcomes -> surprise, credit, lessons, fears
 
@@ -559,7 +597,10 @@ def serve(mem: Memory, port: int):
         def log_message(self, *args):
             pass
 
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    class Server(ThreadingHTTPServer):
+        request_queue_size = 128  # the default 5 refused connections when a job's writes and a search arrive together
+
+    Server(("127.0.0.1", port), H).serve_forever()
 
 
 def main() -> int:
