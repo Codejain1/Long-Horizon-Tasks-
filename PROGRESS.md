@@ -59,13 +59,27 @@ Evidence from the code and from the live Hermes memory (read-only):
 4. **Big-model arm:** per-role endpoints (`--planner/--spec/--judge URL,MODEL,KEY_ENV`, `--api-key-env`), tokens
    per model, backlog `--label/--extra`. The live headline run needs the owner's OK to use an API key (Hermes's
    OpenRouter key exists on the server).
-5. **World model (`runner/forecast.py`):** built and tested on synthetic logs. The real replay (fastbench2/3,
-   housebench, housebench2) was not run: the AWS session expired. Next:
-   `forecast.py train --runs ... --out forecast.json`.
+5. **World model (`runner/forecast.py`):** trained on 250 real jobs (fastbench2/3, housebench, housebench2).
+   - Grouped replay: Brier 0.235 vs base rate 0.250, gain +0.0145 [+0.004, +0.025]. **The gate passes.**
+   - The doom policy (stop if P < 0.1 after 40 % of the budget) never fires: the model is never that sure, so it
+     saves nothing yet.
+   - Model at `/home/hermes/forecast/forecast.json`.
+- **Research live run web1 (invalid):**
+  - the planner used `true` checks;
+  - Qwen wrote versions from memory (Python 3.11.6 vs the true 3.15.0);
+  - the judge accepted them from the doer's summary;
+  - the goal never told the plain arm the answer format.
+
+  Fixed: trivial checks become evidence checks, a job finishes only once every claim is on its page, the judge
+  treats the summary as a claim, and every goal states the answer format. Rerun as `/home/hermes/web2`.
 - **Brownfield:** the smoke showed every arm failed rental ticket 1 by rebuilding the project. The runner now has a
   project map, existing tests fixed from the start and re-run, writes that drop names or shadow the package refused,
   and an extend-don't-rebuild plan shape. The guard was seen working live (it refused a rewrite that dropped
   `KINDS`). The v3e smoke `/home/hermes/backlog-smoke-e` (rental 1-3, plain / runner / mem) is running.
+  - **Ticket 1, runner:** it extended `properties.py` correctly but forgot `from typing import Optional`
+    (NameError) and ran out of its 12-minute budget during the re-plan.
+  - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
+  - These are now model-quality failures, not harness bugs.
 
 ## In progress
 - **Step 0 (stop the harm):**
