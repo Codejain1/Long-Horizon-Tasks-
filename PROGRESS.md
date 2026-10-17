@@ -87,6 +87,15 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Latest live results (2026-10-18, Qwen3-14B)
+- **Brownfield rental, tickets 1–3 (backlog-smoke-e):** plain 0/4 hidden at the end (5.6 min, 0.14M tokens);
+  runner 0/4 (64 min, 1.21M tokens); runner + memory: package import broken, 0/0 (40 min, 0.56M tokens). No arm
+  solved a ticket. The runner costs about 10× more with no gain yet.
+- **Research tasks (web3):** complete and verified 0/4 in both arms; checks plain 3/14 vs runner 6/14. Qwen invented
+  versions (3.11–3.12 vs the true 3.15.0) and a place at the owner's exact coordinates; the evidence check caught
+  every one. The places task can't be scored (Overpass unreachable from the server): replace its truth source.
+- **Free frontier model:** blocked by the 50 requests/day free-tier limit.
+
 ## In progress
 - **Wrong live rules removed (2026-10-18, owner's instruction):** rules 3–6 and profile 5 are deactivated; live
   Hermes now has 1 rule and 4 taste entries. The backup is `memory.db.bak-20261017-203609`.
