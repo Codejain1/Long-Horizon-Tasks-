@@ -93,7 +93,18 @@ Evidence from the code and from the live Hermes memory (read-only):
 - Ticket 2 (KYC masking) failed in every arm. In ticket 3 the runner broke ticket 1's search (the regression guard
   was all-or-nothing and turned off); mem kept it.
 - Fixed since: the guard is per test, and research `kind: link` claims (the quote is in the url, the link must open).
-- Rerun: `/home/hermes/backlog-l` (runner, mem) and `/home/hermes/web5` (runner), code v3l.
+- **The v3l rerun was worse (`backlog-l`, `web5`):** runner and mem 0 passing on every ticket; research 0/6
+  verified, 7/20 checks.
+  - Cause on rental: in ticket 1 the model made `properties.py` import a `search_properties` that `store.py`
+    didn't have. `import rentals` broke, and every later attempt, re-plan and ticket started from the broken
+    package. The guard saw it but nothing undid it.
+  - With n = 1 per arm, j's solved ticket 1 and l's failure are both within run-to-run noise. One solved run proves
+    the system can do it, not that it reliably does.
+  - Research: the model never used `kind: link` for flight links (the repair message didn't mention it), and it
+    quoted old versions again.
+- **Fixed in v3m:** the code (not tests) is snapshotted at each step's start. An attempt that breaks a test that
+  passed before, or drops an existing name, is rolled back, and the model is told so. Evidence failures now show the
+  link-claim form. Rerun: `backlog-m` (runner, mem), `backlog-m-r2` (runner again, for n = 2), `web6`.
 - **Rental tickets 1–3 (`backlog-j`, v3j: edit_file, existing tests shown, quick fix, 20-min budget):**
 
   | Arm | Hidden tests passing right after each ticket | Passing at the end | Minutes | Tokens |
@@ -166,6 +177,10 @@ Evidence from the code and from the live Hermes memory (read-only):
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-19: a failed attempt that broke earlier work is rolled back to the step's start, not built on: building on a
+  broken package cost the whole v3l rental run.
+- 2026-10-19: deploy presigns need `--region ap-south-1` (the default region gives a 301 redirect, which the md5
+  check caught).
 - 2026-10-18: repo restructured to only what runs. Everything else is in the tag `snapshot-pre-restructure`;
   `IDEAS.md` lists what is worth reusing from it, with evidence and paths.
 - 2026-10-18: the runner no longer writes Horizon events (`--events-db` removed): nothing read them.
