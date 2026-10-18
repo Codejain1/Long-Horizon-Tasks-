@@ -105,6 +105,29 @@ Evidence from the code and from the live Hermes memory (read-only):
 - **Fixed in v3m:** the code (not tests) is snapshotted at each step's start. An attempt that breaks a test that
   passed before, or drops an existing name, is rolled back, and the model is told so. Evidence failures now show the
   link-claim form. Rerun: `backlog-m` (runner, mem), `backlog-m-r2` (runner again, for n = 2), `web6`.
+- **v3m crashed at startup, unnoticed by the benchmark:** macOS `tar` added `._*.py` metadata files that Python can't
+  read; the bench threw away the runner's error output and scored the crash as "0 passed" (1 min, 0 tokens). Now:
+  tarballs with `COPYFILE_DISABLE=1 --no-xattrs`, the runner skips `._` files, and a crash stops the arm with its error.
+  Research (web6) did run: 7/20 checks, evidence ok 2/6, verified 0/6, about the same as before.
+- **Why ticket 2 (KYC) fails, from the backlog-j logs:**
+  - The tests step said "created tests/test_tenant_kyc.py" three times without writing it: 4 min and both re-plans
+    gone before any code. Now `done` is refused while the step's file is missing.
+  - The runner added `verify_tenant` to `people.py` but never exported it from `rentals/__init__.py`; quick fix and
+    thinking mode both missed it. Now the watcher names the missing export line.
+  - Both arms' own tests used Aadhaar `123456789012` as valid; the ticket forbids a leading 1. The spec reviewer caught
+    this 3/3 times when asked offline (old prompt too), but in the run the 20-min budget ran out first.
+  - Ticket 2 gates the rest: the hidden conftest's `tenant()` calls `verify_tenant`, so later tickets' hidden tests
+    can't pass without it.
+- **Places scored 0 because it was impossible:** Nominatim answers the bare `Mozilla/5.0` user agent with 403, so no
+  arm ever got data. The runner now fetches as `Mozilla/5.0 (compatible; long-horizon-runner/0.1)` (200 on every
+  task site), and the goal states the viewbox order (models wrote lat first).
+- **Newest-version check:** a claim of the newest version fails if its own page lists a higher stable version
+  (pre-releases skipped). On the real pages: 10/10 right (correct answers pass; 3.13.12, 20.9.0, 16.3 flagged).
+  Ceiling: a stale page without the newer version still passes, and "latest LTS" goals would be misjudged.
+- **Report pools repeat runs:** `backlog.py report --out D1 D2 ...` gives each arm's mean and, from 3 runs per arm,
+  a bootstrap 95 % interval vs plain.
+- **Running (v3n, all of the above except the user agent):** `backlog-n` (runner, mem), `backlog-n-r2` (runner),
+  `web7` (runner). Research needs a rerun of both arms with the user-agent fix: plain was blocked too.
 - **Rental tickets 1–3 (`backlog-j`, v3j: edit_file, existing tests shown, quick fix, 20-min budget):**
 
   | Arm | Hidden tests passing right after each ticket | Passing at the end | Minutes | Tokens |
@@ -177,6 +200,9 @@ Evidence from the code and from the live Hermes memory (read-only):
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-19: the spec reviewer prompt stays as is: offline, Qwen caught the invalid Aadhaar 3/3 with it, so the
+  ticket 2 failure was time, not review.
+- 2026-10-19: the places goal names Nominatim's viewbox order: documentation every arm gets, not a hint for one.
 - 2026-10-19: a failed attempt that broke earlier work is rolled back to the step's start, not built on: building on a
   broken package cost the whole v3l rental run.
 - 2026-10-19: deploy presigns need `--region ap-south-1` (the default region gives a 301 redirect, which the md5
