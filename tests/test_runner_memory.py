@@ -353,3 +353,24 @@ def test_an_attempt_that_breaks_earlier_work_is_rolled_back(tmp_path):
     log = (tmp_path / "r.jsonl").read_text()
     assert r["ok"] and '"rolled_back"' in log and "were rolled back to the start of this step" in log
     assert not (ws / "shop" / "extra.py").exists() and "def total" in (ws / "shop" / "items.py").read_text()
+
+
+def test_a_name_defined_but_not_exported_gets_a_one_line_fix_hint(tmp_path):
+    ws = brownfield(tmp_path)
+    (ws / "shop" / "items.py").write_text((ws / "shop" / "items.py").read_text() + "\n\ndef total():\n    return 0\n")
+    (ws / "tests" / "test_total.py").write_text("import shop\n\ndef test_total():\n    assert shop.total() == 0\n")
+    rn = LR.Runner("x", LR.LocalSandbox(ws), None, tmp_path / "r.jsonl")
+    ok, err = rn.check(LR.Step("b", "x", {"cmd": f"{sys.executable} -m pytest -q tests/test_total.py"}))
+    assert not ok and "`total` is defined in shop/items.py but shop/__init__.py does not export it" in err
+    assert rn._export_hint("module 'shop' has no attribute 'nothing'") == ""
+
+
+def test_done_is_refused_while_the_steps_file_is_missing(tmp_path):
+    plan = [{"id": "t", "kind": "tests", "do": "write tests", "check": {"file": "tests/test_x.py"}}]
+    m = FakeModel([plan], [[call("run", cmd="true"), call("done", summary="created tests/test_x.py")],
+                           [call("write_file", path="tests/test_x.py", content="def test_x():\n    pass\n")],
+                           [call("done", summary="t")]])
+    rn = LR.Runner("g", LR.LocalSandbox(tmp_path / "ws"), m, tmp_path / "r.jsonl")
+    r = rn.run()
+    log = (tmp_path / "r.jsonl").read_text()
+    assert r["ok"] and '"done_refused"' in log and '"decision"' not in log  # one attempt, no escalation or re-plan

@@ -117,6 +117,23 @@ def page_text(html_text: str) -> str:
     return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", t)).split())
 
 
+VERSION = re.compile(r"(?<![\w.])v?(\d{1,3}(?:\.\d{1,3}){1,2})(?![\w.]*\d)(?![a-z])")
+PRERELEASE = re.compile(r"^\W{0,3}(alpha|beta|rc|pre-?release|preview|candidate|nightly|dev|a\d|b\d)", re.I)
+
+
+def newer_on_page(quote: str, page: str) -> str:
+    """A "newest version" claim must not have a higher stable version on its own page (Qwen quoted real pages for
+    old releases, Python 3.13.12 vs 3.15.0 on 2026-10-18). Returns that higher version, or ""."""
+    claimed = VERSION.search(quote)
+    if not claimed:
+        return ""
+    key = lambda v: tuple(map(int, v.split(".")))  # noqa: E731
+    mine = key(claimed[1])
+    higher = [m[1] for m in VERSION.finditer(page) if len(key(m[1])) == len(mine) and key(m[1]) > mine
+              and not PRERELEASE.search(page[m.end():m.end() + 20])]
+    return max(higher, key=key) if higher else ""
+
+
 def project_map(root: Path, limit: int = 3000) -> str:
     """What an existing project offers, so a small model extends it instead of inventing it: each module's public
     functions and classes with their signatures and first docstring line, the test files and how tests run."""
@@ -517,7 +534,20 @@ class Runner:
             return ok, "" if ok else f"file {step.check['file']} does not exist"
         # pipefail: "pytest | tail -3" must fail when pytest fails, not report tail's exit code
         code, out = self.box.run("set -o pipefail; " + step.check["cmd"])
-        return code == 0, f"check `{step.check['cmd']}` exited {code}:\n{out[-1500:]}"
+        return code == 0, f"check `{step.check['cmd']}` exited {code}:\n{out[-1500:]}" + self._export_hint(out)
+
+    def _export_hint(self, out: str) -> str:
+        """`module 'pkg' has no attribute 'name'` while pkg/<module>.py defines it: the fix is one import line, which
+        Qwen missed through quick fix and thinking mode alike (2026-10-19 rental ticket 2)."""
+        hints = []
+        for pkg, name in sorted(set(re.findall(r"module '(\w+)' has no attribute '(\w+)'", out))):
+            init = self.box.root / pkg / "__init__.py"
+            for f in sorted(init.parent.glob("*.py")) if init.exists() else []:
+                if f.name != "__init__.py" and re.search(rf"^(def|class) {name}\b|^{name}\s*=", f.read_text(), re.M):
+                    hints.append(f"WATCHER: `{name}` is defined in {pkg}/{f.name} but {pkg}/__init__.py does not export "
+                                 f"it: add it to the `from {pkg}.{f.stem} import ...` line there (and to __all__).")
+                    break
+        return "\n" + "\n".join(hints) if hints else ""
 
     def execute(self, step: Step, error: str = "", deep: bool = False, hint: str = "") -> str:
         self.step_writes = []
@@ -554,6 +584,7 @@ class Runner:
                                                                 uses=uses and uses + "\n", facts=facts, error=err,
                                                                 spec=spec, hint=hint and f"WATCHER: {hint}\n")}]
         spec_step = step.kind in ("contract", "tests")
+        refused = 0
         for _ in range(min(self.max_calls, 6) if deep else self.max_calls):  # thinking calls are slow: fewer
             if self.deadline and time.time() > self.deadline:  # the budget holds inside an attempt too
                 return "(time budget used up)"
@@ -580,6 +611,15 @@ class Runner:
                     self._log(event="dispute", step=step.id, cmd=a.get("cmd", ""), reason=a.get("reason", ""),
                               result=result)
                     msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": result})
+                    continue
+                need = step.check.get("file")
+                if name == "done" and need and not (self.box.root / need).exists() and refused < 2:
+                    # Qwen said "created tests/x.py" three times without writing it (2026-10-19 rental ticket 2):
+                    # each false done cost a whole attempt, and two of them cost both re-plans
+                    refused += 1
+                    self._log(event="done_refused", step=step.id, missing=need)
+                    msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content":
+                                 f"refused: {need} does not exist yet. Write it with write_file, then call done."})
                     continue
                 if name == "done":
                     self._log(event="done_claimed", step=step.id, summary=a.get("summary", ""))
@@ -738,6 +778,7 @@ class Runner:
         if not claims:
             return False, f"{path} has no claims: every fact needs a url and an exact quote"
         norm = lambda t: page_text(t).lower()  # noqa: E731  (the same text the fetch tool shows)
+        newest = bool(re.search(r"\b(newest|latest)\b", self.goal, re.I))
         bad, pages = [], {}
         for c in claims[:20]:
             url, quote = str(c.get("url", "")), norm(str(c.get("quote", "")))
@@ -759,6 +800,9 @@ class Runner:
                 bad.append(f"{url}: could not be fetched")
             elif quote not in pages[url] and not in_link:
                 bad.append(f"{c.get('claim', '?')[:80]}: the quote is not on {url}")
+            elif newest and newer_on_page(quote, pages[url]):
+                bad.append(f"{c.get('claim', '?')[:80]}: {url} also lists {newer_on_page(quote, pages[url])}, a newer "
+                           "version: the goal asks for the newest")
         if bad:
             return False, ("EVIDENCE CHECK FAILED (fix or drop these claims):\n- " + "\n- ".join(bad[:8])
                            + '\nA link you prepared for the owner (a search page you did not read) is the claim {"kind": '

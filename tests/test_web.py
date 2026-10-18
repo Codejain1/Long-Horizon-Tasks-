@@ -139,3 +139,13 @@ def test_a_prepared_link_may_quote_its_own_url_but_must_open(tmp_path):
     assert not ok  # without kind link, the quote must be on the page
     ok, why = check(tmp_path, [{"kind": "link", "claim": "f", "url": f"{url}/gone?q=DEL%20to%20BLR", "quote": "DEL to BLR"}])
     assert not ok and "does not open (HTTP 404)" in why  # a dead link never passes
+
+
+def test_a_newest_version_claim_fails_when_its_page_lists_a_newer_stable_one():
+    # text as python.org showed it on 2026-10-19: a 3.16.0 alpha in the news must not count
+    page = ("latest news 2026- 10-13 python 3.16.0 alpha 1 is now available. python 3.15.0 oct. 1, 2026 download "
+            "python 3.13.12 sept. 30, 2026 download 3.16 pre-release")
+    assert LR.newer_on_page("python 3.15.0", page) == ""
+    assert LR.newer_on_page("Python 3.13.12", page) == "3.15.0"
+    assert LR.newer_on_page("no version here", page) == ""
+    assert LR.newer_on_page("16.3", "postgresql 18.6, 17.11, 16.15 released; pgjdbc 2.60.0") == "18.6"

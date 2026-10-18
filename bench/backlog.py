@@ -1,7 +1,7 @@
 """Backlog benchmark: real multi-ticket work, scored as cost to working software.
 
     python bench/backlog.py run --scenario rental --arm runner --out DIR --model-url URL [--image IMG] [--fixups 2]
-    python bench/backlog.py report --out DIR
+    python bench/backlog.py report --out DIR [DIR ...]   (several dirs = repeat runs, pooled with intervals)
 
 One scenario (bench/scenarios/<name>: a starting repo, one ticket per session, hidden tests per ticket) is worked
 through in order in ONE repo, as a team's backlog is. Early tickets set business rules that later tickets need
@@ -217,6 +217,45 @@ def report(out: str) -> str:
     return "\n".join(lines) or "no results yet"
 
 
+def run_scores(rows: list[dict]) -> tuple[float, float]:
+    """One run of an arm: (share of hidden tests passing after each ticket, after its fix-ups, averaged over
+    tickets; share passing at the end, i.e. nothing earlier broken)."""
+    each = statistics.mean(r["final"] / r["total"] if r["total"] else 0.0 for r in rows)
+    return each, rows[-1]["final"] / max(rows[-1]["total"], 1)
+
+
+def pooled(dirs: list[str], boot: int = 5000, seed: int = 0) -> str:
+    """Repeat runs across dirs, per arm: mean scores and, against plain, a bootstrap 95 % interval of the
+    difference (runs resampled within each arm). Fewer than 3 runs in an arm: no interval, it would be noise."""
+    import random
+    runs: dict[str, list[tuple[float, float]]] = {}
+    for d in dirs:
+        for f in sorted(Path(d).glob("*.jsonl")):
+            rows = [json.loads(x) for x in f.read_text().splitlines() if x.strip()]
+            if rows:
+                runs.setdefault(f.stem, []).append(run_scores(rows))
+    lines = []
+    for arm, rs in sorted(runs.items()):
+        lines.append(f"{arm:7} runs {len(rs)}  passing after each ticket {100 * statistics.mean(r[0] for r in rs):5.1f}%  "
+                     f"at the end {100 * statistics.mean(r[1] for r in rs):5.1f}%")
+    rng = random.Random(seed)
+    for arm, rs in sorted(runs.items()):
+        if arm == "plain" or "plain" not in runs:
+            continue
+        base = runs["plain"]
+        if min(len(rs), len(base)) < 3:
+            lines.append(f"{arm} vs plain: {len(rs)} and {len(base)} runs, no interval below 3 runs each")
+            continue
+        for k, name in ((0, "after each ticket"), (1, "at the end")):
+            diffs = sorted(statistics.mean(rng.choice(rs)[k] for _ in rs) - statistics.mean(rng.choice(base)[k] for _ in base)
+                           for _ in range(boot))
+            mean = statistics.mean(r[k] for r in rs) - statistics.mean(r[k] for r in base)
+            lo, hi = diffs[int(0.025 * boot)], diffs[int(0.975 * boot) - 1]
+            lines.append(f"{arm} vs plain, {name}: {100 * mean:+.1f} points [{100 * lo:+.1f}, {100 * hi:+.1f}]"
+                         + ("  (interval above 0)" if lo > 0 else "  (could be noise)" if lo <= 0 <= hi else "  (worse)"))
+    return "\n".join(lines)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -236,10 +275,13 @@ def main() -> int:
     r.add_argument("--label", default="", help="name for this variant of the arm (results file and report)")
     r.add_argument("--extra", default="", help="extra runner flags, e.g. a frontier model for some role")
     p = sub.add_parser("report")
-    p.add_argument("--out", required=True)
+    p.add_argument("--out", required=True, nargs="+")
     args = ap.parse_args()
     if args.cmd == "report":
-        print(report(args.out))
+        for d in args.out:
+            print(f"== {d}\n{report(d)}")
+        if len(args.out) > 1:
+            print("== pooled over the runs\n" + pooled(args.out))
         return 0
     run(args)
     print(report(args.out))

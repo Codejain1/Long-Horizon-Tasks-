@@ -120,3 +120,19 @@ def test_a_labelled_variant_passes_its_runner_flags(tmp_path, monkeypatch):
     assert cmds[0][-4:] == ["--model", "frontier-1", "--api-key-env", "BIG_KEY"] and "--plain" in cmds[0]
     rows = BL.run(a, job=lambda *x: {"minutes": 0, "ok": True, "tokens": 0, "by_model": {}})
     assert rows[0]["arm"] == "big" and (tmp_path / "out" / "big.jsonl").exists()
+
+
+def test_repeat_runs_pool_with_an_interval_only_from_three_runs(tmp_path):
+    def run_dir(i, arm, finals):
+        d = tmp_path / f"r{i}"
+        d.mkdir(exist_ok=True)
+        rows = [{"ticket": t + 1, "final": f, "total": t + 1} for t, f in enumerate(finals)]
+        (d / f"{arm}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return str(d)
+    dirs = [run_dir(i, "plain", [0, 0, 0]) for i in range(3)]
+    for i, finals in enumerate(([1, 2, 3], [1, 1, 2], [1, 2, 2])):
+        run_dir(i, "runner", finals)
+    out = BL.pooled(dirs)
+    assert "runner  runs 3" in out and "runner vs plain, at the end" in out and "(interval above 0)" in out
+    assert "no interval below 3 runs" in BL.pooled(dirs[:2])
+    assert abs(BL.run_scores([{"final": 1, "total": 1}, {"final": 1, "total": 3}])[0] - 2 / 3) < 1e-9
