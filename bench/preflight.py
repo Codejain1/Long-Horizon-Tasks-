@@ -54,14 +54,18 @@ def checks(args):
     sdir, sc = BL.scenario(args.scenario)
     with tempfile.TemporaryDirectory() as t:
         repo = TK.build_state(sdir, sc, 1, Path(t) / "repo")
-        rn = LR.Runner("preflight", LR.LocalSandbox(repo), None, Path(t) / "r.jsonl")
-        rn.PYTEST = f"{sys.executable} -m pytest"
+        box = LR.LocalSandbox(repo) if args.local else LR.PodmanSandbox(repo, image=args.image)  # as the jobs run
+        rn = LR.Runner("preflight", box, None, Path(t) / "r.jsonl")
+        if args.local:
+            rn.PYTEST = f"{sys.executable} -m pytest"
         try:
             rn._start()
             yield rn.brownfield and bool(rn.passing_before), (f"the runner reads {args.scenario}: {len(rn.base_names)} "
                                                               f"modules, {len(rn.passing_before)} existing tests passing")
         except Exception as e:
             yield False, f"the runner reads {args.scenario}: {e!r}"[:200]
+        finally:
+            box.close()
         passed, failed, _ = BL.hidden(sdir, 1, repo, Path(t) / "h", args.image)
         yield bool(failed) and not passed, f"ticket 1's hidden tests fail on the start ({len(failed)} failing)"
 
