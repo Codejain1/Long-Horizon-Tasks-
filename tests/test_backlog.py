@@ -106,6 +106,8 @@ def test_a_labelled_variant_passes_its_runner_flags(tmp_path, monkeypatch):
     cmds = []
 
     class P:
+        returncode = 0
+
         def __init__(self, cmd, **kw):
             cmds.append(cmd)
 
@@ -136,3 +138,23 @@ def test_repeat_runs_pool_with_an_interval_only_from_three_runs(tmp_path):
     assert "runner  runs 3" in out and "runner vs plain, at the end" in out and "(interval above 0)" in out
     assert "no interval below 3 runs" in BL.pooled(dirs[:2])
     assert abs(BL.run_scores([{"final": 1, "total": 1}, {"final": 1, "total": 3}])[0] - 2 / 3) < 1e-9
+
+
+def test_a_runner_crash_stops_the_arm_instead_of_scoring_zero(tmp_path, monkeypatch):
+    a = args(tmp_path, "runner")
+    a.label, a.extra = "", ""
+    (tmp_path / "repo").mkdir()
+
+    class P:
+        returncode = 1
+
+        def __init__(self, cmd, stderr=None, **kw):
+            stderr.write("UnicodeDecodeError: 'utf-8' codec can't decode byte 0xa3\n")
+            stderr.close()
+
+        def wait(self, timeout=None):
+            return 1
+    monkeypatch.setattr(BL.subprocess, "Popen", P)
+    import pytest
+    with pytest.raises(RuntimeError, match="(?s)crashed on t01.*0xa3"):
+        BL.run_job("ticket", tmp_path / "repo", tmp_path / "logs", "t01", a, None)

@@ -83,7 +83,8 @@ SKIP_DIRS = {".git", "venv", ".venv", "env", "__pycache__", "node_modules", ".py
 
 
 def _py_files(root: Path) -> list[Path]:
-    return sorted(f for f in Path(root).rglob("*.py") if not SKIP_DIRS & set(f.relative_to(root).parts))
+    return sorted(f for f in Path(root).rglob("*.py")  # ._x.py: macOS metadata, not code (crashed v3m)
+                  if not SKIP_DIRS & set(f.relative_to(root).parts) and not f.name.startswith("._"))
 
 
 def _is_test(rel: str) -> bool:

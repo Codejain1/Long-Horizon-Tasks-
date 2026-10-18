@@ -88,7 +88,9 @@ def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None)
     cmd += ["--local"] if args.local else []
     cmd += shlex.split(args.extra) if args.extra else []
     t0 = time.time()
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    Path(args.out).mkdir(parents=True, exist_ok=True)
+    err = Path(args.out) / f"{args.label or args.arm}-runner.err"
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err.open("w"))
     try:
         proc.wait(timeout=args.max_minutes * 60 + 600)
     except subprocess.TimeoutExpired:
@@ -103,6 +105,8 @@ def run_job(goal: str, repo: Path, logs: Path, tag: str, args, port: int | None)
         logs.mkdir(parents=True, exist_ok=True)
         shutil.move(str(log), logs / f"{tag}.jsonl")
     rep = next((e for e in reversed(events) if e.get("event") == "report"), {})
+    if proc.returncode not in (0, None) and not rep:  # a crash is not a result: never score it as "0 passed"
+        raise RuntimeError(f"the runner crashed on {tag} (exit {proc.returncode}):\n{err.read_text()[-2000:]}")
     u = rep.get("usage") or {}
     return {"minutes": round((time.time() - t0) / 60, 2), "ok": bool(rep.get("ok")), "warning_id": rep.get("warning_id"),
             "judge_id": rep.get("judge_id"), "by_model": u.get("by_model") or {},
