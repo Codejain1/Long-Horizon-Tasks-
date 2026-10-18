@@ -439,6 +439,7 @@ class Runner:
         import random
         self.explore, self.rng = explore, random.Random(seed)  # explore: benchmarks only, never the owner's jobs
         self.brownfield, self.base_names, self.existing_tests, self.existing_ok = False, {}, set(), False
+        self.passing_before: set[str] = set()
         self.decisions: list[dict] = []
 
     def _doomed(self) -> str:
@@ -774,11 +775,19 @@ class Runner:
             gone = names - (public_names(f.read_text(), path.endswith("__init__.py")) if f.exists() else set())
             if gone:
                 return f"WATCHER: {path} lost existing names: {', '.join(sorted(gone))}. Restore them; extend, don't replace."
-        if self.existing_ok:
-            code, out = self.box.run(f"{self.PYTEST} -q -p no:cacheprovider " + " ".join(sorted(self.existing_tests)))
-            if code != 0:
-                return f"WATCHER: the project's existing tests now fail (they passed before this job):\n{out[-1200:]}"
+        if self.passing_before:
+            now, out = self._passing_tests()
+            broken = sorted(self.passing_before - now)
+            if broken:
+                return (f"WATCHER: these tests passed before this job and now fail (a regression: earlier work broke):"
+                        f"\n- " + "\n- ".join(broken[:10]) + f"\n{out[-1200:]}")
         return ""
+
+    def _passing_tests(self) -> tuple[set[str], str]:
+        """Which of the project's existing tests pass now, test by test (one failing ticket must not switch the
+        regression guard off for the rest: the 2026-10-19 rental run lost ticket 1's search that way)."""
+        code, out = self.box.run(f"{self.PYTEST} -q -rA -p no:cacheprovider " + " ".join(sorted(self.existing_tests)))
+        return set(re.findall(r"^PASSED (\S+)", out, re.M)), out
 
     def _start(self):
         """Look at the workspace before planning: an existing project (code already there) is extended, never rebuilt."""
@@ -796,13 +805,13 @@ class Runner:
         if self.existing_tests:  # the watcher's own tool: without it the starting state can't be measured
             self.box.run(f"{self.PYTEST} --version >/dev/null 2>&1 || pip install -q pytest", timeout=300)
         if self.existing_tests:
-            self.existing_ok = self.box.run(f"{self.PYTEST} -q -p no:cacheprovider "
-                                            + " ".join(sorted(self.existing_tests)))[0] == 0
+            self.passing_before = self._passing_tests()[0]
+            self.existing_ok = bool(self.passing_before)
         for t in self.existing_tests:  # fixed from the start: restored if a shell command edits them
             content = (root / t).read_text()
             self.locked[t] = (hashlib.sha256(content.encode()).hexdigest(), content)
         self._log(event="brownfield", modules=sorted(self.base_names), tests=sorted(self.existing_tests),
-                  tests_pass=self.existing_ok)
+                  passing=len(self.passing_before))
 
     def _all_locked_pass(self) -> bool:
         """The fixed tests are the spec: when all of them pass, the job is done, whatever steps the plan has left

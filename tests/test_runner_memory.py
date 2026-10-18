@@ -281,7 +281,7 @@ def test_a_build_that_breaks_existing_tests_has_failed(tmp_path):
     assert rn._brownfield_guard() == ""
     (ws / "shop" / "items.py").write_text("ITEMS = {}\n\ndef add_item(name, price):\n    pass\n\ndef get_item(name):\n"
                                           "    return None\n")  # a shell edit: names kept, behaviour broken
-    assert "existing tests now fail" in rn._brownfield_guard()
+    assert "passed before this job and now fail" in rn._brownfield_guard()
     (ws / "shop" / "items.py").write_text("ITEMS = {}\n")
     assert "lost existing names: add_item, get_item" in rn._brownfield_guard()
 
@@ -322,3 +322,16 @@ def test_the_new_tests_step_sees_how_the_existing_tests_are_written(tmp_path):
     rn.run()
     assert "HOW THE PROJECT'S EXISTING TESTS ARE WRITTEN" in m.step_prompts[0]
     assert "def item(name='a', price=3)" in m.step_prompts[0] and "shop.get_item('a') == 3" in m.step_prompts[0]
+
+
+def test_one_failing_old_test_does_not_switch_off_the_regression_guard(tmp_path):
+    ws = brownfield(tmp_path)
+    (ws / "tests" / "test_unsolved.py").write_text("import shop\n\ndef test_last_ticket():\n    assert shop.total() == 9\n")
+    rn = LR.Runner("x", LR.LocalSandbox(ws), None, tmp_path / "r.jsonl")
+    rn.PYTEST = f"{sys.executable} -m pytest"
+    rn._start()
+    assert rn.passing_before == {"tests/test_shop.py::test_add"}  # the unsolved ticket's test fails, the rest counts
+    assert rn._brownfield_guard() == ""
+    (ws / "shop" / "items.py").write_text("ITEMS = {}\n\ndef add_item(name, price):\n    pass\n\ndef get_item(name):\n"
+                                          "    return None\n")
+    assert "tests/test_shop.py::test_add" in rn._brownfield_guard()
