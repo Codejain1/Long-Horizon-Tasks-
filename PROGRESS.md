@@ -87,13 +87,26 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
-## Running now (2026-10-18 ~23:30 UTC)
-- **`/home/hermes/backlog-j`** (code v3j): rental tickets 1–3, plain / runner / mem, 20-min budget, no exploration.
-  The runner now has `edit_file`, a tests step shown the existing tests, and a quick fix before escalation. Check:
-  `bash bench/backlog_progress.sh backlog-j report`.
-- **`/home/hermes/web4`** (code v3k): research tasks, plain vs runner, 2 reps, with the new `fetch` tool and places
-  scored by Nominatim. Check: `cd /opt/longrun/v3k && python bench/web.py report --out /home/hermes/web4`.
-- **Done:** a daily Hermes container cleanup (systemd timer; 55 old containers removed now).
+## Results after the runner fixes (2026-10-19)
+- **Rental tickets 1–3 (`backlog-j`, v3j: edit_file, existing tests shown, quick fix, 20-min budget):**
+
+  | Arm | Hidden tests passing right after each ticket | Passing at the end | Minutes | Tokens |
+  |---|---|---|---|---|
+  | plain | 0 % | 0/4 | 7 | 0.61M |
+  | runner | **25 %** (before the fixes: 0 %) | 0/4 | 80 | 2.14M |
+  | mem | **37.5 %** | **1/4** (the only arm with a passing test at the end) | 105 | 2.30M |
+
+  First real progress on existing-project work. Still no ticket fully solved and kept, and the cost is about 10×
+  plain.
+- **Research (`web4`, v3k: fetch tool, Nominatim):** complete and verified 0/6 in both arms; checks runner **9/20** vs
+  plain 2/20.
+  - The runner found the **true** Node.js version (26.12.0) with a verified quote. It left Python and PostgreSQL
+    blank rather than invent them.
+  - The plain agent's quotes were real but for **old** versions (Python 3.13.12): the evidence check proves a quote
+    exists, not that it is the newest.
+  - Flight links: runner 4/4 and 3/4 checks (links resolve, route and date right). The evidence check fails because
+    Google Flights is a JavaScript page with no quotable text.
+  - Places: 0 in both arms.
 
 ## Latest live results (2026-10-18, Qwen3-14B)
 - **Brownfield rental, tickets 1–3 (backlog-smoke-e):** plain 0/4 hidden at the end (5.6 min, 0.14M tokens);
