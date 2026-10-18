@@ -14,7 +14,7 @@ import web as W  # noqa: E402
 def site():
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == "/py":
+            if self.path.split("?")[0] == "/py":
                 body = b"<html><h1>Python 3.14.0</h1><p>Python&nbsp;3.14.0 is the newest   major release.</p></html>"
                 self.send_response(200)
             else:
@@ -128,3 +128,14 @@ def test_fetch_tool_gives_readable_text_and_quotes_that_pass_the_evidence_check(
     quote = snippet.split("Python 3.14.0 is")[1][:20]
     assert check(tmp_path, [{"claim": "py", "url": f"{url}/py", "quote": "Python 3.14.0 is" + quote}])[0]
     assert LR.page_text("<p>a</p><script>var x=1;</script><style>p{}</style>b &amp; c") == "a b & c"
+
+
+def test_a_prepared_link_may_quote_its_own_url_but_must_open(tmp_path):
+    url = site()
+    ok, why = check(tmp_path, [{"kind": "link", "claim": "flights", "url": f"{url}/py?q=Flights%20from%20DEL%20to%20BLR",
+                                "quote": "DEL to BLR"}])
+    assert ok, why
+    ok, why = check(tmp_path, [{"claim": "flights", "url": f"{url}/py?q=DEL%20to%20BLR", "quote": "DEL to BLR"}])
+    assert not ok  # without kind link, the quote must be on the page
+    ok, why = check(tmp_path, [{"kind": "link", "claim": "f", "url": f"{url}/gone?q=DEL%20to%20BLR", "quote": "DEL to BLR"}])
+    assert not ok and "does not open (HTTP 404)" in why  # a dead link never passes

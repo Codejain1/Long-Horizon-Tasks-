@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -70,7 +71,9 @@ ORDER_RESEARCH = """This is a RESEARCH task: the answer comes from real web sour
 the fetch tool (fetch with find returns the passages around a phrase: copy quotes from them exactly). Write the result to answer.json:
   {"answer": <the answer, structured>, "claims": [{"claim": "<one fact>", "url": "<the page it is on>",
     "quote": "<an exact short phrase copied from that page that shows the fact>"}]}
-Every fact in the answer needs a claim. Steps:
+Every fact in the answer needs a claim. For a link you PREPARE (a search or booking page whose content is built by
+JavaScript), use {"kind": "link", "url": ..., "quote": "<the part of the url that shows the details>"}: the link
+must still open. Steps:
   1. "build" steps that gather from sources, each checked with {"evidence": "answer.json"} once it has claims
      (the watcher fetches every url itself and checks the quote is on it);
   2. a final "verify" step checked with {"judge": "<does answer.json fully answer the goal?>"}.
@@ -745,9 +748,16 @@ class Runner:
                 code, out = self.box.run(f"curl -sL --compressed --max-time 20 -A 'Mozilla/5.0' {shlex.quote(url)} | head -c 3000000",
                                          timeout=40)
                 pages[url] = norm(out) if code == 0 else ""
+            in_link = c.get("kind") == "link" and quote in norm(urllib.parse.unquote_plus(url))
+            if in_link:  # a prepared link must really open (a 404 page is text, but not the search)
+                code, status = self.box.run(f"curl -sL --max-time 20 -A 'Mozilla/5.0' -o /dev/null -w '%{{http_code}}' "
+                                            f"{shlex.quote(url)}", timeout=40)
+                if not status.strip().isdigit() or not 200 <= int(status.strip()) < 400:
+                    bad.append(f"{url}: the link does not open (HTTP {status.strip() or '?'})")
+                    continue
             if not pages[url]:
                 bad.append(f"{url}: could not be fetched")
-            elif quote not in pages[url]:
+            elif quote not in pages[url] and not in_link:
                 bad.append(f"{c.get('claim', '?')[:80]}: the quote is not on {url}")
         if bad:
             return False, "EVIDENCE CHECK FAILED (fix or drop these claims):\n- " + "\n- ".join(bad[:8])
