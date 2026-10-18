@@ -105,6 +105,21 @@ Evidence from the code and from the live Hermes memory (read-only):
 - **Fixed in v3m:** the code (not tests) is snapshotted at each step's start. An attempt that breaks a test that
   passed before, or drops an existing name, is rolled back, and the model is told so. Evidence failures now show the
   link-claim form. Rerun: `backlog-m` (runner, mem), `backlog-m-r2` (runner again, for n = 2), `web6`.
+- **The test loop was the bottleneck (2026-10-19):** every question cost a 1.5–2 h backlog run, harness bugs were
+  found hours in, and one run per arm swung either way. Now:
+  - `bench/preflight.py` (seconds): no `._` files, the model answers, the sandbox reaches the task sites, the runner
+    reads the scenario, ticket 1's hidden tests fail on the start. The go scripts stop if it fails. First live use
+    stopped a launch in 2 min (a false alarm from the check itself, fixed: it now reads the project in the job sandbox).
+  - `bench/tickets.py` (about 25–40 min for a round): any ticket × arm × repeat in parallel, each from a verified
+    state (the reference minus the modules of later tickets). Valid: rental 1–4, 6, 7, 11; ward 1, 2, 11 (the rest
+    change shared modules and stay in backlog.py). Report: solved rate with a Wilson interval, kept earlier tickets,
+    pairs vs plain. Scenario references restored from the snapshot tag (they pass 23/23 and 31/31).
+  - Full backlog runs only at milestones.
+- **v3n rental (in progress):** all three arms solved ticket 1 and kept it. Ticket 2 (KYC) solved for the first time,
+  by runner run 2 (3/3, ticket 1 kept); runner run 1 and mem 1/3. Runner run 2 then failed ticket 3 but kept 1–2.
+  The fixes fired: done refused 2× per arm, rollbacks 1–4×. One run per arm, tuned on these tickets: not a claim.
+- **Running (v3p):** held-out ward tickets 1, 2, 11, plain vs runner × 3 (`tk-ward1`); research both arms × 2 with the
+  user-agent fix (`web8`).
 - **v3m crashed at startup, unnoticed by the benchmark:** macOS `tar` added `._*.py` metadata files that Python can't
   read; the bench threw away the runner's error output and scored the crash as "0 passed" (1 min, 0 tokens). Now:
   tarballs with `COPYFILE_DISABLE=1 --no-xattrs`, the runner skips `._` files, and a crash stops the arm with its error.
@@ -200,6 +215,9 @@ Evidence from the code and from the live Hermes memory (read-only):
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-19: ward is the held-out scenario: no runner fix was made from ward runs. Rental results after this
+  date's fixes are tuned-on-test and don't count as evidence.
+- 2026-10-19: fast loop first (preflight, tickets.py); a full backlog run only for a milestone decision.
 - 2026-10-19: the spec reviewer prompt stays as is: offline, Qwen caught the invalid Aadhaar 3/3 with it, so the
   ticket 2 failure was time, not review.
 - 2026-10-19: the places goal names Nominatim's viewbox order: documentation every arm gets, not a hint for one.
