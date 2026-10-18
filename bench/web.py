@@ -39,7 +39,7 @@ def get_json(url: str, data: bytes | None = None, timeout: float = 30):
 
 def status(url: str) -> int:
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": LR.UA})
         with urllib.request.urlopen(req, timeout=20) as r:
             return r.status
     except urllib.error.HTTPError as e:
@@ -117,7 +117,7 @@ TASKS = [
                         '{"python": "x.y.z", "nodejs": "x.y.z", "postgresql": "x.y"}.', score_versions),
     WebTask("places", f"The owner is at {HOME[0]}, {HOME[1]} (Koramangala, Bengaluru) and wants to eat out. Find 3 "
                       "restaurants or cafes within 2 km of that point, using OpenStreetMap data (for example Nominatim: "
-                      "https://nominatim.openstreetmap.org/search?q=restaurant&format=jsonv2&bounded=1&viewbox=...). answer = {\"places\": [{\"name\": ..., \"lat\": ..., \"lng\": ...}]}.",
+                      "https://nominatim.openstreetmap.org/search?q=restaurant&format=jsonv2&bounded=1&viewbox=<west lng>,<north lat>,<east lng>,<south lat>: longitude first). answer = {\"places\": [{\"name\": ..., \"lat\": ..., \"lng\": ...}]}.",
             score_places),
     WebTask("flights", "Prepare flight search links for 1 adult from Delhi (DEL) to Bengaluru (BLR) on 15 December "
                        "2026: one Google Flights link and one on an airline's own website, so the owner can compare "

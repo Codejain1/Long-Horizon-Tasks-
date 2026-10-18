@@ -118,6 +118,9 @@ def page_text(html_text: str) -> str:
     return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", t)).split())
 
 
+# Nominatim answers a bare "Mozilla/5.0" with 403 (its policy wants an identifying agent): the places task was
+# impossible for every arm until 2026-10-19. This one gets 200 from Nominatim, python.org, nodejs.org, Google Flights.
+UA = "Mozilla/5.0 (compatible; long-horizon-runner/0.1)"
 VERSION = re.compile(r"(?<![\w.])v?(\d{1,3}(?:\.\d{1,3}){1,2})(?![\w.]*\d)(?![a-z])")
 PRERELEASE = re.compile(r"^\W{0,3}(alpha|beta|rc|pre-?release|preview|candidate|nightly|dev|a\d|b\d)", re.I)
 
@@ -754,7 +757,7 @@ class Runner:
         import shlex
         if not url.startswith(("http://", "https://")):
             return "error: give a full http(s) url"
-        code, out = self.box.run(f"curl -sL --compressed --max-time 20 -A 'Mozilla/5.0' {shlex.quote(url)} | head -c 3000000",
+        code, out = self.box.run(f"curl -sL --compressed --max-time 20 -A {shlex.quote(UA)} {shlex.quote(url)} | head -c 3000000",
                                  timeout=40)
         if code != 0 or not out.strip():
             return f"error: could not fetch {url} (exit {code})"
@@ -787,12 +790,12 @@ class Runner:
                 bad.append(f"{c.get('claim', '?')[:80]}: needs an http(s) url and a quote of 8+ characters")
                 continue
             if url not in pages:
-                code, out = self.box.run(f"curl -sL --compressed --max-time 20 -A 'Mozilla/5.0' {shlex.quote(url)} | head -c 3000000",
+                code, out = self.box.run(f"curl -sL --compressed --max-time 20 -A {shlex.quote(UA)} {shlex.quote(url)} | head -c 3000000",
                                          timeout=40)
                 pages[url] = norm(out) if code == 0 else ""
             in_link = c.get("kind") == "link" and quote in norm(urllib.parse.unquote_plus(url))
             if in_link:  # a prepared link must really open (a 404 page is text, but not the search)
-                code, status = self.box.run(f"curl -sL --max-time 20 -A 'Mozilla/5.0' -o /dev/null -w '%{{http_code}}' "
+                code, status = self.box.run(f"curl -sL --max-time 20 -A {shlex.quote(UA)} -o /dev/null -w '%{{http_code}}' "
                                             f"{shlex.quote(url)}", timeout=40)
                 if not status.strip().isdigit() or not 200 <= int(status.strip()) < 400:
                     bad.append(f"{url}: the link does not open (HTTP {status.strip() or '?'})")
