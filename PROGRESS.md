@@ -105,6 +105,14 @@ Evidence from the code and from the live Hermes memory (read-only):
 - **Fixed in v3m:** the code (not tests) is snapshotted at each step's start. An attempt that breaks a test that
   passed before, or drops an existing name, is rolled back, and the model is told so. Evidence failures now show the
   link-claim form. Rerun: `backlog-m` (runner, mem), `backlog-m-r2` (runner again, for n = 2), `web6`.
+- **Held-out result (2026-10-19, v3p) — negative:**
+  - Ward tickets 1, 2, 11 × 3 repeats: plain 0/9, runner 0/9 solved (interval 0–30 % each). The runner used the
+    full 20 min on every job (8× plain's time, 2× tokens) and broke earlier work once. The rental gains did not carry
+    over: they were fitted to rental.
+  - Research with the user-agent fix: plain 2/6 complete and verified (places both reps), runner 0/6 verified though
+    12/20 checks vs plain 8/20. The runner's extra work did not turn into verified answers.
+  - v3n rental final: no arm lost earlier work (rollback works); ticket 1 solved 3/3, ticket 2 1/3, ticket 3 0/3.
+  - Owner's call after this: pause runs, rethink the memory system and how tasks are defined.
 - **The test loop was the bottleneck (2026-10-19):** every question cost a 1.5–2 h backlog run, harness bugs were
   found hours in, and one run per arm swung either way. Now:
   - `bench/preflight.py` (seconds): no `._` files, the model answers, the sandbox reaches the task sites, the runner
