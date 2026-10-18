@@ -760,7 +760,9 @@ class Runner:
             elif quote not in pages[url] and not in_link:
                 bad.append(f"{c.get('claim', '?')[:80]}: the quote is not on {url}")
         if bad:
-            return False, "EVIDENCE CHECK FAILED (fix or drop these claims):\n- " + "\n- ".join(bad[:8])
+            return False, ("EVIDENCE CHECK FAILED (fix or drop these claims):\n- " + "\n- ".join(bad[:8])
+                           + '\nA link you prepared for the owner (a search page you did not read) is the claim {"kind": '
+                             '"link", "url": ..., "quote": <a piece copied from the url itself, e.g. "to=BLR&date=2026-12-15">}.')
         return True, f"all {len(claims[:20])} claims found on their pages"
 
     def _names_lost(self, path: str, content: str) -> str:
@@ -792,6 +794,27 @@ class Runner:
                 return (f"WATCHER: these tests passed before this job and now fail (a regression: earlier work broke):"
                         f"\n- " + "\n- ".join(broken[:10]) + f"\n{out[-1200:]}")
         return ""
+
+    def _snapshot(self) -> dict[str, str]:
+        """The project's code (not tests) as it is now: the last good state an attempt can be rolled back to."""
+        root = self.box.root
+        return {f.relative_to(root).as_posix(): f.read_text(errors="replace") for f in _py_files(root)
+                if not _is_test(f.relative_to(root).as_posix())}
+
+    def _rollback(self, snap: dict[str, str]) -> list[str]:
+        """Put the code back as it was at the start of the step: an attempt that broke earlier work must not be
+        the base of the next one (2026-10-19 rental run: one bad import broke `import rentals`, and every later
+        attempt, re-plan and ticket started from the broken package)."""
+        now = self._snapshot()
+        changed = sorted(p for p in now.keys() | snap.keys() if now.get(p) != snap.get(p))
+        for p in changed:
+            if p in snap:
+                self.box.write(p, snap[p])
+            else:
+                (self.box.root / p).unlink()
+        if changed:
+            self._log(event="rolled_back", files=changed)
+        return changed
 
     def _passing_tests(self) -> tuple[set[str], str]:
         """Which of the project's existing tests pass now, test by test (one failing ticket must not switch the
@@ -925,6 +948,7 @@ class Runner:
                                        f"cannot source):\n{why_e[:800]}", {"evidence": "answer.json"}, kind="verify"))
                 self._log(event="evidence_gate", round=evidence_rounds, why=why_e[:500])
             step, error, history, option, hint = self.steps[i], "", [], "first try", ""
+            snap = self._snapshot() if self.brownfield else {}
             while True:
                 if self.deadline and time.time() > self.deadline:  # a time budget: one stuck job can't eat the run
                     step.status = "failed"
@@ -941,9 +965,14 @@ class Runner:
                     step.status = "failed"
                     self._log(event="stopped", step=step.id, reason=doomed)
                     return self.report(stopped=step, reason=doomed)
-                if ok and self.brownfield and step.kind in ("build", "verify"):
-                    guard = self._brownfield_guard()
-                    ok, error = (False, guard) if guard else (ok, error)
+                if self.brownfield and step.kind in ("build", "verify"):
+                    guard = self._brownfield_guard()  # also after a failed check: a broken attempt is rolled back
+                    if guard:
+                        rolled = self._rollback(snap)
+                        error = guard + (f"\nWATCHER: your changes were rolled back to the start of this step "
+                                         f"({', '.join(rolled)}). Make a smaller change that keeps those tests passing."
+                                         if rolled else "") + ("" if ok else f"\nYOUR CHECK:\n{error[-800:]}")
+                        ok = False
                 counts = test_counts(error)
                 self._log(event="check", step=step.id, attempt=len(history), ok=ok, option=option, detail=error[-500:])
                 history.append({"option": option, "ok": ok, "error": error, "failure": "" if ok else classify_failure(error),

@@ -335,3 +335,21 @@ def test_one_failing_old_test_does_not_switch_off_the_regression_guard(tmp_path)
     (ws / "shop" / "items.py").write_text("ITEMS = {}\n\ndef add_item(name, price):\n    pass\n\ndef get_item(name):\n"
                                           "    return None\n")
     assert "tests/test_shop.py::test_add" in rn._brownfield_guard()
+
+
+def test_an_attempt_that_breaks_earlier_work_is_rolled_back(tmp_path):
+    ws = brownfield(tmp_path)
+    good = (ws / "shop" / "items.py").read_text()
+    broken = good.replace("from", "").replace("    return ITEMS[name]\n", "    return None\n")
+    plan = [{"id": "b", "kind": "build", "do": "add total", "check": {"cmd": "true"}}]
+    m = FakeModel([plan], [
+        [call("write_file", path="shop/items.py", content=broken),  # names kept, behaviour broken
+         call("write_file", path="shop/extra.py", content="import nothing_here\n")], [call("done", summary="b")],
+        [call("edit_file", path="shop/items.py", old="    return ITEMS[name]\n",
+              new="    return ITEMS[name]\n\n\ndef total():\n    return sum(ITEMS.values())\n")], [call("done", summary="b")]])
+    rn = LR.Runner("add shop.total()", LR.LocalSandbox(ws), m, tmp_path / "r.jsonl")
+    rn.PYTEST = f"{sys.executable} -m pytest"
+    r = rn.run()
+    log = (tmp_path / "r.jsonl").read_text()
+    assert r["ok"] and '"rolled_back"' in log and "were rolled back to the start of this step" in log
+    assert not (ws / "shop" / "extra.py").exists() and "def total" in (ws / "shop" / "items.py").read_text()
