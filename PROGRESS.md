@@ -88,6 +88,12 @@ Evidence from the code and from the live Hermes memory (read-only):
   - These are now model-quality failures, not harness bugs.
 
 ## Results after the runner fixes (2026-10-19)
+- **The first real ticket solved by the system:** rental ticket 1 (property search). The runner passed every hidden
+  test on its first try in 4.6 min, and runner + mem also solved it. Plain failed it, even after a QA fix-up.
+- Ticket 2 (KYC masking) failed in every arm. In ticket 3 the runner broke ticket 1's search (the regression guard
+  was all-or-nothing and turned off); mem kept it.
+- Fixed since: the guard is per test, and research `kind: link` claims (the quote is in the url, the link must open).
+- Rerun: `/home/hermes/backlog-l` (runner, mem) and `/home/hermes/web5` (runner), code v3l.
 - **Rental tickets 1–3 (`backlog-j`, v3j: edit_file, existing tests shown, quick fix, 20-min budget):**
 
   | Arm | Hidden tests passing right after each ticket | Passing at the end | Minutes | Tokens |
