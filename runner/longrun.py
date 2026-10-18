@@ -455,7 +455,7 @@ class Runner:
         self.deadline = time.time() + max_minutes * 60 if max_minutes is not None else None
         self.warning_id = None  # the experience warnings this job was shown: the scorer credits them
         self.memory_warnings: list = []
-        self.judge, self.step_writes = judge, []  # judge: runner/judge.py, for checks no command can make
+        self.judge, self.step_writes, self.step_edits = judge, [], {}  # judge: runner/judge.py, for checks no command can make
         self.kind = kind  # code (greenfield or brownfield, detected) | research (sources, evidence, judge)
         self.planner_llm = planner_llm or llm  # a bigger model may plan while the small one does the steps
         self.forecast, self.budget = forecast, max_minutes  # forecast: runner/forecast.py, only if its gate passed
@@ -554,7 +554,7 @@ class Runner:
         return "\n" + "\n".join(hints) if hints else ""
 
     def execute(self, step: Step, error: str = "", deep: bool = False, hint: str = "") -> str:
-        self.step_writes = []
+        self.step_writes, self.step_edits = [], {}
         uses = "".join(f"OUTPUT OF {u}: {s.output}\n" for u in step.uses for s in self.steps if s.id == u and s.output)
         facts = ""
         if self.memory:
@@ -695,6 +695,11 @@ class Runner:
                 if not (self.box.root / path).exists():
                     return f"error: {path} does not exist (use write_file for a new file)"
                 text, old = self.box.read_all(path), str(a.get("old", ""))
+                key = (path, old, str(a.get("new", "")))
+                self.step_edits[key] = self.step_edits.get(key, 0) + 1
+                if self.step_edits[key] > 1:  # Qwen re-sent the same edits 5+ times in one attempt (rental ticket 2)
+                    return ("refused: you already made this exact edit in this attempt; repeating it changes nothing "
+                            "(or duplicates code). Run the check, read the error, and make a different change.")
                 n = text.count(old) if old else 0
                 if n != 1:
                     return (f"error: `old` appears {n} times in {path}; copy an exact passage that appears once "

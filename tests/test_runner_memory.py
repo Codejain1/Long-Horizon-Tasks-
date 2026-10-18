@@ -374,3 +374,14 @@ def test_done_is_refused_while_the_steps_file_is_missing(tmp_path):
     r = rn.run()
     log = (tmp_path / "r.jsonl").read_text()
     assert r["ok"] and '"done_refused"' in log and '"decision"' not in log  # one attempt, no escalation or re-plan
+
+
+def test_the_same_edit_twice_in_one_attempt_is_refused(tmp_path):
+    ws = brownfield(tmp_path)
+    rn = LR.Runner("x", LR.LocalSandbox(ws), None, tmp_path / "r.jsonl")
+    edit = {"path": "shop/items.py", "old": "def get_item(name):\n", "new": "def get_item(name):\n    # look up\n"}
+    assert rn._tool("edit_file", edit).startswith("wrote")
+    assert rn._tool("edit_file", edit).startswith("refused: you already made this exact edit")
+    assert (ws / "shop" / "items.py").read_text().count("# look up") == 1  # not duplicated
+    rn.step_edits = {}  # a new attempt (execute resets it): the edit may be tried again
+    assert rn._tool("edit_file", edit).startswith("wrote")
