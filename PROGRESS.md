@@ -96,7 +96,13 @@ The owner redefined the product after the held-out ward result. It is a personal
 
 The coding-ticket benchmarks are no longer the target.
 
-**Built (not deployed):**
+**Deployed to live Hermes 2026-10-20 19:45 UTC (owner ran it; the permission check blocks me from deploying):**
+- the booking tools and the rails changes;
+- backups in `~/.hermes/backup-plugin-{embed_memory,rails}-20261020-194515`;
+- after the deploy: gateway and memory are active, WhatsApp is connected, 18 tools load (7 new), and UPI is off
+  (no `upi_id`).
+
+**What was built:**
 - **`hermes/embed_memory/booking.py`:** a task is a form (template per kind). The model fills only what the owner
   said. Code then:
   - adds habits from memory;
@@ -330,7 +336,7 @@ The coding-ticket benchmarks are no longer the target.
 
 ## Next step (2026-10-21)
 1. Done: forms beat plain on held-out cases (85 % vs 32 %).
-2. Next: deploy booking.py and the rails to a copy of Hermes, then rehearse food comparison (Swiggy vs Zomato)
+2. Next (deploy done): the owner logs in to Swiggy/Zomato in Hermes's browser (DCV desktop). Then rehearse food comparison (Swiggy vs Zomato)
    and one train search up to payment, without paying. If they don't: the form idea is wrong for this model, so
    rethink before building more.
 3. Owner: the deploy to live Hermes, writing `upi_id`, and logging in to the sites.
