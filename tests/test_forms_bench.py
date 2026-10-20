@@ -20,7 +20,18 @@ ORACLE = [
  {"drop":"railway station","when":"2 Nov 6am"}, {"to":"Delhi","date":"31 Sep"}, {"to":"Goa"}, {"dish":"pizza"},
  {"from":"Delhi","to":"Agra","date":"15 Nov","passengers":["Sunita"]}, {"from":"Mysore","to":"Bangalore","date":"day after tomorrow","seat":"AC sleeper"},
  {"to":"Chennai","date":"2 Nov","cabin":"business","max_price":20000}, {"drop":"airport"},
- {"city":"Mumbai","checkin":"today","checkout":"friday","max_price_per_night":3000}]
+ {"city":"Mumbai","checkin":"today","checkout":"friday","max_price_per_night":3000},
+ {"to":"Mysore","date":"sunday","passengers":"me and mom"}, {"drop":"MG Road","when":"in 20 minutes"},
+ {"to":"Pune","date":"12 Nov","max_price":"7,500"}, {"dish":"chole bhature","max_total":200},
+ {"city":"Shimla","checkin":"20 Dec","checkout":"23 Dec","max_price_per_night":2500}, {"to":"Chennai"}, {"to":"Delhi"},
+ {"dish":"biryani"}, {"city":"Coorg","checkin":"1 Nov","checkout":"3 Nov"},
+ {"to":"Goa","date":"friday","passengers":"me and Rahul","budget":"5k"},
+ {"pickup":"airport","drop":"home","when":"2 Nov 11pm"}, {"to":"Chennai","date":"28 Oct","class":"sleeper"},
+ {"to":"Rishikesh"}, {"to":"Delhi","date":"3 Nov","passengers":"mom","max_price":6000}, {},
+ {"from":"Bangalore","to":"Pondicherry","date":"saturday","seat":"sleeper","time_window":"night"},
+ {"dish":"masala dosa","restaurant":"Vidyarthi Bhavan","max_total":300}, {"to":"Mumbai","date":"30 Feb"},
+ {"to":"Ladakh","arrive":"5 Dec","leave":"12 Dec","interests":"trekking"},
+ {"city":"Bangalore","area":"Koramangala","checkin":"tonight","checkout":"tomorrow","max_price_per_night":3500,"guests":"mom"}]
 
 
 def test_perfect_extraction_passes_every_case(tmp_path):

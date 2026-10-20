@@ -170,11 +170,59 @@ class Store:
             return t.get("id") or cur.lastrowid
 
 
-def _clean(kind: str, slots: dict, today: date) -> tuple[dict, list[str]]:
+# what small models write instead of the slot names (seen in bench/forms.py runs)
+SYNONYMS = {"budget": "$price", "max_budget": "$price", "price": "$price", "max_price": "$price", "max_total": "$price",
+            "destination": "to", "origin": "from", "source": "from", "travellers": "passengers", "travelers":
+            "passengers", "people": "passengers", "time": "time_window", "class": "$class", "cabin": "$class",
+            "date": "$date", "check_in": "checkin", "check_out": "checkout", "location": "city"}
+PLACEHOLDER = re.compile(r"(current|usual|my|any|none|n/?a|unknown|tbd|default|not specified)"
+                         r"( (location|city|place|site|app|address))?", re.I)
+ME = {"me", "myself", "i", "self", "owner", "mine"}
+
+
+def _slot(kind: str, k: str) -> str:
+    k = k.lower().strip()
+    if k in TEMPLATES[kind]:
+        return k
+    v = SYNONYMS.get(k, k)
+    if v == "$price":
+        return PRICE.get(kind, k)
+    if v == "$class":
+        return "cabin" if kind == "flight" else "class"
+    if v == "$date":
+        return {"cab": "when", "hotel": "checkin", "trip": "arrive"}.get(kind, "date")
+    return v
+
+
+def _people(store, v) -> list | None:
+    """'me and Rahul', 'mom', ['me', 'Rahul'] -> names from the travellers; a bare count isn't names: None (ask)."""
+    if isinstance(v, (int, float)) or str(v).strip().isdigit():
+        me = store.fact("traveller:self")
+        return [me["value"]["name"]] if int(v) == 1 and me else None
+    parts = v if isinstance(v, list) else re.split(r",|&|\+|\band\b|\bwith\b", str(v))
+    out = []
+    for p in (str(x).strip() for x in parts):
+        if not p:
+            continue
+        who = "self" if p.lower() in ME else re.sub(r"\W+", "_", p.lower()).strip("_")
+        f = store.fact(f"traveller:{who}")
+        out.append(f["value"]["name"] if f else p)
+    return out or None
+
+
+def _clean(store, kind: str, slots: dict, today: date) -> tuple[dict, list[str]]:
     out, bad = {}, []
     for k, v in (slots or {}).items():
-        if k not in TEMPLATES[kind] or v in (None, "", []):
-            continue
+        k = _slot(kind, k)
+        if k not in TEMPLATES[kind] or k in FIXED.get(kind, {}) or v in (None, "", []):
+            continue  # a rail (cab paid cash) is never the model's to change
+        if isinstance(v, str) and PLACEHOLDER.fullmatch(v.strip()):
+            continue  # "current location": not a value; memory fills it or the owner is asked
+        if k in ("passengers", "guests"):
+            n, v = v, _people(store, v)
+            if v is None:
+                bad.append(f"{k}: {n} people: ask the owner who they are (names)")
+                continue
         if k in DATES:
             d = _iso(v, today)
             if not d or d < today.isoformat():
@@ -228,7 +276,7 @@ def start(store: Store, kind: str, slots: dict, site: str = "", parent: int | No
     today = today or date.today()
     if kind not in TEMPLATES:
         return {"error": f"unknown kind {kind!r}; one of {', '.join(TEMPLATES)}"}
-    clean, bad = _clean(kind, slots, today)
+    clean, bad = _clean(store, kind, slots, today)
     t = {"kind": kind, "slots": clean, "status": "draft", "site": _site(site), "parent": parent}
     t["id"] = store._save(t)
     v = view(store, t, today)
@@ -244,7 +292,7 @@ def update(store: Store, tid: int, slots: dict, site: str = "", today: date | No
     t = store.task(tid)
     if t["status"] != "draft":
         return {"error": f"task #{tid} is {t['status']}; start a new one to change it"}
-    clean, bad = _clean(t["kind"], slots, today)
+    clean, bad = _clean(store, t["kind"], slots, today)
     t["slots"].update(clean)
     t["site"] = _site(site) or t["site"]
     store._save(t)

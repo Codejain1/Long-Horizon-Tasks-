@@ -163,3 +163,19 @@ def test_destinations_and_caps_are_never_habits(tmp_path):
 
 def test_spoken_amounts():
     assert [B._money(x) for x in ("₹3,000", "9k", "1.5 lakh", "under 400", "none")] == [3000, 9000, 150000, 400, None]
+
+
+def test_small_model_spellings_are_normalised(tmp_path):
+    s = store(tmp_path)
+    s.set_fact("traveller:self", {"name": "Kartik"})
+    s.set_fact("traveller:mom", {"name": "Sunita"})
+    v = B.start(s, "flight", {"from": "current city", "to": "Goa", "date": "friday", "budget": "6k", "class": "business",
+                              "passengers": "me and Rahul"}, today=TODAY)
+    assert v["slots"]["max_price"] == 6000 and v["slots"]["cabin"] == "business" and "from" in v["missing"]
+    assert v["slots"]["passengers"] == ["Kartik", "Rahul"]
+    assert B.start(s, "train", {"passengers": "mom"}, today=TODAY)["slots"]["passengers"] == ["Sunita"]
+    assert B.start(s, "train", {"passengers": 1}, today=TODAY)["slots"]["passengers"] == ["Kartik"]
+    two = B.start(s, "train", {"passengers": "2"}, today=TODAY)
+    assert "summary" not in two and any("who they are" in p for p in two["problems"])  # never just the owner
+    cab = B.start(s, "cab", {"pickup": "home", "drop": "airport", "date": "tomorrow", "pay": "credit card"}, today=TODAY)
+    assert cab["slots"]["pay"] == "cash" and cab["slots"]["when"] == "tomorrow"  # the rail wins; when (date + time) as said
