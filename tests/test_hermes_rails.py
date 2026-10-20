@@ -74,3 +74,46 @@ def test_hooks_track_page_and_audit(tmp_path, monkeypatch):
     assert R.pre_tool_call("browser_click", {"ref": "@e7"}, session_id="s9") is None
     log = (tmp_path / "audit.jsonl").read_text()
     assert '"directive": "approve"' in log and '"tool": "browser_snapshot"' in log
+
+
+RAZORPAY = """- radio "UPI" [ref=e1]
+- radio "Cards" [ref=e2]
+- textbox "Enter UPI ID" [ref=e3]
+- button "Verify and Pay ₹4,320" [ref=e4]
+- textbox "Enter UPI PIN" [ref=e5]
+- radio "PhonePe" [ref=e6]
+- link "Netbanking" [ref=e7]"""
+
+
+def test_upi_handoff_is_off_until_the_owner_sets_their_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "HOME", tmp_path)
+    gw = "https://api.razorpay.com/v1/checkout/public"
+    assert R.upi_id() is None
+    assert act("browser_click", {"ref": "@e1"}, gw, RAZORPAY) == "block"  # old rails
+    (tmp_path / "upi_id").write_text("not an id\n")
+    assert R.upi_id() is None
+    (tmp_path / "upi_id").write_text("Kartik.J@okaxis\n")
+    assert R.upi_id() == "kartik.j@okaxis"
+
+
+def test_upi_handoff_on_payment_pages(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "HOME", tmp_path)
+    (tmp_path / "upi_id").write_text("kartik.j@okaxis")
+    gw = "https://api.razorpay.com/v1/checkout/public"
+    assert act("browser_click", {"ref": "@e1"}, gw, RAZORPAY) == "allow"                               # choose UPI
+    assert act("browser_type", {"ref": "@e3", "text": "kartik.j@okaxis"}, gw, RAZORPAY) == "allow"     # own ID
+    assert act("browser_type", {"ref": "@e3", "text": "someone@ybl"}, gw, RAZORPAY) == "block"         # anyone else's
+    assert act("browser_click", {"ref": "@e4"}, gw, RAZORPAY) == "approve"                             # pay: owner YES
+    assert act("browser_type", {"ref": "@e5", "text": "1234"}, gw, RAZORPAY) == "block"                # never the PIN
+    for ref in ("@e2", "@e6", "@e7"):                                                                 # cards, apps, banks
+        assert act("browser_click", {"ref": ref}, gw, RAZORPAY) == "block"
+    assert act("computer_use", {"action": "left_click", "coordinate": [1, 2]}, gw) == "block"
+    mmt = "https://www.makemytrip.com/flight/review"
+    assert act("browser_click", {"ref": "@e9"}, mmt, MMT_REVIEW) == "approve"   # travel: to payment with the owner's YES
+    assert act("browser_click", {"ref": "@e3"}, mmt, MMT_REVIEW) == "allow"
+    assert act("browser_click", {"ref": "@e1"}, "https://www.irctc.co.in/nget/payment/bkgPaymentOptions", RAZORPAY) == "allow"
+    sw = "https://www.swiggy.com/checkout"
+    assert act("browser_click", {"ref": "@e8"}, sw, SWIGGY_CART) == "allow"     # food: UPI now allowed
+    assert act("browser_click", {"ref": "@e12"}, sw, SWIGGY_CART) == "approve"
+    assert act("browser_click", {"ref": "@e2"}, sw, RAZORPAY) == "block"        # cards: never
+    assert act("browser_click", {"ref": "@e6"}, sw, RAZORPAY) == "block"        # PhonePe app: still blocked

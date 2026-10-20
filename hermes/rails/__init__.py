@@ -7,6 +7,12 @@ section telling the model the rules (the code enforces them either way).
 Owner's rules (2026-10-15): food is cash on delivery only and every order needs their YES; flights and hotels are
 never paid by Hermes (it prepares, the owner pays); Hermes never types card numbers, CVV, OTP or UPI PIN; secrets
 on this machine are never read; public URLs need the owner's YES.
+
+UPI handoff (2026-10-21, opt-in): once the owner writes their own UPI ID into ~/.hermes/rails/upi_id (only the owner
+can: it never comes from the model), on payment pages Hermes may choose UPI, type exactly that ID and press the pay
+button after the owner's YES; the request then reaches the owner's UPI app, where they approve it with their PIN.
+Cards, net banking, wallets and pay-later stay blocked; so do the PIN, OTP and any other text on payment pages.
+Without the file, the old rails apply (travel never paid, food cash on delivery).
 """
 
 from __future__ import annotations
@@ -33,8 +39,14 @@ COMMIT = re.compile(r"place (your )?order|pay now|pay\s*(₹|rs|inr)|make paymen
                     r"confirm (and |& )?pay|confirm (order|booking)|complete (booking|purchase|order)|book now|"
                     r"reserve now|buy now|submit order|checkout|proceed to (checkout|payment)|order now|slide to pay",
                     re.I)
-NON_COD = re.compile(r"\bupi\b|credit card|debit card|card number|net ?banking|\bwallet\b|paytm|phonepe|gpay|"
+NON_COD = re.compile(r"\bupi\b|\bcards?\b|credit card|debit card|card number|net ?banking|\bwallet\b|paytm|phonepe|gpay|"
                      r"google pay|amazon pay|\bsimpl\b|lazypay|pay ?later|\bemi\b|saved card", re.I)
+OTHER_PAY = re.compile(r"\bcards?\b|credit card|debit card|card number|net ?banking|\bwallet\b|paytm|phonepe|gpay|google pay|"
+                       r"amazon pay|\bsimpl\b|lazypay|pay ?later|\bemi\b|saved card", re.I)
+UPI_OPT = re.compile(r"\bupi\b|\bvpa\b", re.I)
+PAY_BTN = re.compile(COMMIT.pattern + r"|verify (and |& )?pay|send (payment )?request|request (payment|money)|"
+                     r"\bpay\s*(₹|rs|inr|now)", re.I)
+UPI_ID = re.compile(r"^[\w.\-]{2,256}@[a-z][a-z0-9]{1,63}$", re.I)
 PAY_FIELD = re.compile(r"\bcvv\b|\bcvc\b|\botp\b|one.time.password|upi ?pin|\bmpin\b|card ?number|expiry|"
                        r"name on card", re.I)
 SECRETS = re.compile(r"\.hermes/\.env|\.hermes/auth\.json|whatsapp/session|creds\.json|\.ssh/|id_ed25519|id_rsa|"
@@ -67,6 +79,34 @@ def _label(page: str, ref: str) -> str:
     return m[0].strip() if m else ""
 
 
+def upi_id() -> str | None:
+    """The owner's own UPI ID, set by the owner in HOME/upi_id; None = UPI handoff off."""
+    try:
+        v = (HOME / "upi_id").read_text().strip()
+    except OSError:
+        return None
+    return v.lower() if UPI_ID.match(v) else None
+
+
+def _upi_step(tool: str, typed: str, seen: str, upi: str, where: str) -> dict | None:
+    """On a payment page with the handoff on: choose UPI, type the owner's UPI ID, the pay button asks the owner."""
+    if tool in SCRIPTED:
+        return {"action": "block", "message": f"Blocked by rails: on the payment page of {where} use clicks and typing "
+                                              "on labelled fields only."}
+    if typed:
+        if typed.strip().lower() == upi:
+            return None
+        return {"action": "block", "message": "Blocked by rails: on payment pages Hermes types only the owner's UPI ID."}
+    if PAY_BTN.search(seen):
+        return {"action": "approve", "message": f"Send a UPI payment request from {where} to your UPI app ({upi})? Check "
+                                                "the summary Hermes sent (what, when, total) first; you approve the "
+                                                "payment with your PIN in your UPI app."}
+    if UPI_OPT.search(seen) and not OTHER_PAY.search(seen):
+        return None
+    return {"action": "block", "message": f"Blocked by rails: on the payment page of {where} Hermes may only choose UPI, "
+                                          "type the owner's UPI ID and press pay (with the owner's YES)."}
+
+
 def halted() -> bool:
     return (HOME / "HALT").exists()
 
@@ -88,21 +128,32 @@ def decide(tool: str, args: dict[str, Any], state: dict) -> dict | None:
         return {"action": "block", "message": "Blocked by rails: Hermes never enters card numbers, CVV, OTP or UPI PIN. "
                                               "Send the owner the payment link instead."}
 
+    upi = upi_id()
+    travel, food = _site(url, TRAVEL), _site(url, FOOD)
+    pay_page = _site(url, PAY_GATEWAYS) or (travel and re.search(r"/(payment|pay|checkout)\b", url) and travel)
+    if tool in INTERACT and upi and pay_page:
+        return _upi_step(tool, typed, seen, upi, pay_page)
+    if tool in INTERACT and upi and travel and PAY_BTN.search(seen):
+        return {"action": "approve", "message": f"Hermes wants to go to payment on {travel} ({label or text[:80]}). "
+                                                "Check the summary it sent (what, when, total) before you approve."}
+
     if tool in INTERACT and _site(url, PAY_GATEWAYS):
         return {"action": "block", "message": "Blocked by rails: Hermes never acts on payment pages. Send the owner the "
                                               "link and the amount; they pay themselves."}
 
-    travel = _site(url, TRAVEL)
     if tool in INTERACT and travel and (COMMIT.search(seen) or re.search(r"/(payment|pay|checkout)\b", url)):
         return {"action": "block", "message": f"Blocked by rails: Hermes does not book or pay on {travel}. Stop here and "
                                               "send the owner the trip summary (price, dates, times) and the page link."}
 
-    food = _site(url, FOOD)
-    if tool in INTERACT and food and NON_COD.search(seen):
-        return {"action": "block", "message": f"Blocked by rails: on {food} only Cash on Delivery is allowed. Choose COD."}
+    if tool in INTERACT and food and upi and typed.strip().lower() == upi:
+        return None
+    if tool in INTERACT and food and NON_COD.search(seen) and (OTHER_PAY.search(seen) or not upi):
+        return {"action": "block", "message": f"Blocked by rails: on {food} only Cash on Delivery"
+                                              + (" or UPI" if upi else "") + " is allowed. Choose COD."}
     if tool in INTERACT and food and (COMMIT.search(seen) or tool in SCRIPTED):
-        return {"action": "approve", "message": f"Place this order on {food}? Cash on delivery. Check the summary Hermes "
-                                                "sent (items, total) before you approve."}
+        return {"action": "approve", "message": f"Place this order on {food}? Cash on delivery"
+                                                + (f" or a UPI request to {upi}" if upi else "") + ". Check the summary "
+                                                "Hermes sent (items, total) before you approve."}
 
     if tool in INTERACT and (travel or _site(url, PAY_GATEWAYS)) and tool in SCRIPTED:
         return {"action": "approve", "message": f"Hermes wants to run a scripted action on {travel or url}. Approve?"}
@@ -159,6 +210,10 @@ def pre_llm_call(user_message: str = "", **kw):
     return None
 
 
+UPI_RULES = """
+- UPI handoff is on: on the payment page choose UPI, type the owner's UPI ID exactly, then press pay; the rails ask the
+  owner first and the request goes to their UPI app, where they approve with their PIN. Never any other method."""
+
 RULES = """## Hard rails (enforced in code; breaking them only gets your action blocked)
 - Food orders: Cash on Delivery only. Before placing an order, send the owner the restaurant, items and total; the
   order button asks the owner to approve. Keep orders at or under ₹1,500 unless the owner says otherwise.
@@ -183,4 +238,4 @@ def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("post_tool_call", post_tool_call)
     ctx.register_hook("pre_llm_call", pre_llm_call)
-    ctx.register_system_prompt_section("rails.owner-rules", RULES, position="after_memory", max_chars=2000)
+    ctx.register_system_prompt_section("rails.owner-rules", RULES + (UPI_RULES if upi_id() else ""), position="after_memory", max_chars=2000)

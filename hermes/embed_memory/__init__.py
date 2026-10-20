@@ -16,9 +16,12 @@ from typing import Any
 
 from agent.memory_provider import MemoryProvider
 
-from . import places
+from . import booking, places
 
 logger = logging.getLogger(__name__)
+_store: booking.Store | None = None
+_pages: dict[str, str] = {}  # url -> text of browser pages Hermes saw (newest last): the evidence for compare_offers
+_last_url: dict[str, str] = {}
 
 
 def _post(path: str, body: dict, timeout: float) -> dict:
@@ -55,7 +58,16 @@ class EmbedMemoryProvider(MemoryProvider):
                 "3. Respect the taste profile strictly (diet first), and use the owner's current mood to choose the vibe "
                 "(comfort food when low or tired, something fun when celebrating).\n"
                 "4. Reply with 3 picks: name, cuisine, distance in km, one line on why it fits their taste and mood, and "
-                "the maps link. Say which area you searched.")
+                "the maps link. Say which area you searched.\n\n"
+                "## How to book or order anything (flight, train, bus, cab, hotel, food, trip)\n"
+                "1. Call task_start with ONLY what the owner said; never invent a detail. Do what its 'next' says: ask "
+                "one short question for what's missing, then task_update.\n"
+                "2. Send the owner the summary exactly as task_start/task_update returned it and wait for YES; then "
+                "task_confirm. No YES, no booking.\n"
+                "3. To find the best price, open the same item on each platform and call compare_offers with the exact "
+                "price text from each page.\n"
+                "4. Book on the site up to the payment step; the rails ask the owner before anything is paid. Then "
+                "task_finish (on failure, one line on what went wrong on that site).")
 
     @staticmethod
     def _profile_block(profile: list, mood: dict | None) -> str:
@@ -182,10 +194,12 @@ class EmbedMemoryProvider(MemoryProvider):
                  "description": "Search everything said in past conversations (any chat, any date) by meaning.",
                  "parameters": {"type": "object", "properties": {"query": {"type": "string"},
                                                                  "budget": {"type": "integer", "default": 800}},
-                                "required": ["query"]}}]
+                                "required": ["query"]}}] + booking.TOOLS
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         try:
+            if tool_name in booking.NAMES:
+                return json.dumps(booking.handle(_booking_store(), tool_name, args, dict(_pages)), ensure_ascii=False)
             if tool_name == "remember_rule":
                 return json.dumps(_post("/rule", {"text": args["text"]}, timeout=10))
             if tool_name == "nearby_food":  # location from memory, the search itself in places.py
@@ -216,5 +230,30 @@ class EmbedMemoryProvider(MemoryProvider):
             return json.dumps({"error": f"memory unavailable: {exc}"})
 
 
+def _booking_store() -> booking.Store:
+    global _store
+    if _store is None:
+        path = os.environ.get("BOOKING_DB") or os.path.expanduser("~/.hermes/booking.db")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _store = booking.Store(path)
+    return _store
+
+
+def keep_page(tool_name: str = "", args: dict | None = None, result: Any = None, **kw) -> None:
+    """post_tool_call: remember the text of browser pages by URL (the last 30), so offers can be checked against them."""
+    if not tool_name.startswith("browser_"):
+        return
+    session, out = str(kw.get("session_id") or kw.get("task_id") or "default"), str(result or "")
+    if tool_name == "browser_navigate" and (args or {}).get("url"):
+        _last_url[session] = str(args["url"])
+    url = _last_url.get(session)
+    if url and len(out) > 200:
+        _pages.pop(url, None)
+        _pages[url] = out[-60000:]
+        while len(_pages) > 30:
+            _pages.pop(next(iter(_pages)))
+
+
 def register(ctx) -> None:
     ctx.register_memory_provider(EmbedMemoryProvider())
+    ctx.register_hook("post_tool_call", keep_page)
