@@ -87,6 +87,46 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## New direction: the booking assistant (2026-10-21)
+The owner redefined the product after the held-out ward result. It is a personal assistant on a small model. It:
+- books flights, trains, buses, cabs and hotels, and plans trips around a ticket;
+- recommends and orders food, comparing the same order across platforms on price and reviews;
+- fills everything up to payment, then hands off by UPI request to the owner's own UPI ID, which the owner approves
+  with their PIN.
+
+The coding-ticket benchmarks are no longer the target.
+
+**Built (not deployed):**
+- **`hermes/embed_memory/booking.py`:** a task is a form (template per kind). The model fills only what the owner
+  said. Code then:
+  - adds habits from memory;
+  - names what's missing (one question);
+  - writes the summary the owner says YES to.
+
+  Memory is split by kind:
+  - facts with source and expiry (travellers = permanent; prices = 6 h);
+  - habits, a default only after ≥ 2 YES and ≥ 60 % of choices;
+  - tasks as episodes;
+  - site notes from failures.
+
+  Offers count only if their quote is on a browser page Hermes saw from that platform and holds the price. Prices over
+  the cap are dropped. `plan_trip` drafts the hotel, the arrival cab and the days.
+- **Hermes tools** (in the embed_memory plugin; a post_tool_call hook keeps the last 30 browser pages): `task_start`,
+  `task_update`, `task_confirm`, `task_finish`, `compare_offers`, `plan_trip`, `save_traveller`.
+- **Rails UPI handoff (opt-in):** it is on only when the owner writes their UPI ID to `~/.hermes/rails/upi_id`. On
+  payment pages Hermes may choose UPI, type exactly that ID, and press pay after the owner's approval. Blocked:
+  - cards, net banking, wallets and UPI app intents;
+  - the PIN and OTP;
+  - any other text.
+
+  Without the file, the old rails apply. Bare "Cards" options are now blocked on food sites too; this gap predates
+  the change.
+- **`bench/forms.py`:** does the form beat a plain prompt with the same memory as text?
+  - 30 cases (10 dev, 20 test), 3 reps, paired, Wilson intervals.
+  - A test checks that a perfect extraction passes all 30, and that the scorer catches guessed details.
+  - Not run yet: AWS login expired.
+- Tests: 191 pass.
+
 ## Results after the runner fixes (2026-10-19)
 - **The first real ticket solved by the system:** rental ticket 1 (property search). The runner passed every hidden
   test on its first try in 4.6 min, and runner + mem also solved it. Plain failed it, even after a QA fix-up.
@@ -223,6 +263,14 @@ Evidence from the code and from the live Hermes memory (read-only):
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-21: the target is the booking assistant (owner's spec). Tasks are forms with code-checked slots, not open
+  goals, because the measured small-model failures were mostly misreading the task or what "done" means.
+- 2026-10-21: only habit slots become defaults (from, passengers, class, seat, cab type, diet...). Destination,
+  dish, dates and budgets are said each time or asked.
+- 2026-10-21: the UPI handoff is opt-in through a file only the owner writes. Live Hermes is unchanged until the owner
+  says deploy.
+- 2026-10-21: the forms bench is the first gate (minutes). Live-site rehearsals up to payment come next, and only if
+  forms beat plain on the test split.
 - 2026-10-19: ward is the held-out scenario: no runner fix was made from ward runs. Rental results after this
   date's fixes are tuned-on-test and don't count as evidence.
 - 2026-10-19: fast loop first (preflight, tickets.py); a full backlog run only for a milestone decision.
@@ -243,11 +291,22 @@ Evidence from the code and from the live Hermes memory (read-only):
   score ≥ 0.5, at most 3.
 
 ## Open questions
+- **UPI request reachability:** NPCI stopped person-to-person UPI collect requests in 2025. Merchant checkouts that
+  take a UPI ID likely still work, but some sites offer only QR or app intent. Check per site in rehearsals.
+- **Logins:** IRCTC, Swiggy, Zomato and Uber need OTP logins, which Hermes must not enter. Default: the owner logs in
+  once in Hermes's browser and the session is reused.
 - **Flaky test:** `test_experience_loop_through_memrouter` fails about 1 in 5 full-suite runs, never alone. It's
   likely concurrent memory writes on one SQLite connection. Default: leave as is until it bites.
 - **Stockholm GPU billing** ($1.07/h): default is to keep it on while housebench2 runs.
 
-## Next step (plan agreed for review, 2026-10-18)
+## Next step (2026-10-21)
+1. Run `bench/forms.py` (plain vs forms, test split, 3 reps) on Qwen3-14B. This needs `aws login` and the tunnel.
+2. If forms win: deploy booking.py and the rails to a copy of Hermes, then rehearse food comparison (Swiggy vs Zomato)
+   and one train search up to payment, without paying. If they don't: the form idea is wrong for this model, so
+   rethink before building more.
+3. Owner: the deploy to live Hermes, writing `upi_id`, and logging in to the sites.
+
+## Earlier plan (2026-10-18, coding direction, kept for history)
 0. **Stop the harm (≤ 1 day):**
    - remove the 4 wrong live rules and the wrong profile entry (owner's yes needed);
    - fix SQLite concurrency (connection per request + WAL);
