@@ -124,8 +124,37 @@ The coding-ticket benchmarks are no longer the target.
 - **`bench/forms.py`:** does the form beat a plain prompt with the same memory as text?
   - 30 cases (10 dev, 20 test), 3 reps, paired, Wilson intervals.
   - A test checks that a perfect extraction passes all 30, and that the scorer catches guessed details.
-  - Not run yet: AWS login expired.
-- Tests: 191 pass.
+- **Forms bench result (Qwen3-14B, 3 reps; `/home/hermes/forms1`, `forms2`):**
+
+  **forms1 (before fixes):** test forms 55 % [42, 67] vs plain 8 % [4, 18].
+
+  I read plain's raw answers: its failures are real. It invents details (old budgets copied into new trips, hotel
+  dates made up, "something veg" ordered as paneer biryani). It gets weekdays wrong ("next Saturday" → a Thursday).
+  It asks about optional details instead of being ready.
+
+  Forms' failures led to code fixes in booking.py:
+  - slot synonyms (budget → max_price);
+  - people as names ("me and mom"); a bare count is asked, never filled with the owner alone;
+  - placeholders dropped ("current location");
+  - **the fixed rails override the model:** it had set a cab's pay to "credit card".
+
+  Both arms' prompts were then tuned on dev. The old test split is no longer held out. 20 fresh cases (test2) were
+  written before forms2.
+
+  **forms2, held-out test2: forms 51/60 = 85 % [74, 92] vs plain 19/60 = 32 % [21, 44].** Pairs: only forms 35,
+  only plain 3. Asks when it should: forms 18/21, plain 4/21.
+
+  Remaining forms failures are 3 cases, the same in every rep:
+  - no tool call ("Fly to Goa on Friday with Rahul");
+  - the time dropped from a cab's when;
+  - "Get a cab": the model invented the drop and the time.
+
+  Limits:
+  - I wrote both the cases and the code.
+  - One plain prompt style.
+  - Qwen3-14B only.
+  - This measures understanding the request, not booking on real sites.
+- Tests: 192 pass.
 
 ## Results after the runner fixes (2026-10-19)
 - **The first real ticket solved by the system:** rental ticket 1 (property search). The runner passed every hidden
@@ -300,8 +329,8 @@ The coding-ticket benchmarks are no longer the target.
 - **Stockholm GPU billing** ($1.07/h): default is to keep it on while housebench2 runs.
 
 ## Next step (2026-10-21)
-1. Run `bench/forms.py` (plain vs forms, test split, 3 reps) on Qwen3-14B. This needs `aws login` and the tunnel.
-2. If forms win: deploy booking.py and the rails to a copy of Hermes, then rehearse food comparison (Swiggy vs Zomato)
+1. Done: forms beat plain on held-out cases (85 % vs 32 %).
+2. Next: deploy booking.py and the rails to a copy of Hermes, then rehearse food comparison (Swiggy vs Zomato)
    and one train search up to payment, without paying. If they don't: the form idea is wrong for this model, so
    rethink before building more.
 3. Owner: the deploy to live Hermes, writing `upi_id`, and logging in to the sites.
