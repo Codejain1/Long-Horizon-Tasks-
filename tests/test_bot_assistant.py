@@ -173,3 +173,12 @@ def test_comma_numbers_and_two_day_ranges(tmp_path):
     g = A.ground(s, "hotel", "Hotel in Ooty this Saturday to Monday under 3000",
                  {"city": "Ooty", "checkin": "2026-10-23", "checkout": "2026-10-25", "max_price_per_night": 3000})
     assert (g["checkin"], g["checkout"]) == ("this saturday", "monday")
+
+
+def test_a_repeated_chat_reply_is_asked_again_with_more_variety(tmp_path):
+    joke = {"content": "Why did the train get a medal? Outstanding track record."}
+    m = Model(joke, joke, {"content": "A different train joke."})
+    b = bot(tmp_path, m)
+    assert say(b, "tell me a joke about trains") == joke["content"]
+    assert say(b, "tell me a joke about trains") == "A different train joke."
+    assert len(m.seen) == 3  # one extra call, only when it would have repeated

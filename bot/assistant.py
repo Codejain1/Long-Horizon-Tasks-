@@ -227,7 +227,17 @@ class Assistant:
             msg = self.chat([{"role": "system", "content": system + "\n\nPick the 3 best for the owner from ONLY these "
                               f"real places (name, km, one line why, maps link):\n{json.dumps(found['places'])}"},
                              {"role": "user", "content": text}])
-        return (msg.get("content") or "").strip() or "Sorry, I didn't get that. Could you say it another way?"
+        reply = (msg.get("content") or "").strip()
+        if reply and not call and reply in self._said(chat):  # low temperature repeats itself ("same joke 3x")
+            again = self.chat([{"role": "system", "content": system + "\n\nYou already gave this exact answer; give "
+                                "a different one."}, *self.recent(chat)[:-1], {"role": "user", "content": text}],
+                              temperature=0.9)
+            reply = (again.get("content") or "").strip() or reply
+        return reply or "Sorry, I didn't get that. Could you say it another way?"
+
+    def _said(self, chat: str, n: int = 5) -> list[str]:
+        return [t for (t,) in self.db.execute("SELECT text FROM log WHERE chat=? AND role='bot' ORDER BY ts DESC LIMIT ?",
+                                              (chat, n))]
 
     def _summary_line(self, slots: dict, kind: str) -> str:
         return f"{kind.title()}: " + ", ".join(f"{k.replace('_', ' ')} {' + '.join(map(str, v)) if isinstance(v, list) else v}"

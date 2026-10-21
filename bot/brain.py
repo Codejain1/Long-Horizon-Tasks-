@@ -1,4 +1,4 @@
-"""Model calls. Qwen3-14B on the Stockholm vLLM (thinking off: 1 s a step instead of 9-65 s, measured 2026-10-21),
+"""Model calls (temperature 0.2 by default: reading booking details must be repeatable). Qwen3-14B on the Stockholm vLLM (thinking off: 1 s a step instead of 9-65 s, measured 2026-10-21),
 or any OpenAI-compatible endpoint set per call."""
 
 from __future__ import annotations
@@ -15,10 +15,10 @@ MODEL = os.environ.get("BOT_MODEL", "local")
 
 
 def chat(messages: list, tools: list | None = None, url: str = "", model: str = "", key_env: str = "",
-         max_tokens: int = 1500, timeout: float = 120) -> dict:
+         max_tokens: int = 1500, timeout: float = 120, temperature: float = 0.2) -> dict:
     """One completion -> the assistant message ({"content", "tool_calls"?}). Retries busy servers twice."""
     url, model = url or URL, model or MODEL
-    body = {"model": model, "messages": messages, "temperature": 0.2, "max_tokens": max_tokens}
+    body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     if url == URL:
         body["chat_template_kwargs"] = {"enable_thinking": False}
     if tools:
