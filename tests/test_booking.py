@@ -208,3 +208,8 @@ def test_plugin_prompt_routes_ordering_to_the_app_and_turns_thinking_off(monkeyp
     assert block.rstrip().endswith("/no_think")  # Qwen3's switch: ~1 s per step instead of 9-65 s (measured 2026-10-21)
     food = next(t for t in P.EmbedMemoryProvider().get_tool_schemas() if t["name"] == "nearby_food")
     assert "Only for going out" in food["description"]
+
+
+def test_empty_save_orders_tells_hermes_to_browse_not_the_owner(tmp_path):
+    r = B.save_orders(store(tmp_path), "swiggy", [])
+    assert "browser_navigate" in r["error"] and "never ask the owner" in r["error"]

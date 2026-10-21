@@ -397,6 +397,11 @@ def plan_trip(store: Store, tid: int, today: date | None = None) -> dict:
 def save_orders(store: Store, platform: str, orders: list[dict]) -> dict:
     """Past orders the owner made, read from the app's order history page: kept as done food tasks (each once)."""
     dom, new = _site(platform), 0
+    if not orders:  # the small model calls this first, empty, then asks the owner to copy their orders: steps instead
+        return {"error": "No orders given. Read them YOURSELF with the browser (the owner is logged in there; never ask "
+                         "the owner to open pages or copy data): 1) browser_navigate to "
+                         "https://www.swiggy.com/my-account/orders 2) browser_snapshot, scroll and snapshot again for "
+                         "older orders 3) call save_orders with every order you saw: restaurant, items, total, date."}
     for o in orders:
         items = [str(i).strip() for i in (o.get("items") or []) if str(i).strip()]
         key = f"order:{dom}:" + (str(o.get("id") or "") or f"{o.get('restaurant', '')}|{o.get('date', '')}|{o.get('total', '')}").lower()
@@ -424,8 +429,9 @@ def taste(store: Store) -> dict:
         if sl.get("max_total"):
             spend.append(sl["max_total"])
     if not rows:
-        return {"orders": 0, "next": "No order history yet: open the app's order history page (Swiggy: "
-                                     "https://www.swiggy.com/my-account/orders) and call save_orders."}
+        return {"orders": 0, "next": "No order history yet. Before recommending, read it YOURSELF: browser_navigate to "
+                                     "https://www.swiggy.com/my-account/orders (owner is logged in), browser_snapshot, "
+                                     "then save_orders with the orders shown."}
     return {"orders": len(rows), "top_dishes": dishes.most_common(5), "top_restaurants": places.most_common(5),
             "typical_spend": median(spend) if spend else None}
 
