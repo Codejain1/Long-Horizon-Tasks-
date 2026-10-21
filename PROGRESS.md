@@ -87,6 +87,26 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Logins built in (2026-10-22, owner's request)
+**Phone + OTP:**
+- The owner sends `login phone <number>` once.
+- When a site is logged out, the bot opens its sign-in, types the stored phone, presses Get OTP and asks for the
+  OTP on WhatsApp. It types the OTP, checks the login, and carries on with what was asked.
+
+**Google:** `google for logins <email>`. The owner signs in to Google once by hand in the bot's Chrome; the bot then
+uses "Continue with Google" and the account in the popup.
+
+**Code:** `bot/login.py` (Swiggy, ixigo, redbus, Zomato) and `cdp.type_login`.
+
+**Rule change (owner asked for OTP entry):** login OTPs yes, payment OTPs never.
+- The only typing the bot can do is the owner's own phone, or 4–8 digits.
+- Only on a page whose text is a sign-in.
+- Never on payment gateways, never into card / CVV / expiry / UPI PIN fields.
+- The OTP is never stored: not in memory, the log or traces (`[login OTP]`).
+
+**Untested on the real sites' sign-in pages:** button labels are guesses per site, and captures and traces will
+show the real ones. Zomato may still block logins from the server's data-centre IP.
+
 ## Why so many bugs, and the systemic fixes (2026-10-22, owner asked)
 Nearly every bug this week came from five root causes. One fix per cause, not per bug:
 
@@ -416,6 +436,8 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-22: the bot may type the owner's phone and a login OTP the owner sends (owner's request). Payment OTPs,
+  cards, CVV and UPI PIN stay impossible, enforced in `bot/cdp.py`.
 - 2026-10-22: Hermes is replaced by our bot (owner's call). The bot keeps Hermes's WhatsApp session, env file,
   scripts and memory files, and copies the bridge to `/opt/bot-bridge`, so Hermes's install can be removed later.
 - 2026-10-22: the cron jobs run on the local Qwen instead of free OpenRouter Nemotron (rate-limited in the logs, and

@@ -14,6 +14,7 @@ import urllib.parse
 
 import brain
 import cdp
+import login
 
 ORDERS = "https://www.swiggy.com/my-account/orders"
 SEARCH = "https://www.swiggy.com/search?query={q}"
@@ -23,6 +24,10 @@ NONVEG = re.compile(r"\b(chicken|mutton|lamb|egg|eggs|fish|prawns?|keema|beef|po
 
 class NotReady(Exception):  # (cdp.Blocked, a rail, is also reported to the owner as is)
     """Swiggy isn't usable as is (logged out, location missing, blocked): the message says what the owner should do."""
+
+
+class LoggedOut(NotReady):
+    """Swiggy wants a login: the assistant logs in (phone + OTP or Google) and carries on."""
 
 
 ORDERS_SCHEMA = {"type": "object", "properties": {"orders": {"type": "array", "items": {"type": "object", "properties": {
@@ -98,8 +103,8 @@ class Swiggy:
         low = page.lower()
         if "access denied" in low or "captcha" in low:
             raise NotReady("Swiggy blocked the request from the server.")
-        if ("login" in low and "phone number" in low) or "sign up" in low and "₹" not in page:
-            raise NotReady("Swiggy is logged out in the bot's Chrome: log in there again (Hermes desktop).")
+        if login.looks_logged_out(page):
+            raise LoggedOut("Swiggy is logged out in the bot's Chrome.")
         return page
 
     def orders(self) -> list[dict]:

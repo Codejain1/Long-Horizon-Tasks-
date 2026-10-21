@@ -22,6 +22,7 @@ from pathlib import Path
 import booking as B
 import brain
 import food
+import login
 import places
 
 YES = re.compile(r"^\s*(yes|y|yep|yeah|haan|ha|ok(ay)?|go ahead|confirm(ed)?|do it|sure)\b[\s.!]*$", re.I)
@@ -54,6 +55,10 @@ UPDATE = {"type": "object", "properties": {"action": {"type": "string", "enum": 
                                            "details": {"type": "object", "additionalProperties": VALUE}},
           "required": ["action", "details"]}
 FRESH_H = 12  # order history read this recently is reused, not re-read from Swiggy
+SET_PHONE = re.compile(r"^\s*(set\s+)?(my\s+)?log ?in\s+phone(\s+number)?\s*(is|to|:|=)?\s*(\+?[\d][\d\s-]{8,15}\d)\s*$", re.I)
+SET_GOOGLE = re.compile(r"^\s*(use\s+)?google\s+(for\s+)?log ?ins?\s*(with|:|=)?\s*([\w.+-]+@[\w-]+\.[\w.]+)\s*$", re.I)
+LOGIN_TO = re.compile(r"^\s*(log ?in|sign ?in)\s+(to|on|into)?\s*(%s)\b" % "|".join(login.SITES), re.I)
+OTP = re.compile(r"^\s*(\d[\s-]?){4,8}\s*$")
 
 
 def _post(url: str, body: dict, timeout: float = 5) -> dict:
@@ -120,12 +125,13 @@ def ground(store: B.Store, kind: str, text: str, slots: dict) -> dict:
 
 class Assistant:
     def __init__(self, home: Path, store: B.Store, memory_url: str = "http://127.0.0.1:8765", chat=brain.chat,
-                 post=_post, nearby=places.nearby_food, swiggy=None):
+                 post=_post, nearby=places.nearby_food, swiggy=None, logins=None):
         self.home, self.store, self.mem, self.post, self.nearby = Path(home), store, memory_url, post, nearby
         self.model, self.local = chat, threading.local()
         self.chat = self._traced  # every model call goes through the trace
         self.swiggy = swiggy or food.Swiggy(chat=self._traced, captures=self.home / "captures")
         self.notify = lambda text: None
+        self.login = logins or login.Login()
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS log (ts REAL, channel TEXT, chat TEXT, role TEXT, text TEXT)")
@@ -220,7 +226,10 @@ class Assistant:
         self.notify = notify or (lambda text: None)
         chat, text, t = msg["chat"], msg["text"], time.time()
         self.local.steps = []
-        self._log(msg["channel"], chat, "owner", text)
+        secret = bool(self.login.waiting_for(chat) and OTP.match(text))  # a login OTP: used, never stored
+        shown = "[login OTP]" if secret else text
+        self.local.secret = secret
+        self._log(msg["channel"], chat, "owner", shown)
         reply = None
         try:
             reply = self._turn(chat, text)
@@ -229,13 +238,14 @@ class Assistant:
             raise
         finally:
             with self.lock:
-                self.db.execute("INSERT INTO traces VALUES (?,?,?,?,?,?)", (t, chat, text, reply,
+                self.db.execute("INSERT INTO traces VALUES (?,?,?,?,?,?)", (t, chat, shown, reply,
                                 int(1000 * (time.time() - t)), json.dumps(self.local.steps, ensure_ascii=False)))
                 self.db.commit()
         self._log(msg["channel"], chat, "bot", reply)
         return reply
 
     def _turn(self, chat: str, text: str) -> str:
+        self.local.chat = chat
         halt = self.home / "HALT"
         if text.strip().upper().rstrip(".!") == "STOP":
             halt.write_text(time.ctime())
@@ -245,6 +255,21 @@ class Assistant:
             return "Resumed."
         if halt.exists():
             return "I'm stopped. Say RESUME to continue."
+        if getattr(self.local, "secret", False):
+            return self._finish_login(chat, text)
+        m = SET_PHONE.match(text)
+        if m:
+            digits = re.sub(r"\D", "", m[5])[-10:]
+            self.store.set_fact("owner:phone", digits, "owner")
+            return f"Saved: I'll use your number ending {digits[-4:]} for logins. You'll get the OTPs; send them here."
+        m = SET_GOOGLE.match(text)
+        if m:
+            self.store.set_fact("owner:google", m[4].lower(), "owner")
+            return (f"Saved: on sites with 'Continue with Google' I'll use {m[4].lower()}. Sign in to that Google account "
+                    "once in the bot's Chrome (Hermes desktop) so I can pick it.")
+        m = LOGIN_TO.match(text)
+        if m:
+            return self._need_login(chat, m[3].lower(), None)
         self._remember(chat, text)
         tid = self._pending(chat)
         offers = self.store.fact(f"choice:{tid}") if tid else None
@@ -320,10 +345,55 @@ class Assistant:
                                               (chat, n))]
 
     # Swiggy ----------------------------------------------------------------------------------------------------
+    # logins ----------------------------------------------------------------------------------------------------
+    def _need_login(self, chat: str, site: str, resume: dict | None) -> str:
+        """A site wants a login: Google if set up and offered, else phone + OTP; then carry on with `resume`."""
+        email = (self.store.fact("owner:google") or {}).get("value")
+        if email and login.SITES.get(site, {}).get("google"):
+            self.notify(f"{site.title()} wants a login: trying Google ({email})…")
+            if self.login.google(site, email):
+                return f"Logged in to {site.title()} with Google ✅\n" + self._resume(chat, resume)
+        phone = (self.store.fact("owner:phone") or {}).get("value")
+        if not phone:
+            return (f"{site.title()} needs a login. Send 'login phone <your number>' once and I'll handle logins "
+                    "from then on: you'll only send me the OTP.")
+        self.notify(f"{site.title()} wants a login: entering your number ending {phone[-4:]}…")
+        r = self.login.start(chat, site, phone)
+        if r == "logged_in":
+            return self._resume(chat, resume) if resume else f"You're already logged in to {site.title()}."
+        if r != "otp_sent":
+            return r
+        self.store.set_fact(f"resume:{chat}", resume, "bot", ttl_h=0.2)
+        return f"{site.title()} sent an OTP to your number ending {phone[-4:]}. Send it here (just the digits)."
+
+    def _finish_login(self, chat: str, text: str) -> str:
+        site = self.login.waiting_for(chat)
+        phone = (self.store.fact("owner:phone") or {}).get("value", "")
+        try:
+            ok = self.login.finish(chat, re.sub(r"\D", "", text), phone)
+        except food.cdp.Blocked as e:
+            return str(e)
+        if not ok:
+            return f"That didn't log me in to {site.title()} (wrong or expired OTP?). Say 'login to {site}' to try again."
+        resume = self.store.fact(f"resume:{chat}")
+        return f"Logged in to {site.title()} ✅\n" + self._resume(chat, resume["value"] if resume and not resume["stale"] else None)
+
+    def _resume(self, chat: str, resume: dict | None) -> str:
+        if not resume:
+            return "What would you like me to do?"
+        if resume.get("do") == "orders":
+            return self._read_orders()
+        if resume.get("do") == "find":
+            t = self.store.task(resume["task"])
+            return self._find_food(chat, t["id"], t["slots"])
+        return "Done."
+
     def _read_orders(self) -> str:
         self.notify("Reading your Swiggy order history…")
         try:
             orders = self.swiggy.orders()
+        except food.LoggedOut:
+            return self._need_login(self.local.chat, "swiggy", {"do": "orders"})
         except (food.NotReady, food.cdp.Blocked) as e:
             return str(e)
         if not orders:
@@ -341,6 +411,8 @@ class Assistant:
         self.notify(f"Looking for {dish} on Swiggy…")
         try:
             offers = self.swiggy.search(dish)
+        except food.LoggedOut:
+            return self._need_login(chat, "swiggy", {"do": "find", "task": tid})
         except (food.NotReady, food.cdp.Blocked) as e:
             return str(e)
         if not offers:
@@ -365,6 +437,8 @@ class Assistant:
         self._pending(chat, clear=True)
         try:
             r = self.swiggy.add(offer)
+        except food.LoggedOut:
+            return self._need_login(chat, "swiggy", {"do": "find", "task": tid})
         except (food.NotReady, food.cdp.Blocked) as e:
             B.finish(self.store, tid, "failed", str(e), "swiggy")
             return str(e)

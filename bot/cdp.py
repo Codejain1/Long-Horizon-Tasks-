@@ -20,8 +20,9 @@ import urllib.request
 DEVTOOLS = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
 
 # The owner's rails (Hermes enforced them in its rails plugin; here every browser action passes this layer):
-# never open a payment gateway, never click anything that pays, orders or books. There is no typing method at all,
-# so card numbers, CVV, OTP and UPI PIN can't be entered.
+# never open a payment gateway, never click anything that pays, orders or books. The only typing is `type_login`:
+# the owner's own phone number or a 4-8 digit login OTP the owner sent, only on a sign-in page, never into a card,
+# CVV, expiry or UPI PIN field (owner's rule change 2026-10-22: login OTPs yes, payment OTPs never).
 PAY_GATEWAYS = ("razorpay", "paytm", "payu", "juspay", "stripe.com", "billdesk", "ccavenue", "cashfree", "phonepe",
                 "paypal", "pay.google", "checkout.com", "easebuzz", "instamojo")
 COMMIT = (r"place (your )?order|pay now|pay\s*(₹|rs|inr)|make payment|proceed to pay|continue to pay|"
@@ -29,8 +30,18 @@ COMMIT = (r"place (your )?order|pay now|pay\s*(₹|rs|inr)|make payment|proceed 
           r"buy now|submit order|order now|slide to pay|verify (and |& )?pay|^\s*pay\s*$")
 
 
+PAY_FIELD = r"card|cvv|cvc|expiry|upi ?pin|mpin|net ?banking|ifsc"
+LOGIN_PAGE = re.compile(r"\botp\b|one.?time|verification code|log ?in|sign ?in|mobile number|phone number|"
+                        r"enter (your )?(mobile|phone)", re.I)
+
+
 class Blocked(Exception):
     """A rail stopped a browser action."""
+
+
+def targets(devtools: str = DEVTOOLS) -> list[dict]:
+    with urllib.request.urlopen(devtools + "/json/list", timeout=10) as r:
+        return [t for t in json.loads(r.read()) if t.get("type") == "page"]
 
 
 class WebSocket:
@@ -102,12 +113,14 @@ class WebSocket:
 
 
 class Tab:
-    def __init__(self, devtools: str = DEVTOOLS, ws_factory=WebSocket):
-        req = urllib.request.Request(devtools + "/json/new?about:blank", method="PUT")
-        with urllib.request.urlopen(req, timeout=10) as r:
-            info = json.loads(r.read())
-        self.id, self.devtools, self.n = info["id"], devtools, 0
-        self.ws = ws_factory(info["webSocketDebuggerUrl"])
+    def __init__(self, devtools: str = DEVTOOLS, ws_factory=WebSocket, target: dict | None = None):
+        """A new tab of the bot's own, or (target) an existing one, e.g. Google's sign-in popup."""
+        if target is None:
+            req = urllib.request.Request(devtools + "/json/new?about:blank", method="PUT")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                target = json.loads(r.read())
+        self.id, self.devtools, self.n = target["id"], devtools, 0
+        self.ws = ws_factory(target["webSocketDebuggerUrl"])
 
     def call(self, method: str, **params) -> dict:
         self.n += 1
@@ -180,6 +193,71 @@ class Tab:
         if isinstance(r, str) and r.startswith("blocked:"):
             raise Blocked(f"rails: refused to click '{r[8:]}' (pays / orders / books)")
         return bool(r)
+
+    def click_label(self, *labels: str) -> str | None:
+        """Click the first visible button/link whose own text is exactly one of `labels` (case-insensitive), e.g.
+        "Sign In", "Get OTP", "Verify OTP". Returns the label clicked, or None. Same rails as click_text."""
+        for label in labels:
+            if re.search(COMMIT, label, re.I):
+                raise Blocked(f"rails: the bot never clicks pay / order / book ({label})")
+        js = """((labels) => {
+          const want = labels.map(l => l.toLowerCase());
+          const els = [...document.querySelectorAll('button, a, [role=button], input[type=submit], div, span')]
+            .filter(e => e.offsetParent !== null);
+          for (const w of want) {
+            const hit = els.find(e => (e.innerText || e.value || '').trim().toLowerCase() === w);
+            if (hit) { hit.scrollIntoView({block: 'center'}); hit.click(); return w; }
+          }
+          return null;
+        })(%s)""" % json.dumps(list(labels))
+        return self.js(js)
+
+    def type_login(self, kind: str, value: str, owner_phone: str) -> bool:
+        """The only typing the bot can do. kind "phone": exactly the owner's phone; kind "otp": 4-8 digits. Only on a
+        sign-in page (its text says OTP / log in / mobile number...), never into a payment field. True if typed."""
+        digits = re.sub(r"\D", "", value)
+        mine = re.sub(r"\D", "", owner_phone or "")[-10:]
+        if kind == "phone" and not (mine and digits[-10:] == mine):
+            raise Blocked("rails: only the owner's own phone number can be typed")
+        if kind == "otp" and not re.fullmatch(r"\d{4,8}", digits):
+            raise Blocked("rails: a login OTP is 4-8 digits")
+        if kind not in ("phone", "otp"):
+            raise Blocked(f"rails: the bot types nothing but a login phone or OTP ({kind})")
+        url = self.js("location.href") or ""
+        if any(g in urllib.parse.urlparse(url).netloc.lower() for g in PAY_GATEWAYS):
+            raise Blocked("rails: no typing on payment pages")
+        if not LOGIN_PAGE.search(self.text()):
+            raise Blocked("rails: typing only on a sign-in page")
+        text = digits[-10:] if kind == "phone" else digits
+        js = """((kind, forbidden) => {
+          const vis = [...document.querySelectorAll('input')].filter(i => i.offsetParent !== null && !i.disabled
+            && !['hidden', 'password', 'checkbox', 'radio', 'submit'].includes(i.type));
+          const label = i => [i.name, i.id, i.placeholder, i.getAttribute('aria-label'), i.autocomplete,
+            (i.labels && i.labels[0] && i.labels[0].innerText)].join(' ').toLowerCase();
+          const bad = new RegExp(forbidden, 'i');
+          let fields;
+          if (kind === 'phone') {
+            fields = vis.filter(i => i.type === 'tel' || /phone|mobile/.test(label(i))).slice(0, 1);
+          } else {
+            const one = vis.filter(i => i.autocomplete === 'one-time-code' || /otp|code|verification/.test(label(i)));
+            const boxes = vis.filter(i => i.maxLength === 1);
+            fields = boxes.length >= 4 ? boxes : one.slice(0, 1);
+          }
+          if (!fields.length) return {error: 'no ' + kind + ' field on the page'};
+          if (fields.some(i => bad.test(label(i)))) return {error: 'blocked: a payment field'};
+          window.__botFields = fields;
+          return {n: fields.length};
+        })(%s, %s)""" % (json.dumps(kind), json.dumps(PAY_FIELD))
+        r = self.js(js) or {}
+        if str(r.get("error", "")).startswith("blocked"):
+            raise Blocked("rails: refused to type into a payment field")
+        if r.get("error"):
+            return False
+        chunks = list(text) if r["n"] > 1 else [text]  # OTP boxes: one digit each
+        for i, chunk in enumerate(chunks[:r["n"]] if r["n"] > 1 else chunks):
+            self.js(f"window.__botFields[{i}].focus(); window.__botFields[{i}].select && window.__botFields[{i}].select()")
+            self.call("Input.insertText", text=chunk)
+        return True
 
     def scroll_end(self) -> None:
         self.js("window.scrollTo(0, document.body.scrollHeight)")
