@@ -102,6 +102,14 @@ The coding-ticket benchmarks are no longer the target.
 - after the deploy: gateway and memory are active, WhatsApp is connected, 18 tools load (7 new), and UPI is off
   (no `upi_id`).
 
+- **2026-10-21: Hermes's browser tools now drive the desktop Chrome** (`browser.cdp_url: http://127.0.0.1:9222`).
+  Before, they used a temporary hidden browser, so site logins never persisted.
+  - Chrome now has a 127.0.0.1-only debugging port and its own profile `~/.config/hermes-chrome-cdp`.
+  - The drop-in is `/etc/systemd/system/hermes-chrome.service.d/cdp.conf`; the config backup is
+    `config.yaml.before-cdp-20261021-160212`.
+  - The owner logs in once over DCV (SSM port-forward 8443). Hermes reuses the session, and the owner can watch it
+    work.
+
 **What was built:**
 - **`hermes/embed_memory/booking.py`:** a task is a form (template per kind). The model fills only what the owner
   said. Code then:
