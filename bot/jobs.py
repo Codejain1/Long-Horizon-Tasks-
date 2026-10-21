@@ -107,11 +107,7 @@ class Jobs:
         system = (f"{job['prompt']}\n\nCurrent LEARNED.md:\n{old}\n\nAnswer with JSON only: "
                   '{"learned_md": "<the whole new file>", "message": "<the one line for Kartik>"}')
         raw = self.chat([{"role": "system", "content": system}, {"role": "user", "content": ctx}], max_tokens=3000)
-        m = re.search(r"\{.*\}", raw.get("content") or "", re.S)
-        try:
-            out = json.loads(m[0]) if m else {}
-        except json.JSONDecodeError:
-            out = {}
+        out = brain.first_json(raw.get("content") or "")
         new = str(out.get("learned_md") or "")
         heads = re.findall(r"^#+ .*$", old, re.M)
         if not new.strip() or len(new.splitlines()) > 100 or any(h not in new for h in heads):

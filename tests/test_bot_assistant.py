@@ -264,3 +264,15 @@ def test_dish_names_are_cleaned_for_the_pattern():
     import booking as Bk
     assert Bk.dish_name("Chilli Bean Patty Sandwich (15cm) + Coke(Save 31%) x 1") == "chilli bean patty sandwich"
     assert Bk.dish_name("Veggie & Cheese Toastie x 2") == "veggie & cheese toastie"
+
+
+def test_veg_in_the_dish_name_filters_and_empty_search_is_explained(tmp_path):
+    m = Model(call("task_start", kind="food", slots={"dish": "veg Biriyani", "max_total": 400}))
+    b = bot(tmp_path, m)
+    b.swiggy = FakeSwiggy(OFFERS)
+    say(b, "Order veg Biriyani under 400")
+    assert "Chicken" not in say(b, "Yes")  # no diet setting: 'veg' in the dish name is enough
+    m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400}))
+    b.swiggy = FakeSwiggy([])
+    say(b, "order biryani under 400")
+    assert "couldn't read any dishes" in say(b, "yes")

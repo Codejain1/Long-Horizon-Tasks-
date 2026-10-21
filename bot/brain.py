@@ -46,6 +46,22 @@ def _json(s: str):
         return json.loads(re.sub(r"(?<=\d),(?=\d{3}\b)", "", s))
 
 
+def first_json(text: str) -> dict:
+    """The first JSON object in a reply, ignoring anything around or after it (seen live: a list, then more text,
+    broke json.loads with "Extra data"). {} if there is none."""
+    s = text or ""
+    for i, ch in enumerate(s):
+        if ch == "{":
+            for candidate in (s[i:], re.sub(r"(?<=\d),(?=\d{3}\b)", "", s[i:])):
+                try:
+                    obj, _ = json.JSONDecoder().raw_decode(candidate)
+                    if isinstance(obj, dict):
+                        return obj
+                except json.JSONDecodeError:
+                    continue
+    return {}
+
+
 def tool_call(msg: dict) -> tuple[str, dict] | None:
     """The first tool call of a reply as (name, args), or None. Qwen sometimes writes the call as text
     (`<tool_call>{...}</tool_call>`, seen live on "under 7,500"): that is read too."""

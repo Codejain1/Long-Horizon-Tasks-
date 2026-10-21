@@ -9,7 +9,6 @@ it can't invent a restaurant or a price. Never places an order: the furthest it 
 
 from __future__ import annotations
 
-import json
 import re
 import urllib.parse
 
@@ -26,12 +25,7 @@ class NotReady(Exception):
     """Swiggy isn't usable as is (logged out, location missing, blocked): the message says what the owner should do."""
 
 
-def _json(text: str) -> dict:
-    m = re.search(r"\{.*\}", text or "", re.S)
-    try:
-        return json.loads(m[0]) if m else {}
-    except json.JSONDecodeError:
-        return json.loads(re.sub(r"(?<=\d),(?=\d{3}\b)", "", m[0])) if m else {}
+_json = brain.first_json
 
 
 def _on_page(value, page: str) -> bool:

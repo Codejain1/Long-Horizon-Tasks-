@@ -36,7 +36,7 @@ PERSONA = """You are the owner's personal assistant on WhatsApp/Telegram. Reply 
 For any booking or order (flight, train, bus, cab, hotel, food delivery, trip): call task_start with ONLY the details
 the owner said in this message, dates and people exactly as said. Naming a dish to eat means ordering it (kind food),
 unless they say they want to go out. For places to go out to eat or visit near them: call nearby_places. Otherwise
-just reply. Never invent facts about the owner. Today is {today}.
+just reply. You only get this one reply: never say "one moment" or "let me check"; answer now. Never invent facts about the owner. Today is {today}.
 {memory}"""
 
 PLACES_TOOL = {"name": "nearby_places", "description": "Real restaurants and cafes near the owner's shared location.",
@@ -300,7 +300,12 @@ class Assistant:
             offers = self.swiggy.search(dish)
         except food.NotReady as e:
             return str(e)
-        veg = "veg" in str(slots.get("diet", "")).lower() and "non" not in str(slots.get("diet", "")).lower()
+        if not offers:
+            B.finish(self.store, tid, "failed", f"no {dish} read from the search page", "swiggy")
+            return (f"I opened Swiggy's search for {dish} but couldn't read any dishes with prices from the page. "
+                    "Try a simpler dish name, or check that a delivery address is set in Swiggy.")
+        said = f"{slots.get('diet', '')} {dish}".lower()
+        veg = bool(re.search(r"\bveg(etarian)?\b", said)) and not re.search(r"non[- ]?veg", said)
         top = food.pick(offers, slots.get("max_total"), veg)
         if not top:
             B.finish(self.store, tid, "failed", f"no {dish} under ₹{slots.get('max_total')} on Swiggy", "swiggy")

@@ -99,3 +99,13 @@ def test_logged_out_and_mixed_cart_are_explained():
         raise AssertionError("should have raised")
     except F.NotReady as e:
         assert "another restaurant" in str(e)
+
+
+def test_list_followed_by_more_text_is_read_not_crashed():
+    import brain
+    live = '{"offers": [{"restaurant": "Paradise", "item": "Veg Biryani", "price": 249}]} {"note": "more"} and some text'
+    assert brain.first_json(live) == {"offers": [{"restaurant": "Paradise", "item": "Veg Biryani", "price": 249}]}
+    assert brain.first_json('Sure! {"price": 7,500} done') == {"price": 7500}
+    assert brain.first_json("no json here {") == {}
+    offers = F.read_offers(SEARCH_PAGE, "biryani", lambda m, **k: {"content": live})
+    assert [o["item"] for o in offers] == ["Veg Biryani"]
