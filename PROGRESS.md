@@ -110,6 +110,16 @@ The coding-ticket benchmarks are no longer the target.
   - The owner logs in once over DCV (SSM port-forward 8443). Hermes reuses the session, and the owner can watch it
     work.
 
+- **2026-10-21: Hermes is back on the click-by-label browser tools** (`browser.backend: "off"`).
+  - **Why:** in Browser Use mode (the Hermes default) the only browser tool was `browser_exec` (Python code). The
+    model didn't use it and fell back to keyless web search, which is IP rate-limited. The page capture for
+    `compare_offers` and the rails' label checks don't see `browser_exec`.
+  - The rails now also block card, CVV, OTP and UPI PIN typing inside `browser_exec` code.
+  - Verified: `browser_*` tools available True, browser-use mode False, WhatsApp connected.
+  - Config backups: `config.yaml.before-backend-off*`.
+  - The owner is logged in to Swiggy, ixigo and redbus. Zomato login fails from the server (likely a data-centre IP
+    block); its menus are readable without login.
+
 **What was built:**
 - **`hermes/embed_memory/booking.py`:** a task is a form (template per kind). The model fills only what the owner
   said. Code then:
