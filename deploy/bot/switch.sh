@@ -9,7 +9,7 @@ H=/home/hermes/.hermes; ST=$(date +%Y%m%d-%H%M%S); NEW=/opt/bot-$ST
 
 mkdir -p $NEW && cd $NEW
 curl -s -o b.tgz "$URL"; echo "$MD5  b.tgz" | md5sum -c; tar xzf b.tgz; rm b.tgz
-python3 -m py_compile bot/*.py hermes/embed_memory/booking.py hermes/embed_memory/places.py
+python3 -m py_compile bot/*.py
 ln -sfn $NEW /opt/bot
 [ -d /opt/bot-bridge ] || cp -a $H/hermes-agent/scripts/whatsapp-bridge /opt/bot-bridge  # independent of Hermes
 

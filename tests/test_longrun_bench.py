@@ -49,7 +49,7 @@ def test_true_outcome_reaches_memory(tmp_path):
     import time
     sys.path[:0] = [str(Path(__file__).parent.parent / "memrouter"), str(Path(__file__).parent)]
     import memory_service as M
-    from test_hermes_memory import KeywordRanker, fake_encode
+    from test_memory_service import KeywordRanker, fake_encode
     mem = M.Memory(tmp_path, fake_encode, KeywordRanker())
     threading.Thread(target=M.serve, args=(mem, 18810), daemon=True).start()
     time.sleep(0.3)
@@ -109,7 +109,7 @@ def test_broken_house_rule_becomes_a_standing_rule_the_runner_sees(tmp_path):
                     str(Path(__file__).parent.parent / "runner")]
     import longrun as LR
     import memory_service as M
-    from test_hermes_memory import KeywordRanker, fake_encode
+    from test_memory_service import KeywordRanker, fake_encode
     mem = M.Memory(tmp_path, fake_encode, KeywordRanker())
     threading.Thread(target=M.serve, args=(mem, 18811), daemon=True).start()
     time.sleep(0.3)

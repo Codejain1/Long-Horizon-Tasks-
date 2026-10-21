@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-sys.path[:0] = [str(ROOT / "bot"), str(ROOT / "hermes" / "embed_memory")]
+sys.path[:0] = [str(ROOT / "bot")]
 import assistant as A  # noqa: E402
 import booking as B  # noqa: E402
 
@@ -28,6 +28,7 @@ class Model:
 def memory_ok(url, body, timeout=5):
     if url.endswith("/search"):
         return {"rules": [{"text": "reply in English"}], "context": "#3 [1 Oct] owner: I'm vegetarian",
+                "warnings": [{"check": "food picks: budget", "error": "keep every dish under ₹200.", "seen": 2}],
                 "current": {"profile": [{"text": "vegetarian"}], "mood": {"mood": "tired", "hours_ago": 1},
                             "location": {"lat": 12.9, "lng": 77.6}}}
     return {}
@@ -51,6 +52,7 @@ def test_booking_conversation_runs_in_code(tmp_path):
     assert say(b, "train from bangalore to chennai on 2 nov") == "Which class (SL, 3A, 2A, 1A)?"
     sys_prompt = m.seen[0][0][0]["content"]
     assert "reply in English" in sys_prompt and "vegetarian" in sys_prompt and "tired" in sys_prompt
+    assert "- keep every dish under ₹200. (corrected 2x)" in sys_prompt
     assert m.seen[0][1] == ["task_start", "nearby_places", "swiggy_orders"]
     r = say(b, "3A")
     assert r.startswith("Train:") and "class 3A" in r and "passengers Kartik" in r and r.endswith("(YES / no)")

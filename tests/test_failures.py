@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).parent.parent / "memrouter"), str(Path(__file__).parent)]
 import failures as FL  # noqa: E402
-from test_hermes_memory import memory  # noqa: E402
+from test_memory_service import memory  # noqa: E402
 
 OUT = """FAILED test_hidden_acceptance.py::test_house_errors - AssertionError: assert 'error: ' in ''
 FAILED test_hidden_acceptance.py::test_house_empty - assert '' == '(empty)'

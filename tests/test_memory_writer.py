@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path[:0] = [str(ROOT / "memrouter"), str(ROOT / "memrouter")]
 import writer as W  # noqa: E402
-from test_hermes_memory import KeywordRanker, fake_encode  # noqa: E402
+from test_memory_service import KeywordRanker, fake_encode  # noqa: E402
 
 import memory_service as M  # noqa: E402
 
@@ -181,15 +181,5 @@ def test_owner_corrections_become_hermes_experience_and_reach_the_next_reply(tmp
     mem.add("the assistant was wrong, says the friend", "Riya", "c", 1_700_000_200)  # not the owner: no verdict
     assert [(s["check"], s["seen"]) for s in mem.fails.stats("hermes")] == [("food picks: budget", 2)]
 
-    stub = types.ModuleType("agent.memory_provider")
-    stub.MemoryProvider = object
-    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
-    sys.path.insert(0, str(ROOT / "hermes"))
-    import embed_memory as P
-    threading.Thread(target=M.serve, args=(mem, 18832), daemon=True).start()
-    time.sleep(0.3)
-    monkeypatch.setenv("EMBED_MEMORY_URL", "http://127.0.0.1:18832")
-    out = P.EmbedMemoryProvider().prefetch("suggest dessert near me")
-    assert "## Mistakes the owner corrected before" in out
-    assert "keep every dish under ₹200. (corrected 2x)" in out
+    r = mem.search("suggest dessert near me", scope="hermes")  # the bot shows these as "mistakes corrected before"
+    assert any("under ₹200" in (w["error"] or w["check"]) and w["seen"] == 2 for w in r["warnings"])

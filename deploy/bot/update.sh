@@ -5,7 +5,7 @@ set -euo pipefail
 URL=$1; MD5=$2; NEW=/opt/bot-$(date +%Y%m%d-%H%M%S); OLD=$(readlink /opt/bot || true)
 mkdir -p $NEW && cd $NEW
 curl -s -o b.tgz "$URL"; echo "$MD5  b.tgz" | md5sum -c; tar xzf b.tgz; rm b.tgz
-python3 -m py_compile bot/*.py hermes/embed_memory/booking.py hermes/embed_memory/places.py
+python3 -m py_compile bot/*.py
 [ -f "$OLD/SWITCHED_AT" ] && cp "$OLD/SWITCHED_AT" $NEW/
 ln -sfn $NEW /opt/bot && systemctl restart owner-bot; sleep 5
 systemctl is-active owner-bot; echo "now $NEW (was $OLD)"

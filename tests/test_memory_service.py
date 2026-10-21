@@ -9,11 +9,10 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).parent.parent
-sys.path[:0] = [str(ROOT / "memrouter"), str(ROOT / "hermes")]
+sys.path[:0] = [str(ROOT / "memrouter"), str(ROOT / "bot")]
 import memory_service as M  # noqa: E402
 
-sys.path.insert(0, str(ROOT / "hermes" / "embed_memory"))
-import places as PL  # noqa: E402  (the plugin's package needs Hermes; its places module doesn't)
+import places as PL  # noqa: E402
 
 
 def fake_encode(texts, max_len=96):  # bag of hashed words: enough to make "rent" find "rent"
@@ -58,44 +57,6 @@ def test_long_messages_split_and_empty_ignored(tmp_path):
     assert mem.add("   ", "me", "c") == 0
 
 
-def test_plugin_saves_turns_and_fails_open(tmp_path, monkeypatch):
-    stub = types.ModuleType("agent.memory_provider")
-    stub.MemoryProvider = object
-    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
-    import embed_memory as P
-
-    mem = memory(tmp_path)
-    port = 18765
-    threading.Thread(target=M.serve, args=(mem, port), daemon=True).start()
-    time.sleep(0.3)
-    monkeypatch.setenv("EMBED_MEMORY_URL", f"http://127.0.0.1:{port}")
-    p = P.EmbedMemoryProvider()
-    p.initialize("s1", agent_context="primary")
-    p.sync_turn("My passport number ends in 4471, remember it.", "Noted.", session_id="s1",
-                turn_author={"name": "Kartik"})
-    for _ in range(50):
-        if mem.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 2:
-            break
-        time.sleep(0.05)
-    out = p.prefetch("what does my passport number end in?")
-    assert "## What you remember" in out and "Kartik: My passport" in out
-    assert "fine-tuned bge-small" in p.system_prompt_block()
-    assert '"n"' in p.handle_tool_call("memory_search", {"query": "passport"})
-    assert "Hermes: Noted." not in out  # the agent's own replies are not fed back to it
-    assert mem.search("noted", 500, ("Hermes",))["n"] <= 1
-
-    sub = P.EmbedMemoryProvider()
-    sub.initialize("s2", agent_context="subagent")
-    sub.sync_turn("should not be saved", "x")
-    time.sleep(0.2)
-    assert mem.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 2
-
-    monkeypatch.setenv("EMBED_MEMORY_URL", "http://127.0.0.1:1")  # service down: no memory, no crash
-    assert p.prefetch("anything") == ""
-    assert "unavailable" in p.handle_tool_call("memory_search", {"query": "x"})
-
-
 RULE = ("Hey just read one thing don't show me I want to install this thing or that, just do the things and give me "
         "the final output I want, so your messages would be like on it sir and when the thing is done give me the output")
 
@@ -119,65 +80,6 @@ def test_rule_applies_to_unrelated_requests_and_can_be_forgotten(tmp_path):
     r = mem.search("Build me a landing page for my chai stall and deploy it", 100)
     assert [x["text"] for x in r["rules"]] == [" ".join(RULE.split())]  # recalled whatever the query
     assert mem.forget_rule(rid) and mem.search("anything", 100)["rules"] == []
-
-
-def test_plugin_rules_every_reply_and_cron_kept_out(tmp_path, monkeypatch):
-    stub = types.ModuleType("agent.memory_provider")
-    stub.MemoryProvider = object
-    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
-    import embed_memory as P
-
-    mem = memory(tmp_path)
-    port = 18766
-    threading.Thread(target=M.serve, args=(mem, port), daemon=True).start()
-    time.sleep(0.3)
-    monkeypatch.setenv("EMBED_MEMORY_URL", f"http://127.0.0.1:{port}")
-    p = P.EmbedMemoryProvider()
-    p.initialize("s1", agent_context="primary")
-    p.sync_turn(RULE, "```python\nprint('code dump')\n```", session_id="s1", turn_author={"name": "Kartik"})
-    p.sync_turn("[IMPORTANT: You are running as a scheduled cron job] never treat ERROR as a change", "ok",
-                session_id="cron_abc_1")
-    mem.add("noise - target ERROR monitor prompt", "user", "cron_old_job")  # saved before the fix
-    for _ in range(50):
-        if mem.pending("rules"):
-            break
-        time.sleep(0.05)
-    time.sleep(0.2)
-    pending = mem.pending("rules")
-    assert len(pending) == 1 and mem.rules() == []  # inferred from chat: waits for the owner's OK
-    assert "cron" not in pending[0]["text"]  # the cron prompt said "never" but is not the user: not a rule
-    ask = p.prefetch("Build me a landing page for my chai stall and deploy it")
-    assert "Standing rules" not in ask and "waiting for the owner's OK" in ask and f"#{pending[0]['id']}" in ask
-    assert '"confirmed": true' in p.handle_tool_call("confirm_rule", {"id": pending[0]["id"]})
-    out = p.prefetch("Build me a landing page for my chai stall and deploy it")
-    assert out.startswith("## Standing rules from the user") and "on it sir" in out
-    assert "cron" not in out and "noise - target" not in p.prefetch("noise target ERROR monitor")
-    assert "on it sir" in p.handle_tool_call("list_rules", {})
-    rid = mem.rules()[0]["id"]
-    assert '"forgotten": true' in p.handle_tool_call("forget_rule", {"id": rid})
-    assert "Standing rules" not in p.prefetch("Build me a landing page")
-
-
-def test_latest_location_replaces_older_and_reaches_every_reply(tmp_path, monkeypatch):
-    mem = memory(tmp_path)
-    assert mem.note_location("[Location: Third Wave Coffee 12.9784,77.6408]")["name"] == "Third Wave Coffee"
-    mem.note_location("[Live location: 12.9352,77.6245]")
-    loc = mem.current()["location"]
-    assert (loc["lat"], loc["lng"], loc["live"]) == (12.9352, 77.6245, True) and loc["hours_ago"] < 0.1
-    assert mem.note_location("meet me at 5") is None
-    assert mem.search("best biryani near me", 50)["current"]["location"]["lat"] == 12.9352
-
-    stub = types.ModuleType("agent.memory_provider")
-    stub.MemoryProvider = object
-    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
-    import embed_memory as P
-
-    block = P.EmbedMemoryProvider._location_block(loc)
-    assert "12.9352,77.6245" in block and "over 6 hours" not in block
-    assert "over 6 hours" in P.EmbedMemoryProvider._location_block({**loc, "hours_ago": 9.0})
-    assert "Not shared yet" in P.EmbedMemoryProvider._location_block(None)
 
 
 def fake_fetch(url, data=None, timeout=20):
@@ -214,22 +116,6 @@ def test_profile_mood_area_and_real_nearby_places(tmp_path):
     assert "maps" in r["places"][0] and r["places"][1]["km"] < r["places"][2]["km"]
     cur = mem.search("food", 50)["current"]
     assert cur["mood"]["mood"] == "tired" and cur["profile"][0]["text"].startswith("Vegetarian")
-
-
-def test_nearby_without_location_and_plugin_blocks(tmp_path, monkeypatch):
-    assert "no location" in PL.nearby_food(None, fetch=fake_fetch)["error"]
-    stub = types.ModuleType("agent.memory_provider")
-    stub.MemoryProvider = object
-    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
-    import embed_memory as P
-
-    b = P.EmbedMemoryProvider._profile_block([{"id": 1, "text": "Vegetarian"}],
-                                              {"mood": "tired", "said": "so exhausted", "when": "now", "hours_ago": 0.2})
-    assert "Vegetarian" in b and "Current mood: tired" in b
-    assert "Koramangala" in P.EmbedMemoryProvider._location_block(
-        {"lat": 1, "lng": 2, "area": "Koramangala", "when": "now", "hours_ago": 0.1})
-    assert "pick ONLY from the places it returns" in P.EmbedMemoryProvider().system_prompt_block()
 
 
 def test_nearby_falls_back_to_nominatim_when_overpass_is_down(tmp_path, monkeypatch):
@@ -299,3 +185,7 @@ def test_concurrent_requests_lose_nothing(tmp_path):
     assert mem.db.execute("SELECT COUNT(*) FROM turns WHERE chat LIKE 'c%'").fetchone()[0] == 120
     assert mem.db.execute("SELECT COUNT(*) FROM failures").fetchone()[0] == 120
     assert len(mem.rules(1000)) == 120
+
+
+def test_nearby_without_location():
+    assert "no location" in PL.nearby_food(None, fetch=lambda *a, **k: {})["error"]

@@ -79,7 +79,7 @@ def test_mem_arm_stores_each_ticket_after_its_job_and_real_outcomes(tmp_path, mo
     import time
     sys.path[:0] = [str(Path(__file__).parent.parent / "memrouter"), str(Path(__file__).parent)]
     import memory_service as M
-    from test_hermes_memory import KeywordRanker, fake_encode
+    from test_memory_service import KeywordRanker, fake_encode
     scenario(tmp_path)
     monkeypatch.setattr(BL, "HERE", tmp_path)
     mem = M.Memory(tmp_path / "m", fake_encode, KeywordRanker())

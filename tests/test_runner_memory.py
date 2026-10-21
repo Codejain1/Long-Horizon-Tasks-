@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path[:0] = [str(ROOT / "runner"), str(ROOT / "memrouter"), str(ROOT / "memrouter")]
 import longrun as LR  # noqa: E402
-from test_hermes_memory import KeywordRanker, fake_encode  # noqa: E402
+from test_memory_service import KeywordRanker, fake_encode  # noqa: E402
 from test_longrun import FakeModel, call  # noqa: E402
 
 import memory_service as M  # noqa: E402

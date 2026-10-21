@@ -4,7 +4,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "hermes" / "embed_memory"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "bot"))
 import booking as B  # noqa: E402
 
 TODAY = date(2026, 10, 21)
@@ -120,30 +120,6 @@ def test_tool_dispatch(tmp_path):
     assert B.handle(s, "task_start", {"kind": "rocket", "slots": {}}, {})["error"].startswith("unknown kind")
 
 
-def test_plugin_tools_and_pages_from_the_browser(tmp_path, monkeypatch):
-    import json
-    import types
-    stub = types.ModuleType("agent.memory_provider")
-    stub.MemoryProvider = object
-    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
-    sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
-    import embed_memory as P
-    monkeypatch.setenv("BOOKING_DB", str(tmp_path / "x" / "booking.db"))
-    monkeypatch.setattr(P, "_store", None)
-    monkeypatch.setattr(P, "_pages", {})
-    p = P.EmbedMemoryProvider()
-    assert {"task_start", "compare_offers"} <= {t["name"] for t in p.get_tool_schemas()}
-    tid = json.loads(p.handle_tool_call("task_start", {"kind": "food", "slots": {"dish": "dosa", "max_total": 300}}))["task_id"]
-    P.keep_page("browser_navigate", {"url": "https://www.swiggy.com/menu/1"}, "x" * 300 + " Masala Dosa ₹120 ", session_id="s")
-    P.keep_page("terminal", {}, "Masala Dosa ₹90 " * 30, session_id="s")  # not a browser page
-    r = json.loads(p.handle_tool_call("compare_offers", {"task_id": tid, "offers": [
-        {"platform": "swiggy", "item": "Masala Dosa", "price": 120, "quote": "Masala Dosa ₹120"},
-        {"platform": "swiggy", "item": "Masala Dosa", "price": 90, "quote": "Masala Dosa ₹90"}]}))
-    assert [o["pay"] for o in r["ranked"]] == [120] and len(r["dropped"]) == 1
-    assert "task_confirm" in p.system_prompt_block()
-
-
 def test_spoken_dates():
     assert TODAY.weekday() == 2  # a Wednesday
     assert B._iso("friday", TODAY) == "2026-10-23" == B._iso("next Friday", TODAY)
@@ -193,21 +169,6 @@ def test_order_history_is_saved_once_and_shapes_food_tasks(tmp_path):
     h = B.start(s, "food", {"dish": "biryani"}, today=TODAY)["order_history"]
     assert h["top_dishes"][0] == ("paneer biryani", 2) and h["top_restaurants"][0] == ("Meghana Foods", 2)
     assert h["typical_spend"] == 350 and h["orders"] == 3
-
-
-def test_plugin_prompt_routes_ordering_to_the_app_and_turns_thinking_off(monkeypatch):
-    import types
-    stub = types.ModuleType("agent.memory_provider")
-    stub.MemoryProvider = object
-    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
-    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
-    sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
-    import embed_memory as P
-    block = P.EmbedMemoryProvider().system_prompt_block()
-    assert "do NOT use nearby_food" in block and "save_orders" in block
-    assert block.rstrip().endswith("/no_think")  # Qwen3's switch: ~1 s per step instead of 9-65 s (measured 2026-10-21)
-    food = next(t for t in P.EmbedMemoryProvider().get_tool_schemas() if t["name"] == "nearby_food")
-    assert "Only for going out" in food["description"]
 
 
 def test_empty_save_orders_tells_hermes_to_browse_not_the_owner(tmp_path):

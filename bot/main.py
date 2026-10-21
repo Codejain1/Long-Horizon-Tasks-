@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE), str(HERE.parent / "hermes" / "embed_memory")]
+sys.path[:0] = [str(HERE)]
 import assistant as A  # noqa: E402
 import booking as B  # noqa: E402
 import channels as C  # noqa: E402

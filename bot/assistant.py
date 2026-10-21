@@ -152,12 +152,16 @@ class Assistant:
     def _memory(self, text: str) -> tuple[str, dict]:
         try:
             r = self.post(self.mem + "/search", {"query": text, "budget": 500, "skip": ["Hermes", "bot"],
-                                                  "skip_chats": ["cron_"]})
+                                                  "skip_chats": ["cron_"], "scope": "hermes"})
         except Exception:
             return self._with_taste([]), {}  # memory down: answer without it
         cur, parts = r.get("current", {}), []
         if r.get("rules"):
             parts.append("Standing rules from the owner (always follow):\n" + "\n".join(f"- {x['text']}" for x in r["rules"]))
+        if r.get("warnings"):  # the owner corrected these before: Hermes showed them in every reply, so does the bot
+            parts.append("Mistakes the owner corrected before (don't repeat them):\n" + "\n".join(
+                f"- {w['error'] or w['check']}" + (f" (corrected {w['seen']}x)" if w.get("seen", 1) > 1 else "")
+                for w in r["warnings"]))
         if cur.get("profile"):
             parts.append("Owner's taste (private):\n" + "\n".join(f"- {p['text']}" for p in cur["profile"]))
         if cur.get("mood"):

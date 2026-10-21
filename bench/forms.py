@@ -26,7 +26,7 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / "runner"), str(ROOT / "hermes" / "embed_memory"), str(ROOT / "bench")]
+sys.path[:0] = [str(ROOT / "runner"), str(ROOT / "bench")]
 import booking as B  # noqa: E402
 import longrun as LR  # noqa: E402
 

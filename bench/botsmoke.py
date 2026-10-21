@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / "bot"), str(ROOT / "hermes" / "embed_memory"), str(ROOT / "bench")]
+sys.path[:0] = [str(ROOT / "bot"), str(ROOT / "bench")]
 import assistant as A  # noqa: E402
 import booking as B  # noqa: E402
 import brain  # noqa: E402
