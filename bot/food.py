@@ -21,7 +21,7 @@ CHECKOUT = "https://www.swiggy.com/checkout"
 NONVEG = re.compile(r"\b(chicken|mutton|lamb|egg|eggs|fish|prawns?|keema|beef|pork|crab|seafood|non[- ]?veg)\b", re.I)
 
 
-class NotReady(Exception):
+class NotReady(Exception):  # (cdp.Blocked, a rail, is also reported to the owner as is)
     """Swiggy isn't usable as is (logged out, location missing, blocked): the message says what the owner should do."""
 
 
@@ -82,8 +82,17 @@ def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3) -> l
 
 
 class Swiggy:
-    def __init__(self, tab=cdp.Tab, chat=brain.chat):
-        self.tab, self.chat = tab, chat
+    def __init__(self, tab=cdp.Tab, chat=brain.chat, captures=None):
+        """captures: a folder where a page the bot couldn't read is saved, to test the fix on the real page."""
+        self.tab, self.chat, self.captures = tab, chat, captures
+
+    def _capture(self, kind: str, page: str) -> None:
+        if self.captures:
+            import time
+            from pathlib import Path
+            d = Path(self.captures)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}.txt").write_text(page)
 
     def _check(self, page: str) -> str:
         low = page.lower()
@@ -101,7 +110,10 @@ class Swiggy:
                 if not t.click_text("show more orders"):
                     break
                 page = t.settle()
-            return read_orders(page, self.chat)
+            got = read_orders(page, self.chat)
+            if not got:
+                self._capture("orders", page)
+            return got
         finally:
             t.close()
 
@@ -116,7 +128,11 @@ class Swiggy:
     def search(self, dish: str) -> list[dict]:
         t = self.tab()
         try:
-            return read_offers(self._search_page(t, dish), dish, self.chat)
+            page = self._search_page(t, dish)
+            got = read_offers(page, dish, self.chat)
+            if not got:
+                self._capture("search", page)
+            return got
         finally:
             t.close()
 
@@ -130,6 +146,8 @@ class Swiggy:
             if re.search(r"items already in cart|start afresh|replace cart", page, re.I):
                 raise NotReady("Your Swiggy cart has items from another restaurant: clear it first, then ask again.")
             page = self._check(t.open(CHECKOUT))
+            if offer["item"].lower() not in page.lower():
+                self._capture("checkout", page)
             m = re.search(r"to pay\D{0,20}([\d,]+(?:\.\d+)?)", page, re.I)
             return {"total": m[1].replace(",", "") if m else None, "text": page[:3000],
                     "in_cart": offer["item"].lower() in page.lower()}

@@ -121,13 +121,17 @@ def ground(store: B.Store, kind: str, text: str, slots: dict) -> dict:
 class Assistant:
     def __init__(self, home: Path, store: B.Store, memory_url: str = "http://127.0.0.1:8765", chat=brain.chat,
                  post=_post, nearby=places.nearby_food, swiggy=None):
-        self.home, self.store, self.mem, self.chat, self.post, self.nearby = Path(home), store, memory_url, chat, post, nearby
-        self.swiggy = swiggy or food.Swiggy(chat=chat)
+        self.home, self.store, self.mem, self.post, self.nearby = Path(home), store, memory_url, post, nearby
+        self.model, self.local = chat, threading.local()
+        self.chat = self._traced  # every model call goes through the trace
+        self.swiggy = swiggy or food.Swiggy(chat=self._traced, captures=self.home / "captures")
         self.notify = lambda text: None
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS log (ts REAL, channel TEXT, chat TEXT, role TEXT, text TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS pending (chat TEXT PRIMARY KEY, task INTEGER)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS traces (ts REAL, chat TEXT, text TEXT, reply TEXT, ms INTEGER, "
+                        "steps TEXT)")
         self.lock = threading.Lock()
 
     # log -------------------------------------------------------------------------------------------------------
@@ -193,12 +197,41 @@ class Assistant:
         threading.Thread(target=go, daemon=True).start()
 
     # the turn --------------------------------------------------------------------------------------------------
+    def _traced(self, messages, **kw):
+        t = time.time()
+        try:
+            out = self.model(messages, **kw)
+        except Exception as e:
+            self._step("model_error", ms=int(1000 * (time.time() - t)), error=repr(e)[:500])
+            raise
+        schema = kw.get("schema")
+        self._step("model", ms=int(1000 * (time.time() - t)), schema=(list(schema.get("properties", {})) if schema else None),
+                   out=(out.get("content") or "")[:1500])
+        return out
+
+    def _step(self, kind: str, **data):
+        steps = getattr(self.local, "steps", None)
+        if steps is not None:
+            steps.append({"step": kind, **data})
+
     def handle(self, msg: dict, notify=None) -> str:
-        """notify(text): an interim message (e.g. "Looking on Swiggy...") while a slow step runs."""
+        """notify(text): an interim message (e.g. "Looking on Swiggy...") while a slow step runs. Every turn leaves a
+        trace (each model call: schema, time, output; errors) in bot.db: read it with deploy/bot/trace.sh."""
         self.notify = notify or (lambda text: None)
-        chat, text = msg["chat"], msg["text"]
+        chat, text, t = msg["chat"], msg["text"], time.time()
+        self.local.steps = []
         self._log(msg["channel"], chat, "owner", text)
-        reply = self._turn(chat, text)
+        reply = None
+        try:
+            reply = self._turn(chat, text)
+        except Exception as e:
+            self._step("error", error=repr(e)[:1000])
+            raise
+        finally:
+            with self.lock:
+                self.db.execute("INSERT INTO traces VALUES (?,?,?,?,?,?)", (t, chat, text, reply,
+                                int(1000 * (time.time() - t)), json.dumps(self.local.steps, ensure_ascii=False)))
+                self.db.commit()
         self._log(msg["channel"], chat, "bot", reply)
         return reply
 
@@ -291,7 +324,7 @@ class Assistant:
         self.notify("Reading your Swiggy order history…")
         try:
             orders = self.swiggy.orders()
-        except food.NotReady as e:
+        except (food.NotReady, food.cdp.Blocked) as e:
             return str(e)
         if not orders:
             return "I opened your Swiggy orders but couldn't read any orders from the page."
@@ -308,7 +341,7 @@ class Assistant:
         self.notify(f"Looking for {dish} on Swiggy…")
         try:
             offers = self.swiggy.search(dish)
-        except food.NotReady as e:
+        except (food.NotReady, food.cdp.Blocked) as e:
             return str(e)
         if not offers:
             B.finish(self.store, tid, "failed", f"no {dish} read from the search page", "swiggy")
@@ -332,7 +365,7 @@ class Assistant:
         self._pending(chat, clear=True)
         try:
             r = self.swiggy.add(offer)
-        except food.NotReady as e:
+        except (food.NotReady, food.cdp.Blocked) as e:
             B.finish(self.store, tid, "failed", str(e), "swiggy")
             return str(e)
         if not r["in_cart"]:

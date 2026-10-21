@@ -280,3 +280,40 @@ def test_veg_in_the_dish_name_filters_and_empty_search_is_explained(tmp_path):
     b.swiggy = FakeSwiggy([])
     say(b, "order biryani under 400")
     assert "couldn't read any dishes" in say(b, "yes")
+
+
+def test_every_turn_leaves_a_trace_and_errors_alert_the_owner(tmp_path):
+    m = Model(call("task_start", kind="train", slots={"from": "Bangalore", "to": "Chennai", "date": "2099-11-02"}))
+    b = bot(tmp_path, m)
+    say(b, "train from bangalore to chennai on 2 nov")
+    (ts, chat, text, reply, ms, steps), = b.db.execute("SELECT * FROM traces").fetchall()
+    steps = json.loads(steps)
+    assert text.startswith("train") and reply == "Which class (SL, 3A, 2A, 1A)?"
+    assert steps[0]["step"] == "model" and steps[0]["schema"] == ["action", "kind", "details", "cuisine", "reply"]
+    assert '"action": "book"' in steps[0]["out"]
+
+    import main as M
+
+    class Ch:
+        name = "whatsapp"
+
+        def __init__(self):
+            self.inbox, self.out = [{"channel": "whatsapp", "chat": "c", "text": "hi"}], []
+
+        def poll(self):
+            msgs, self.inbox = self.inbox, []
+            return msgs
+
+        def send(self, chat, text):
+            self.out.append((chat, text))
+
+    class Sched:
+        jobs = [{"name": "digest", "deliver": "whatsapp:owner-chat"}]
+
+        def tick(self):
+            pass
+    ch, broken = Ch(), bot(tmp_path / "x", Model())
+    M.serve({"whatsapp": ch}, broken, Sched(), once=True)
+    assert any(c == "owner-chat" and t.startswith("⚠ bot error on 'hi'") for c, t in ch.out)
+    (*_, steps), = broken.db.execute("SELECT * FROM traces").fetchall()
+    assert json.loads(steps)[-1]["step"] == "error"

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import socket
 import struct
 import time
@@ -17,6 +18,19 @@ import urllib.parse
 import urllib.request
 
 DEVTOOLS = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
+
+# The owner's rails (Hermes enforced them in its rails plugin; here every browser action passes this layer):
+# never open a payment gateway, never click anything that pays, orders or books. There is no typing method at all,
+# so card numbers, CVV, OTP and UPI PIN can't be entered.
+PAY_GATEWAYS = ("razorpay", "paytm", "payu", "juspay", "stripe.com", "billdesk", "ccavenue", "cashfree", "phonepe",
+                "paypal", "pay.google", "checkout.com", "easebuzz", "instamojo")
+COMMIT = (r"place (your )?order|pay now|pay\s*(₹|rs|inr)|make payment|proceed to pay|continue to pay|"
+          r"confirm (and |& )?pay|confirm (order|booking)|complete (booking|purchase|order)|book now|reserve now|"
+          r"buy now|submit order|order now|slide to pay|verify (and |& )?pay|^\s*pay\s*$")
+
+
+class Blocked(Exception):
+    """A rail stopped a browser action."""
 
 
 class WebSocket:
@@ -128,13 +142,19 @@ class Tab:
         return last
 
     def open(self, url: str) -> str:
+        host = urllib.parse.urlparse(url).netloc.lower()
+        if any(g in host for g in PAY_GATEWAYS):
+            raise Blocked(f"rails: the bot never opens payment pages ({host})")
         self.call("Page.navigate", url=url)
         return self.settle()
 
     def click_text(self, *needles: str, button: str | None = None) -> bool:
         """Click the smallest element whose text contains every needle (case-insensitive); with `button`, click the
-        button/link with that exact text inside it instead. True if something was clicked."""
-        js = """((needles, button) => {
+        button/link with that exact text inside it instead. True if something was clicked. Rails: never a click on
+        an element whose own text pays, orders or books (checked in the page, on the element about to be clicked)."""
+        if any(re.search(COMMIT, x, re.I) for x in (*needles, button or "")):
+            raise Blocked(f"rails: the bot never clicks pay / order / book ({needles}, {button})")
+        js = """((needles, button, forbidden) => {
           const has = el => needles.every(n => (el.innerText || '').toLowerCase().includes(n.toLowerCase()));
           let best = null;
           for (const el of document.querySelectorAll('body *')) {
@@ -152,9 +172,14 @@ class Tab:
             }
             if (target === best) return false;
           }
+          const own = (target.innerText || target.value || target.getAttribute('aria-label') || '').trim();
+          if (new RegExp(forbidden, 'i').test(own)) return 'blocked:' + own.slice(0, 80);
           target.scrollIntoView({block: 'center'}); target.click(); return true;
-        })(%s, %s)""" % (json.dumps(list(needles)), json.dumps(button))
-        return bool(self.js(js))
+        })(%s, %s, %s)""" % (json.dumps(list(needles)), json.dumps(button), json.dumps(COMMIT))
+        r = self.js(js)
+        if isinstance(r, str) and r.startswith("blocked:"):
+            raise Blocked(f"rails: refused to click '{r[8:]}' (pays / orders / books)")
+        return bool(r)
 
     def scroll_end(self) -> None:
         self.js("window.scrollTo(0, document.body.scrollHeight)")

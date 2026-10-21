@@ -109,3 +109,11 @@ def test_list_followed_by_more_text_is_read_not_crashed():
     assert brain.first_json("no json here {") == {}
     offers = F.read_offers(SEARCH_PAGE, "biryani", lambda m, **k: {"content": live})
     assert [o["item"] for o in offers] == ["Veg Biryani"]
+
+
+def test_unreadable_pages_are_captured_for_replay(tmp_path):
+    FakeTab.pages = {F.SEARCH.split("?")[0]: "Restaurants Dishes\nsomething new ₹99"}
+    sw = F.Swiggy(tab=FakeTab, chat=model({"offers": []}), captures=tmp_path / "cap")
+    assert sw.search("biryani") == []
+    (saved,) = list((tmp_path / "cap").iterdir())
+    assert saved.name.endswith("-search.txt") and "something new" in saved.read_text()

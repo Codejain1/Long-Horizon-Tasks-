@@ -51,6 +51,15 @@ def build(env=os.environ):
 def serve(chans, bot, sched, once: bool = False):
     pool = ThreadPoolExecutor(4)
     busy: dict[str, threading.Lock] = {}
+    owner = next((j["deliver"] for j in getattr(sched, "jobs", []) if j.get("deliver")), None)
+
+    def alert(text: str) -> None:
+        """Errors reach the owner by themselves (Telegram, where the jobs report), not only when they notice."""
+        try:
+            if owner:
+                C.deliver(chans, owner, text)
+        except Exception:
+            log.exception("alert failed")
 
     def answer(ch, m):
         with busy.setdefault(m["chat"], threading.Lock()):  # one turn at a time per chat, in order
@@ -60,6 +69,7 @@ def serve(chans, bot, sched, once: bool = False):
             except Exception as e:
                 log.exception("turn failed")
                 reply = f"Sorry, something broke on my side ({type(e).__name__}). Try again in a minute."
+                alert(f"⚠ bot error on {m['text'][:60]!r}: {e!r}"[:500])
             try:
                 ch.send(m["chat"], reply)
             except Exception:
