@@ -87,6 +87,43 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Why so many bugs, and the systemic fixes (2026-10-22, owner asked)
+Nearly every bug this week came from five root causes. One fix per cause, not per bug:
+
+1. **Free-text model output parsed by hand in 5 places** (comma numbers, a call written as text, "Extra data").
+   **Fix:** `brain.extract`, forced to a JSON schema by vLLM 0.31 `json_schema` (verified live: pure JSON even when
+   told to explain). Used for routing (DECIDE), booking updates, Swiggy orders and offers, and weekly-reflect. Tool
+   calling and the hand parsers are removed. An unusable answer is retried once (live: one run generated to the
+   token limit).
+2. **Built against an imagined outside world, with tests on my own fakes** (Hermes's frozen prompts and browser
+   mode, WhatsApp `@lid`, Swiggy page shapes). **Fix:** pages the bot can't read are saved to `~/.bot/captures/`, so
+   fixes are tested on real pages.
+3. **Failures only seen when the owner reported them.** **Fix:** every turn leaves a trace in `bot.db` (each model
+   call: schema, time, output; errors), read with `deploy/bot/trace.sh`. A turn error also alerts the owner on
+   Telegram.
+4. **A slow manual loop** (every deploy and test needs the owner). **Fix:** `bench/botsmoke.py` runs on the real
+   model before every deploy. Letting Claude deploy the bot itself is the owner's choice.
+5. **Safety rules lost in the switch:** Hermes's rails plugin stopped with Hermes. **Fix:** the rails live in
+   `bot/cdp.py`, the layer every browser action passes. It never opens payment gateways and never clicks
+   pay / order / book (checked on the element itself), and it has no typing method at all.
+   - Also ported: "mistakes the owner corrected before", lost in the same switch.
+
+**Also:** the bot is self-contained (`booking.py` and `places.py` in `bot/`), and the Hermes plugins are removed
+(they stay in git history; rollback uses the server's installed copies).
+
+**Real model after the fixes (botsmoke, 2 reps):**
+
+| Set | Result |
+|---|---|
+| test2 | 40/40 |
+| test3 (seen) | 20/20 |
+| chat | 16/16 |
+| **test4 (fresh)** | 13/16 before the retry fix, 14/16 after |
+
+- The remaining test4 miss: "Order something for dinner" gets a question back instead of a started food order.
+- Reply time: median 2.0 s, p90 2.7 s.
+- Tests: 223 pass.
+
 ## Our bot replaces Hermes (2026-10-22, owner's decision: "replace", keep the jobs and extras)
 **Why:**
 - On Qwen3-14B, Hermes's free-roaming agent kept picking the wrong tool or handing work back to the owner.
