@@ -259,6 +259,8 @@ def view(store: Store, t: dict, today: date) -> dict:
            "missing": missing, "problems": problems}
     if t.get("site"):
         out["site_notes"] = store.notes(t["site"])
+    if kind == "food":
+        out["order_history"] = taste(store)
     if missing or problems:
         out["next"] = ("Fix: " + "; ".join(problems) + ". " if problems else "") + (
             f"Ask the owner one short question for: {', '.join(missing)}." if missing else "")
@@ -392,6 +394,42 @@ def plan_trip(store: Store, tid: int, today: date | None = None) -> dict:
                     "the owner one plan with a summary line per draft."}
 
 
+def save_orders(store: Store, platform: str, orders: list[dict]) -> dict:
+    """Past orders the owner made, read from the app's order history page: kept as done food tasks (each once)."""
+    dom, new = _site(platform), 0
+    for o in orders:
+        items = [str(i).strip() for i in (o.get("items") or []) if str(i).strip()]
+        key = f"order:{dom}:" + (str(o.get("id") or "") or f"{o.get('restaurant', '')}|{o.get('date', '')}|{o.get('total', '')}").lower()
+        if not items or store.fact(key):
+            continue
+        store.set_fact(key, True, dom)
+        store._save({"kind": "food", "status": "done", "site": dom, "outcome": f"past order {o.get('date', '')}",
+                     "slots": {"dish": items, "restaurant": o.get("restaurant", ""), "max_total": _money(o.get("total"))}})
+        new += 1
+    return {"saved": new, "order_history": taste(store)}
+
+
+def taste(store: Store) -> dict:
+    """What the owner orders: top dishes and restaurants, typical spend (from done food tasks)."""
+    from collections import Counter
+    from statistics import median
+    rows = store._q("SELECT slots FROM tasks WHERE kind='food' AND status='done'")
+    dishes, places, spend = Counter(), Counter(), []
+    for (raw,) in rows:
+        sl = json.loads(raw)
+        d = sl.get("dish")
+        dishes.update(x.lower() for x in (d if isinstance(d, list) else [d]) if x)
+        if sl.get("restaurant"):
+            places[sl["restaurant"]] += 1
+        if sl.get("max_total"):
+            spend.append(sl["max_total"])
+    if not rows:
+        return {"orders": 0, "next": "No order history yet: open the app's order history page (Swiggy: "
+                                     "https://www.swiggy.com/my-account/orders) and call save_orders."}
+    return {"orders": len(rows), "top_dishes": dishes.most_common(5), "top_restaurants": places.most_common(5),
+            "typical_spend": median(spend) if spend else None}
+
+
 TOOLS = [
     {"name": "task_start",
      "description": "Start a booking or order as a form. Pass ONLY the details the owner actually said; memory fills "
@@ -425,6 +463,16 @@ TOOLS = [
     {"name": "plan_trip", "description": "After a trip or ticket is confirmed: draft the hotel, the arrival cab and the "
                                          "days of the plan.",
      "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
+    {"name": "save_orders",
+     "description": "Save the owner's past food orders read from the app's order history page (Swiggy: "
+                    "https://www.swiggy.com/my-account/orders), so recommendations follow what they actually order. "
+                    "Copy each order as shown: id if shown, restaurant, items, total, date.",
+     "parameters": {"type": "object", "properties": {
+         "platform": {"type": "string"},
+         "orders": {"type": "array", "items": {"type": "object", "properties": {
+             "id": {"type": "string"}, "restaurant": {"type": "string"}, "items": {"type": "array", "items": {"type": "string"}},
+             "total": {"type": "string"}, "date": {"type": "string"}}}}},
+         "required": ["platform", "orders"]}},
     {"name": "save_traveller",
      "description": "Save a traveller's details the owner gave (name, age, gender, berth or seat preference). "
                     "who='self' for the owner.",
@@ -448,6 +496,8 @@ def handle(store: Store, name: str, args: dict, pages: dict[str, str]) -> dict:
         return compare(store, args["task_id"], args.get("offers") or [], pages)
     if name == "plan_trip":
         return plan_trip(store, args["task_id"])
+    if name == "save_orders":
+        return save_orders(store, args.get("platform", ""), args.get("orders") or [])
     if name == "save_traveller":
         who = re.sub(r"\W+", "_", args["who"].lower()).strip("_") or "self"
         store.set_fact(f"traveller:{who}", {k: args[k] for k in ("name", "age", "gender", "seat") if k in args})

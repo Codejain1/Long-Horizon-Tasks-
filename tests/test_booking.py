@@ -179,3 +179,32 @@ def test_small_model_spellings_are_normalised(tmp_path):
     assert "summary" not in two and any("who they are" in p for p in two["problems"])  # never just the owner
     cab = B.start(s, "cab", {"pickup": "home", "drop": "airport", "date": "tomorrow", "pay": "credit card"}, today=TODAY)
     assert cab["slots"]["pay"] == "cash" and cab["slots"]["when"] == "tomorrow"  # the rail wins; when (date + time) as said
+
+
+def test_order_history_is_saved_once_and_shapes_food_tasks(tmp_path):
+    s = store(tmp_path)
+    assert B.start(s, "food", {"dish": "x"}, today=TODAY)["order_history"]["orders"] == 0
+    orders = [{"id": "1", "restaurant": "Meghana Foods", "items": ["Paneer Biryani", "Coke"], "total": "₹420", "date": "12 Oct"},
+              {"id": "2", "restaurant": "Meghana Foods", "items": ["Paneer Biryani"], "total": "₹350", "date": "15 Oct"},
+              {"id": "3", "restaurant": "MTR", "items": ["Masala Dosa"], "total": "₹180", "date": "18 Oct"},
+              {"id": "4", "restaurant": "Empty", "items": [], "total": "₹0"}]
+    r = B.handle(s, "save_orders", {"platform": "Swiggy", "orders": orders}, {})
+    assert r["saved"] == 3 and B.save_orders(s, "swiggy", orders)["saved"] == 0  # read twice, kept once
+    h = B.start(s, "food", {"dish": "biryani"}, today=TODAY)["order_history"]
+    assert h["top_dishes"][0] == ("paneer biryani", 2) and h["top_restaurants"][0] == ("Meghana Foods", 2)
+    assert h["typical_spend"] == 350 and h["orders"] == 3
+
+
+def test_plugin_prompt_routes_ordering_to_the_app_and_turns_thinking_off(monkeypatch):
+    import types
+    stub = types.ModuleType("agent.memory_provider")
+    stub.MemoryProvider = object
+    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.memory_provider", stub)
+    sys.path.insert(0, str(Path(__file__).parent.parent / "hermes"))
+    import embed_memory as P
+    block = P.EmbedMemoryProvider().system_prompt_block()
+    assert "do NOT use nearby_food" in block and "save_orders" in block
+    assert block.rstrip().endswith("/no_think")  # Qwen3's switch: ~1 s per step instead of 9-65 s (measured 2026-10-21)
+    food = next(t for t in P.EmbedMemoryProvider().get_tool_schemas() if t["name"] == "nearby_food")
+    assert "Only for going out" in food["description"]

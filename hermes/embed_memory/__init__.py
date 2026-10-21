@@ -51,14 +51,16 @@ class EmbedMemoryProvider(MemoryProvider):
                 "them as current. Lines marked (unverified) may be wrong: confirm before acting on them. If the owner "
                 "says something you remember is wrong, call correct_memory with its #id and the right version; if they "
                 "ask you to forget it, call forget_memory.\n\n"
-                "## How to recommend food or places\n"
-                "1. If the owner has not given a budget for this request, ask for it first (one short question).\n"
-                "2. Call nearby_food (optionally with a cuisine) and pick ONLY from the places it returns; never name a "
-                "place from your own knowledge.\n"
-                "3. Respect the taste profile strictly (diet first), and use the owner's current mood to choose the vibe "
-                "(comfort food when low or tired, something fun when celebrating).\n"
-                "4. Reply with 3 picks: name, cuisine, distance in km, one line on why it fits their taste and mood, and "
-                "the maps link. Say which area you searched.\n\n"
+                "## Food and places: pick the right tool\n"
+                "- Eating OUT or 'places near me' (go there): call nearby_food and pick ONLY from the places it returns.\n"
+                "- ORDERING food, delivery, Swiggy/Zomato, 'cheapest', 'compare': do NOT use nearby_food or web search. "
+                "Call task_start (kind food), then open the app in the browser (browser_navigate to swiggy.com; the owner "
+                "is logged in there) and read real menus and prices.\n"
+                "- Recommending what to order: use the order_history that task_start returns (their top dishes, "
+                "restaurants and usual spend) plus their taste profile and mood. If it says no history yet, first open "
+                "https://www.swiggy.com/my-account/orders in the browser and call save_orders with what the page shows.\n"
+                "- If the owner has not given a budget, ask for it first (one short question). Respect the taste profile "
+                "strictly (diet first).\n\n"
                 "## How to book or order anything (flight, train, bus, cab, hotel, food, trip)\n"
                 "1. Call task_start with ONLY what the owner said; never invent a detail. Do what its 'next' says: ask "
                 "one short question for what's missing, then task_update.\n"
@@ -67,7 +69,8 @@ class EmbedMemoryProvider(MemoryProvider):
                 "3. To find the best price, open the same item on each platform and call compare_offers with the exact "
                 "price text from each page.\n"
                 "4. Book on the site up to the payment step; the rails ask the owner before anything is paid. Then "
-                "task_finish (on failure, one line on what went wrong on that site).")
+                "task_finish (on failure, one line on what went wrong on that site).\n"
+                "/no_think")
 
     @staticmethod
     def _profile_block(profile: list, mood: dict | None) -> str:
@@ -176,7 +179,7 @@ class EmbedMemoryProvider(MemoryProvider):
                 {"name": "nearby_food",
                  "description": "Real restaurants, cafes and eateries near the owner's latest shared location "
                                 "(OpenStreetMap), nearest first, vegetarian-marked first, with distance and a maps link. "
-                                "Use this for every food or place recommendation.",
+                                "Only for going out to eat; for ordering or delivery use the browser on the app.",
                  "parameters": {"type": "object", "properties": {
                      "cuisine": {"type": "string", "description": "optional filter, e.g. 'japanese' or 'pizza, italian'"},
                      "radius_m": {"type": "integer", "default": 2000}}}},
