@@ -1,0 +1,248 @@
+"""One owner message in, one reply out. Code decides the steps; the model makes one call per step.
+
+1. STOP / RESUME (code; while stopped nothing else runs).
+2. A booking waiting on the owner: YES confirms, NO cancels, anything else is read as more details for it
+   (one model call: task_update); a new request instead drops it.
+3. Otherwise one model call with the owner's memory (rules, taste, mood, what they said before) and two tools:
+   task_start (bookings and orders, as forms) and nearby_places (going out). No tool = the reply itself.
+Questions and summaries for bookings are written by code (booking.py), never by the model.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import threading
+import time
+import urllib.request
+from pathlib import Path
+
+import booking as B
+import brain
+import places
+
+YES = re.compile(r"^\s*(yes|y|yep|yeah|haan|ha|ok(ay)?|go ahead|confirm(ed)?|do it|sure)\b[\s.!]*$", re.I)
+NO = re.compile(r"^\s*(no|n|nope|cancel|stop it|don'?t|nahi|na)\b[\s.!]*$", re.I)
+ASK = {"date": "Which date?", "from": "From where?", "to": "To where?", "passengers": "Who's travelling (names)?",
+       "class": "Which class (SL, 3A, 2A, 1A)?", "max_price": "What's the most you want to pay?",
+       "max_total": "What's your budget?", "max_price_per_night": "What's your budget per night?",
+       "checkin": "Check-in date?", "checkout": "Check-out date?", "guests": "Who's staying (names)?",
+       "city": "Which city?", "dish": "What would you like to eat?", "drop": "Where to?", "pickup": "Pick up from where?",
+       "when": "When?", "arrive": "When do you arrive?", "leave": "When do you leave?"}
+
+PERSONA = """You are the owner's personal assistant on WhatsApp/Telegram. Reply briefly and plainly, like a person.
+For any booking or order (flight, train, bus, cab, hotel, food delivery, trip): call task_start with ONLY the details
+the owner said in this message, dates and people exactly as said. Naming a dish to eat means ordering it (kind food),
+unless they say they want to go out. For places to go out to eat or visit near them: call nearby_places. Otherwise
+just reply. Never invent facts about the owner. Today is {today}.
+{memory}"""
+
+PLACES_TOOL = {"name": "nearby_places", "description": "Real restaurants and cafes near the owner's shared location.",
+               "parameters": {"type": "object", "properties": {"cuisine": {"type": "string"}}}}
+UPDATE_TOOL = {"name": "task_update", "description": "Details the owner just added or changed for the pending task.",
+               "parameters": {"type": "object", "properties": {"slots": {"type": "object"}}, "required": ["slots"]}}
+
+
+def _post(url: str, body: dict, timeout: float = 5) -> dict:
+    req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+DATE_WORDS = re.compile(r"\b(today|tonight|tomorrow|day after tomorrow|(this |next |coming )?(mon|tues|wednes|thurs|fri|"
+                        r"satur|sun)day)\b", re.I)
+MONTHS = r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+HAS_DATE = re.compile(rf"\b\d{{1,2}}(st|nd|rd|th)?\s*({MONTHS})|\b({MONTHS})[a-z]*\s*\d{{1,2}}\b|\d{{1,2}}/\d{{1,2}}|"
+                      r"\d{4}-\d{2}-\d{2}", re.I)
+
+
+def ground(store: B.Store, kind: str, text: str, slots: dict) -> dict:
+    """Keep only what the message supports. The model invents (a 'trip to Rishikesh' came back with dates, a
+    budget and interests) and converts weekdays wrongly ('Friday' -> a Sunday), so, measured live 2026-10-22:
+    - a value stays only if the message has evidence for it (its words or digits; for dates, a date expression);
+    - one weekday/relative day in the message ('friday', 'tomorrow') is turned into the date by code;
+    - travellers the message names ('mom', 'me', a saved name) become the passengers when the model gave none."""
+    low, out = text.lower(), {}
+    digits = re.sub(r"[,\s]", "", low)
+    words = set(re.findall(r"[a-z]+", low))
+    for k, v in slots.items():
+        if k in B.DATES:
+            if DATE_WORDS.search(low) or HAS_DATE.search(low):
+                out[k] = v
+        elif k in ("passengers", "guests"):
+            out[k] = v
+        elif isinstance(v, list):
+            kept = [x for x in v if set(re.findall(r"[a-z]+", str(x).lower())) & words]
+            if kept:
+                out[k] = kept
+        elif isinstance(v, (int, float)) or re.fullmatch(r"[\d,.\s₹rsk]+", str(v), re.I):
+            n = B._money(v)
+            if n is not None and (str(int(n)) in digits or f"{n / 1000:g}k" in digits):
+                out[k] = v
+        elif set(re.findall(r"[a-z]+", str(v).lower())) & words or str(v).lower() in low:
+            out[k] = v
+        elif re.search(r"\d", str(v)) and any(d in digits for d in re.findall(r"\d+", str(v))):
+            out[k] = v
+    days = [m[0] for m in DATE_WORDS.finditer(low)]
+    date_slot = {"cab": "when", "hotel": "checkin", "trip": "arrive"}.get(kind, "date")
+    pair = {"hotel": ("checkin", "checkout"), "trip": ("arrive", "leave")}.get(kind)
+    if len(days) == 1 and not HAS_DATE.search(low) and date_slot in B.TEMPLATES.get(kind, {}) and kind != "cab":
+        out[date_slot] = days[0]
+    elif len(days) == 2 and pair and not HAS_DATE.search(low):  # "this Saturday to Monday", in the order said
+        out[pair[0]], out[pair[1]] = days
+    counted = any(re.fullmatch(r"\s*\d+\s*", str(out.get(s, ""))) for s in ("passengers", "guests"))
+    if kind in B.TEMPLATES and (counted or not any(s in out for s in ("passengers", "guests"))):
+        who = []
+        if re.search(r"\b(me|myself|i)\b", low):
+            who.append("me")
+        for key, f in store.facts("traveller:").items():
+            name, tag = str(f["value"].get("name", "")), key.split(":", 1)[1]
+            if tag != "self" and (re.search(rf"\b{re.escape(tag)}\b", low) or (name and name.lower() in low)):
+                who.append(name or tag)
+        slot = "guests" if "guests" in B.TEMPLATES[kind] else "passengers"
+        if who and slot in B.TEMPLATES[kind] and (len(who) > 1 or who != ["me"]):
+            out[slot] = who
+    return out
+
+
+class Assistant:
+    def __init__(self, home: Path, store: B.Store, memory_url: str = "http://127.0.0.1:8765", chat=brain.chat,
+                 post=_post, nearby=places.nearby_food):
+        self.home, self.store, self.mem, self.chat, self.post, self.nearby = Path(home), store, memory_url, chat, post, nearby
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
+        self.db.execute("CREATE TABLE IF NOT EXISTS log (ts REAL, channel TEXT, chat TEXT, role TEXT, text TEXT)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS pending (chat TEXT PRIMARY KEY, task INTEGER)")
+        self.lock = threading.Lock()
+
+    # log -------------------------------------------------------------------------------------------------------
+    def _log(self, channel, chat, role, text):
+        with self.lock:
+            self.db.execute("INSERT INTO log VALUES (?,?,?,?,?)", (time.time(), channel, chat, role, text))
+            self.db.commit()
+
+    def recent(self, chat: str, n: int = 6) -> list[dict]:
+        rows = self.db.execute("SELECT role, text FROM log WHERE chat=? ORDER BY ts DESC LIMIT ?", (chat, n)).fetchall()
+        return [{"role": "user" if r == "owner" else "assistant", "content": t} for r, t in reversed(rows)]
+
+    def log_days(self, days: int) -> list[tuple]:
+        """For weekly-reflect: (utc time, owner|bot, text) over the last `days` days, all chats."""
+        rows = self.db.execute("SELECT ts, role, text FROM log WHERE ts > ? ORDER BY ts", (time.time() - days * 86400,))
+        return [(time.strftime("%Y-%m-%dT%H:%M", time.gmtime(ts)), role, text) for ts, role, text in rows]
+
+    def _pending(self, chat, task=None, clear=False):
+        with self.lock:
+            if clear:
+                self.db.execute("DELETE FROM pending WHERE chat=?", (chat,))
+            elif task is not None:
+                self.db.execute("INSERT OR REPLACE INTO pending VALUES (?,?)", (chat, task))
+            self.db.commit()
+            r = self.db.execute("SELECT task FROM pending WHERE chat=?", (chat,)).fetchone()
+        return r[0] if r else None
+
+    # memory ----------------------------------------------------------------------------------------------------
+    def _memory(self, text: str) -> tuple[str, dict]:
+        try:
+            r = self.post(self.mem + "/search", {"query": text, "budget": 500, "skip": ["Hermes", "bot"],
+                                                  "skip_chats": ["cron_"]})
+        except Exception:
+            return "", {}  # memory down: answer without it
+        cur, parts = r.get("current", {}), []
+        if r.get("rules"):
+            parts.append("Standing rules from the owner (always follow):\n" + "\n".join(f"- {x['text']}" for x in r["rules"]))
+        if cur.get("profile"):
+            parts.append("Owner's taste (private):\n" + "\n".join(f"- {p['text']}" for p in cur["profile"]))
+        if cur.get("mood"):
+            parts.append(f"Owner's mood: {cur['mood']['mood']} ({cur['mood']['hours_ago']} h ago)")
+        if r.get("context"):
+            parts.append("What the owner said before:\n" + r["context"])
+        return "\n\n".join(parts), cur
+
+    def _remember(self, chat: str, text: str):
+        def go():
+            try:
+                self.post(self.mem + "/add", {"text": text, "speaker": "owner", "chat": chat, "detect_rule": True}, 90)
+            except Exception:
+                pass  # memory is fail-open
+        threading.Thread(target=go, daemon=True).start()
+
+    # the turn --------------------------------------------------------------------------------------------------
+    def handle(self, msg: dict) -> str:
+        chat, text = msg["chat"], msg["text"]
+        self._log(msg["channel"], chat, "owner", text)
+        reply = self._turn(chat, text)
+        self._log(msg["channel"], chat, "bot", reply)
+        return reply
+
+    def _turn(self, chat: str, text: str) -> str:
+        halt = self.home / "HALT"
+        if text.strip().upper().rstrip(".!") == "STOP":
+            halt.write_text(time.ctime())
+            return "Stopped. Nothing runs until you say RESUME."
+        if text.strip().upper().rstrip(".!") == "RESUME":
+            halt.unlink(missing_ok=True)
+            return "Resumed."
+        if halt.exists():
+            return "I'm stopped. Say RESUME to continue."
+        self._remember(chat, text)
+        tid = self._pending(chat)
+        if tid:
+            if YES.match(text):
+                self._pending(chat, clear=True)
+                r = B.confirm(self.store, tid)
+                if "error" in r:
+                    return "I can't confirm that yet: " + r["error"]
+                return ("Confirmed ✅ " + self._summary_line(r["slots"], self.store.task(tid)["kind"])
+                        + "\nBooking it on the site comes with the next update; for now this is saved.")
+            if NO.match(text):
+                self._pending(chat, clear=True)
+                B.finish(self.store, tid, "cancelled")
+                return "Cancelled."
+            t = self.store.task(tid)
+            msg = self.chat([{"role": "system", "content": f"The owner is answering questions for a {t['kind']} "
+                              f"booking with these details so far: {json.dumps(t['slots'])}. If the message adds or "
+                              "changes details, call task_update with only those (dates and people as said). If it "
+                              "is a different request, reply 'NEW'."}, {"role": "user", "content": text}],
+                            tools=[UPDATE_TOOL])
+            call = brain.tool_call(msg)
+            if call and call[0] == "task_update":
+                slots = ground(self.store, t["kind"], text, call[1].get("slots") or {})
+                return self._booking_reply(chat, B.update(self.store, tid, slots))
+            self._pending(chat, clear=True)
+            B.finish(self.store, tid, "cancelled")
+        memory, cur = self._memory(text)
+        system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory)
+        msg = self.chat([{"role": "system", "content": system}, *self.recent(chat)[:-1], {"role": "user", "content": text}],
+                        tools=[B.TOOLS[0], PLACES_TOOL])
+        call = brain.tool_call(msg)
+        if call and call[0] == "task_start":
+            kind = call[1].get("kind", "")
+            slots = ground(self.store, kind, text, call[1].get("slots") or {})
+            return self._booking_reply(chat, B.start(self.store, kind, slots, call[1].get("site", "")))
+        if call and call[0] == "nearby_places":
+            found = self.nearby(cur.get("location"), 3000, call[1].get("cuisine", ""), limit=8)
+            if "error" in found:
+                return "Share your location on WhatsApp (attach → Location) and I'll look around you."
+            msg = self.chat([{"role": "system", "content": system + "\n\nPick the 3 best for the owner from ONLY these "
+                              f"real places (name, km, one line why, maps link):\n{json.dumps(found['places'])}"},
+                             {"role": "user", "content": text}])
+        return (msg.get("content") or "").strip() or "Sorry, I didn't get that. Could you say it another way?"
+
+    def _summary_line(self, slots: dict, kind: str) -> str:
+        return f"{kind.title()}: " + ", ".join(f"{k.replace('_', ' ')} {' + '.join(map(str, v)) if isinstance(v, list) else v}"
+                                               for k, v in slots.items())
+
+    def _booking_reply(self, chat: str, v: dict) -> str:
+        if "error" in v:
+            return "Sorry: " + v["error"]
+        self._pending(chat, v["task_id"])
+        if v.get("problems"):
+            asks = [ASK.get(s, f"What's the {s}?") for s in v["missing"]]
+            for p in v["problems"]:
+                slot = p.split(":")[0]
+                asks.insert(0, ASK.get(slot, f"What's the {slot}?") if "who they are" in p or "not a" in p else p + ".")
+            return " ".join(dict.fromkeys(asks))
+        if v.get("missing"):
+            return " ".join(ASK.get(s, f"What's the {s.replace('_', ' ')}?") for s in v["missing"])
+        return v["summary"] + " (YES / no)"

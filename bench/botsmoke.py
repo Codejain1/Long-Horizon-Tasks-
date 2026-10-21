@@ -1,0 +1,111 @@
+"""The bot's real turn on the real model, before it goes live: routing, booking outcome and reply time.
+
+    python bench/botsmoke.py --model-url URL [--reps 2]
+
+Runs bot/assistant.py (memory off, a scratch home) on forms.py's test2 requests (seen: they shaped the grounding),
+test3 (held out) and plain chat. A booking
+case passes when the first reply is the summary (gold: ready) or a question (gold: must ask) for the right kind;
+a chat case passes when no booking starts. Prints pass rates and reply-time median / p90.
+"""
+
+from __future__ import annotations
+
+import argparse
+import statistics
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "bot"), str(ROOT / "hermes" / "embed_memory"), str(ROOT / "bench")]
+import assistant as A  # noqa: E402
+import booking as B  # noqa: E402
+import brain  # noqa: E402
+import forms as F  # noqa: E402
+
+CHAT = ["hi, how are you?", "what's 15% of 2400?", "thanks, that's all", "tell me a fun fact about Bangalore"]
+# test3: written 2026-10-22 after the first botsmoke run (whose test2 replies shaped bot/assistant.py's grounding),
+# before any run on these. (message, kind, ready, values checked on the saved task; dates as words, resolved by code)
+TEST3 = [
+    ("Book a bus from Bangalore to Hyderabad on Sunday for me and mom", "bus", True,
+     {"date": "sunday", "passengers": ["kartik", "sunita"]}),
+    ("Train for mom to Mysore tomorrow", "train", True, {"date": "tomorrow", "passengers": ["sunita"], "to": "mysore"}),
+    ("I feel like having pav bhaji, keep it under 250", "food", True, {"dish": "pav bhaji", "max_total": 250}),
+    ("Get me a cab to Indiranagar", "cab", False, {}),
+    ("Flight to Kochi", "flight", False, {}),
+    ("Hotel in Ooty this Saturday to Monday under 3000", "hotel", True,
+     {"checkin": "saturday", "checkout": "monday", "max_price_per_night": 3000}),
+    ("Plan a weekend trip to Pondicherry", "trip", False, {}),
+    ("Order paneer tikka from Barbeque Nation under 600", "food", True, {"dish": "paneer tikka", "max_total": 600}),
+    ("Can you book train tickets to Pune on 4 Dec for me and Rahul in 2A", "train", True,
+     {"passengers": ["kartik", "rahul"], "class": "2a", "date": "4 dec"}),
+    ("Cab to the airport tomorrow at 6am", "cab", True, {"drop": "airport"}),
+]
+CHAT3 = ["what's the capital of Australia?", "good morning!", "remind me what you can do", "any good cafes near me?"]
+
+
+def values_ok(store, want: dict) -> bool:
+    from datetime import date
+    rows = store._q("SELECT slots FROM tasks ORDER BY id DESC LIMIT 1")
+    got = __import__("json").loads(rows[0][0]) if rows else {}
+    for k, v in want.items():
+        g = got.get(k)
+        if k in B.DATES:
+            ok = g == B._iso(v, date.today())
+        elif isinstance(v, list):
+            ok = isinstance(g, list) and sorted(str(x).split()[0].lower() for x in g) == sorted(v)
+        elif isinstance(v, (int, float)):
+            ok = B._money(g) == v
+        else:
+            ok = g is not None and v in str(g).lower()
+        if not ok:
+            print(f"      value {k}: got {g!r}, want {v!r}")
+            return False
+    return True
+
+
+def down(url, body, timeout=5):
+    raise OSError("memory off for the smoke test")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model-url", required=True)
+    ap.add_argument("--reps", type=int, default=2)
+    a = ap.parse_args()
+    brain.URL = a.model_url
+    rows = []
+    for rep in range(a.reps):
+        cases = ([c for c in F.CASES if c[0] == "test2"] + [("chat", m, None, None, None) for m in CHAT]
+                 + [("test3", m, k, r, v) for m, k, r, v in TEST3] + [("chat3", m, None, None, None) for m in CHAT3])
+        for i, case in enumerate(cases):
+            home = Path(tempfile.mkdtemp())
+            store = F.seeded(home / "b.db")
+            bot = A.Assistant(home / "h", store, post=down)
+            t = time.time()
+            try:
+                reply = bot.handle({"channel": "smoke", "chat": "c", "text": case[1]})
+            except Exception as e:
+                reply = f"ERROR {e!r}"
+            secs = time.time() - t
+            task = store._q("SELECT kind FROM tasks")
+            if case[0] in ("chat", "chat3"):
+                ok = not task and not reply.startswith("ERROR")
+            else:
+                ready = reply.endswith("(YES / no)")
+                ok = bool(task) and task[0][0] == case[2] and ready == case[3]
+                if ok and case[0] == "test3":
+                    ok = values_ok(store, case[4])
+            rows.append((case[0], ok, secs))
+            print(f"{'ok  ' if ok else 'FAIL'} {secs:5.1f}s {case[1]!r} -> {reply[:110]!r}", flush=True)
+    for kind in ("test2", "chat", "test3", "chat3"):
+        rs = [r for r in rows if r[0] == kind]
+        print(f"{kind}: {sum(r[1] for r in rs)}/{len(rs)} pass")
+    ts = sorted(r[2] for r in rows)
+    print(f"reply time: median {statistics.median(ts):.1f}s, p90 {ts[int(0.9 * len(ts)) - 1]:.1f}s, max {ts[-1]:.1f}s")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
