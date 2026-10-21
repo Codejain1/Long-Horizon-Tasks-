@@ -69,6 +69,10 @@ def candidates(fetch=_get) -> str:
     return "\n".join(lines)
 
 
+REFLECT = {"type": "object", "properties": {"learned_md": {"type": "string"}, "message": {"type": "string"}},
+           "required": ["learned_md", "message"]}
+
+
 class Jobs:
     def __init__(self, memories: Path, log, state: dict | None = None, chat=brain.chat, fetch=_get):
         """log(days) -> [(utc iso, role, text)] of the owner's conversation; state: the scheduler's state."""
@@ -104,10 +108,10 @@ class Jobs:
             return "No messages from Kartik this week: LEARNED.md unchanged."
         path = self.mem / "LEARNED.md"
         old = path.read_text() if path.exists() else ""
-        system = (f"{job['prompt']}\n\nCurrent LEARNED.md:\n{old}\n\nAnswer with JSON only: "
-                  '{"learned_md": "<the whole new file>", "message": "<the one line for Kartik>"}')
-        raw = self.chat([{"role": "system", "content": system}, {"role": "user", "content": ctx}], max_tokens=3000)
-        out = brain.first_json(raw.get("content") or "")
+        system = (f"{job['prompt']}\n\nCurrent LEARNED.md:\n{old}\n\nAnswer with learned_md (the whole new file) "
+                  "and message (the one line for Kartik).")
+        out = brain.extract([{"role": "system", "content": system}, {"role": "user", "content": ctx}], REFLECT, self.chat,
+                            max_tokens=3000)
         new = str(out.get("learned_md") or "")
         heads = re.findall(r"^#+ .*$", old, re.M)
         if not new.strip() or len(new.splitlines()) > 100 or any(h not in new for h in heads):

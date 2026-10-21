@@ -12,7 +12,16 @@ import booking as B  # noqa: E402
 
 
 def call(name, **args):
-    return {"content": "", "tool_calls": [{"function": {"name": name, "arguments": json.dumps(args)}}]}
+    """What the model answers, forced to the assistant's schemas (DECIDE / UPDATE)."""
+    if name == "task_update":
+        return {"content": json.dumps({"action": "update", "details": args.get("slots", {})})}
+    action = {"task_start": "book", "nearby_places": "places", "swiggy_orders": "read_swiggy_orders"}[name]
+    return {"content": json.dumps({"action": action, "kind": args.get("kind", "none"), "details": args.get("slots", {}),
+                                   "cuisine": args.get("cuisine", ""), "reply": ""})}
+
+
+def reply(text):
+    return {"content": json.dumps({"action": "reply", "kind": "none", "details": {}, "reply": text})}
 
 
 class Model:
@@ -20,8 +29,8 @@ class Model:
     def __init__(self, *replies):
         self.replies, self.seen = list(replies), []
 
-    def __call__(self, messages, tools=None, **kw):
-        self.seen.append((messages, [t["name"] for t in tools or []]))
+    def __call__(self, messages, **kw):
+        self.seen.append((messages, kw.get("schema")))
         return self.replies.pop(0)
 
 
@@ -53,18 +62,18 @@ def test_booking_conversation_runs_in_code(tmp_path):
     sys_prompt = m.seen[0][0][0]["content"]
     assert "reply in English" in sys_prompt and "vegetarian" in sys_prompt and "tired" in sys_prompt
     assert "- keep every dish under ₹200. (corrected 2x)" in sys_prompt
-    assert m.seen[0][1] == ["task_start", "nearby_places", "swiggy_orders"]
+    assert m.seen[0][1] is A.DECIDE  # forced JSON, no tool calling
     r = say(b, "3A")
     assert r.startswith("Train:") and "class 3A" in r and "passengers Kartik" in r and r.endswith("(YES / no)")
-    assert m.seen[1][1] == ["task_update"]
+    assert m.seen[1][1] is A.UPDATE
     r = say(b, "yes")
     assert r.startswith("Confirmed ✅") and len(m.seen) == 2  # YES needs no model call
     assert b.store.task(1)["status"] == "confirmed" and b._pending("c1") is None
 
 
 def test_no_cancels_and_new_request_replaces_pending(tmp_path):
-    m = Model(call("task_start", kind="cab", slots={"drop": "airport"}), {"content": "NEW"},
-              {"content": "Hi! How can I help?"})
+    m = Model(call("task_start", kind="cab", slots={"drop": "airport"}), {"content": json.dumps({"action": "new", "details": {}})},
+              reply("Hi! How can I help?"))
     b = bot(tmp_path, m)
     assert say(b, "cab to airport") == "Pick up from where? When?"  # no cab history: both asked
     assert say(b, "actually just say hi") == "Hi! How can I help?"
@@ -75,7 +84,7 @@ def test_no_cancels_and_new_request_replaces_pending(tmp_path):
 
 
 def test_stop_blocks_everything_until_resume(tmp_path):
-    m = Model({"content": "hello"})
+    m = Model(reply("hello"))
     b = bot(tmp_path, m)
     assert say(b, "STOP").startswith("Stopped")
     assert say(b, "book a flight") == "I'm stopped. Say RESUME to continue." and m.seen == []
@@ -101,7 +110,7 @@ def test_places_use_real_results_and_need_location(tmp_path):
 def test_memory_down_still_answers_and_history_is_logged(tmp_path):
     def down(url, body, timeout=5):
         raise OSError("refused")
-    m = Model({"content": "Sure."}, {"content": "Done."})
+    m = Model(reply("Sure."), reply("Done."))
     b = bot(tmp_path, m, post=down)
     assert say(b, "remind me what I said") == "Sure."
     say(b, "thanks")
@@ -131,7 +140,7 @@ def test_main_loop_answers_and_ticks(tmp_path, monkeypatch):
         def tick(self):
             Sched.ticks += 1
     ch = Ch()
-    M.serve({"whatsapp": ch}, bot(tmp_path, Model({"content": "hey"})), Sched(), once=True)
+    M.serve({"whatsapp": ch}, bot(tmp_path, Model(reply("hey"))), Sched(), once=True)
     assert ch.out == [("c", "hey")] and Sched.ticks == 1
     broken = bot(tmp_path / "x", Model())  # the model has nothing to say: IndexError inside the turn
     ch.inbox = [{"channel": "whatsapp", "chat": "c", "text": "hi"}]
@@ -160,17 +169,10 @@ def test_grounding_drops_invented_details_and_fixes_days_and_people(tmp_path):
     assert A.ground(s, "flight", "Flight to Pune under 7,500", {"max_price": 7500})["max_price"] == 7500
 
 
-def test_tool_call_written_as_text_is_read():
-    import brain
-    msg = {"content": '<tool_call>\n{"name": "task_start", "arguments": {"kind": "flight", "slots": {"to": "Pune"}}}\n</tool_call>'}
-    assert brain.tool_call(msg) == ("task_start", {"kind": "flight", "slots": {"to": "Pune"}})
-    assert brain.tool_call({"content": "just text"}) is None
-
-
 def test_comma_numbers_and_two_day_ranges(tmp_path):
     import brain
-    raw = '<tool_call>\n{"name": "task_start", "arguments": {"kind": "flight", "slots": {"to": "Pune", "max_price": 7,500}}}\n</tool_call>'
-    assert brain.tool_call({"content": raw}) == ("task_start", {"kind": "flight", "slots": {"to": "Pune", "max_price": 7500}})
+    raw = 'Sure: {"action": "book", "kind": "flight", "details": {"to": "Pune", "max_price": 7,500}} done'
+    assert brain.first_json(raw)["details"] == {"to": "Pune", "max_price": 7500}  # fallback when a schema is ignored
     s = B.Store(tmp_path / "g.db")
     g = A.ground(s, "hotel", "Hotel in Ooty this Saturday to Monday under 3000",
                  {"city": "Ooty", "checkin": "2026-10-23", "checkout": "2026-10-25", "max_price_per_night": 3000})
@@ -178,10 +180,10 @@ def test_comma_numbers_and_two_day_ranges(tmp_path):
 
 
 def test_a_repeated_chat_reply_is_asked_again_with_more_variety(tmp_path):
-    joke = {"content": "Why did the train get a medal? Outstanding track record."}
+    joke = reply("Why did the train get a medal? Outstanding track record.")
     m = Model(joke, joke, {"content": "A different train joke."})
     b = bot(tmp_path, m)
-    assert say(b, "tell me a joke about trains") == joke["content"]
+    assert say(b, "tell me a joke about trains") == "Why did the train get a medal? Outstanding track record."
     assert say(b, "tell me a joke about trains") == "A different train joke."
     assert len(m.seen) == 3  # one extra call, only when it would have repeated
 

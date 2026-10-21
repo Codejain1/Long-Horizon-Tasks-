@@ -3,9 +3,10 @@
 1. STOP / RESUME (code; while stopped nothing else runs).
 2. A booking waiting on the owner: YES confirms, NO cancels, anything else is read as more details for it
    (one model call: task_update); a new request instead drops it.
-3. Otherwise one model call with the owner's memory (rules, taste, mood, what they said before) and two tools:
-   task_start (bookings and orders, as forms) and nearby_places (going out). No tool = the reply itself.
-Questions and summaries for bookings are written by code (booking.py), never by the model.
+3. Otherwise one model call with the owner's memory (rules, taste, mood, what they said before), answered as JSON
+   forced to DECIDE (vLLM json_schema): reply, book (a form), places (going out) or read_swiggy_orders.
+Questions and summaries for bookings are written by code (booking.py), never by the model. No tool calling and no
+hand parsing of free text: those were the main sources of live bugs.
 """
 
 from __future__ import annotations
@@ -32,21 +33,27 @@ ASK = {"date": "Which date?", "from": "From where?", "to": "To where?", "passeng
        "city": "Which city?", "dish": "What would you like to eat?", "drop": "Where to?", "pickup": "Pick up from where?",
        "when": "When?", "arrive": "When do you arrive?", "leave": "When do you leave?"}
 
-PERSONA = """You are the owner's personal assistant on WhatsApp/Telegram. Reply briefly and plainly, like a person.
-For any booking or order (flight, train, bus, cab, hotel, food delivery, trip): call task_start with ONLY the details
-the owner said in this message, dates and people exactly as said. Naming a dish to eat means ordering it (kind food),
-unless they say they want to go out. For places to go out to eat or visit near them: call nearby_places. Otherwise
-just reply. You only get this one reply: never say "one moment" or "let me check"; answer now. Never invent facts about the owner. Today is {today}.
+PERSONA = """You are the owner's personal assistant on WhatsApp/Telegram. Today is {today}.
+Decide what to do with the owner's message and answer as JSON:
+- action "book": any booking or order (flight, train, bus, cab, hotel, food delivery, trip). Set kind, and in
+  details ONLY what the owner said in this message (dates and people exactly as said, e.g. "friday", "me and mom").
+  Detail names per kind: {kinds}. Naming a dish to eat means ordering it (kind food) unless they want to go out.
+- action "places": places to go out to eat or visit near them (cuisine if they said one).
+- action "read_swiggy_orders": ONLY when they ask to read, check or refresh their Swiggy order history.
+- action "reply": anything else; write the reply: brief and plain, like a person. You only get this one reply:
+  never say "one moment" or "let me check"; answer now. Never invent facts about the owner.
 {memory}"""
-
-PLACES_TOOL = {"name": "nearby_places", "description": "Real restaurants and cafes near the owner's shared location.",
-               "parameters": {"type": "object", "properties": {"cuisine": {"type": "string"}}}}
-ORDERS_TOOL = {"name": "swiggy_orders", "description": "Open Swiggy and read the owner's order history: ONLY when they ask "
-               "to read, check or refresh their Swiggy orders. For food suggestions just answer, using what they "
-               "order (given above).", "parameters": {"type": "object", "properties": {}}}
+VALUE = {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "array", "items": {"type": "string"}}]}
+DECIDE = {"type": "object", "properties": {
+    "action": {"type": "string", "enum": ["reply", "book", "places", "read_swiggy_orders"]},
+    "kind": {"type": "string", "enum": [*B.TEMPLATES, "none"]},
+    "details": {"type": "object", "additionalProperties": VALUE},
+    "cuisine": {"type": "string"},
+    "reply": {"type": "string"}}, "required": ["action", "kind", "details", "reply"]}
+UPDATE = {"type": "object", "properties": {"action": {"type": "string", "enum": ["update", "new"]},
+                                           "details": {"type": "object", "additionalProperties": VALUE}},
+          "required": ["action", "details"]}
 FRESH_H = 12  # order history read this recently is reused, not re-read from Swiggy
-UPDATE_TOOL = {"name": "task_update", "description": "Details the owner just added or changed for the pending task.",
-               "parameters": {"type": "object", "properties": {"slots": {"type": "object"}}, "required": ["slots"]}}
 
 
 def _post(url: str, body: dict, timeout: float = 5) -> dict:
@@ -232,49 +239,48 @@ class Assistant:
                 B.finish(self.store, tid, "cancelled")
                 return "Cancelled."
             t = self.store.task(tid)
-            msg = self.chat([{"role": "system", "content": f"The owner is answering questions for a {t['kind']} "
-                              f"booking with these details so far: {json.dumps(t['slots'])}. If the message adds or "
-                              "changes details, call task_update with only those (dates and people as said). If it "
-                              "is a different request, reply 'NEW'."}, {"role": "user", "content": text}],
-                            tools=[UPDATE_TOOL])
-            call = brain.tool_call(msg)
-            if call and call[0] == "task_update":
-                slots = ground(self.store, t["kind"], text, call[1].get("slots") or {})
+            d = brain.extract([{"role": "system", "content": f"The owner is answering questions for a {t['kind']} "
+                                f"booking with these details so far: {json.dumps(t['slots'])}. Detail names: "
+                                f"{', '.join(B.TEMPLATES[t['kind']])}. If the message adds or changes details, action "
+                                "update with only those (dates and people as said); if it is a different request, "
+                                "action new."}, {"role": "user", "content": text}], UPDATE, self.chat)
+            if d.get("action") == "update" and d.get("details"):
+                slots = ground(self.store, t["kind"], text, d["details"])
                 return self._booking_reply(chat, B.update(self.store, tid, slots))
             self._pending(chat, clear=True)
             B.finish(self.store, tid, "cancelled")
         memory, cur = self._memory(text)
-        system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory)
-        msg = self.chat([{"role": "system", "content": system}, *self.recent(chat)[:-1], {"role": "user", "content": text}],
-                        tools=[B.TOOLS[0], PLACES_TOOL, ORDERS_TOOL])
-        call = brain.tool_call(msg)
-        if call and call[0] == "task_start":
-            kind = call[1].get("kind", "")
-            slots = ground(self.store, kind, text, call[1].get("slots") or {})
-            return self._booking_reply(chat, B.start(self.store, kind, slots, call[1].get("site", "")))
-        if call and call[0] == "swiggy_orders":
+        kinds = "; ".join(f"{k}: {', '.join(v)}" for k, v in B.TEMPLATES.items())
+        system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory, kinds=kinds)
+        talk = [*self.recent(chat)[:-1], {"role": "user", "content": text}]
+        d = brain.extract([{"role": "system", "content": system}, *talk], DECIDE, self.chat)
+        action = d.get("action", "reply")
+        if action == "book" and d.get("kind") in B.TEMPLATES:
+            slots = ground(self.store, d["kind"], text, d.get("details") or {})
+            return self._booking_reply(chat, B.start(self.store, d["kind"], slots))
+        if action == "read_swiggy_orders":
             last = self.store.fact("swiggy:orders_read")
             stale = (not B.taste(self.store).get("orders")) if not last else last["age_h"] >= FRESH_H
             if stale or re.search(r"\b(refresh|re-?read|again|update|latest)\b", text, re.I):
                 return self._read_orders()
-            # read recently: the model reached for the tool on a suggestion question (seen live): answer from memory
-            msg = self.chat([{"role": "system", "content": system + "\n\nAnswer the owner's message using what they "
-                              "order on Swiggy (above), their taste and mood. Suggest concrete dishes, briefly."},
-                             *self.recent(chat)[:-1], {"role": "user", "content": text}])
-        if call and call[0] == "nearby_places":
-            found = self.nearby(cur.get("location"), 3000, call[1].get("cuisine", ""), limit=8)
+            # read recently: the model chose this on a suggestion question (seen live): answer from memory
+            return self._say(system + "\n\nAnswer the owner's message using what they order on Swiggy (above), their "
+                             "taste and mood. Suggest concrete dishes, briefly.", talk)
+        if action == "places":
+            found = self.nearby(cur.get("location"), 3000, d.get("cuisine", ""), limit=8)
             if "error" in found:
                 return "Share your location on WhatsApp (attach → Location) and I'll look around you."
-            msg = self.chat([{"role": "system", "content": system + "\n\nPick the 3 best for the owner from ONLY these "
-                              f"real places (name, km, one line why, maps link):\n{json.dumps(found['places'])}"},
-                             {"role": "user", "content": text}])
-        reply = (msg.get("content") or "").strip()
-        if reply and not call and reply in self._said(chat):  # low temperature repeats itself ("same joke 3x")
-            again = self.chat([{"role": "system", "content": system + "\n\nYou already gave this exact answer; give "
-                                "a different one."}, *self.recent(chat)[:-1], {"role": "user", "content": text}],
-                              temperature=0.9)
-            reply = (again.get("content") or "").strip() or reply
+            return self._say(system + "\n\nPick the 3 best for the owner from ONLY these real places (name, km, one "
+                             f"line why, maps link):\n{json.dumps(found['places'])}", talk)
+        reply = str(d.get("reply") or "").strip()
+        if reply and reply in self._said(chat):  # low temperature repeats itself ("same joke 3x")
+            reply = self._say(system + "\n\nYou already gave this exact answer; give a different one.", talk, 0.9) or reply
         return reply or "Sorry, I didn't get that. Could you say it another way?"
+
+    def _say(self, system: str, talk: list, temperature: float = 0.2) -> str:
+        """Free text the owner reads as is (nothing parses it)."""
+        msg = self.chat([{"role": "system", "content": system}, *talk], temperature=temperature)
+        return (msg.get("content") or "").strip()
 
     def _said(self, chat: str, n: int = 5) -> list[str]:
         return [t for (t,) in self.db.execute("SELECT text FROM log WHERE chat=? AND role='bot' ORDER BY ts DESC LIMIT ?",

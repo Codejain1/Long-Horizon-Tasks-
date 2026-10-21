@@ -25,7 +25,14 @@ class NotReady(Exception):
     """Swiggy isn't usable as is (logged out, location missing, blocked): the message says what the owner should do."""
 
 
-_json = brain.first_json
+ORDERS_SCHEMA = {"type": "object", "properties": {"orders": {"type": "array", "items": {"type": "object", "properties": {
+    "restaurant": {"type": "string"}, "items": {"type": "array", "items": {"type": "string"}},
+    "total": {"type": "number"}, "date": {"type": "string"}}, "required": ["restaurant", "items", "total", "date"]}}},
+    "required": ["orders"]}
+OFFERS_SCHEMA = {"type": "object", "properties": {"offers": {"type": "array", "items": {"type": "object", "properties": {
+    "restaurant": {"type": "string"}, "item": {"type": "string"}, "price": {"type": "number"},
+    "rating": {"type": "string"}, "eta": {"type": "string"}}, "required": ["restaurant", "item", "price"]}}},
+    "required": ["offers"]}
 
 
 def _on_page(value, page: str) -> bool:
@@ -42,12 +49,11 @@ def _price_on_page(price, page: str) -> bool:
 
 
 def read_orders(page: str, chat=brain.chat) -> list[dict]:
-    msg = chat([{"role": "system", "content": "This is the text of the owner's Swiggy order history page. List every "
-                 "order on it. JSON only: {\"orders\": [{\"restaurant\": \"...\", \"items\": [\"dish\", ...], "
-                 "\"total\": 0, \"date\": \"...\"}]}. Copy names exactly as written."},
-                {"role": "user", "content": page[:14000]}], max_tokens=3000)
+    got = brain.extract([{"role": "system", "content": "This is the text of the owner's Swiggy order history page. "
+                          "List every order on it. Copy names exactly as written."},
+                         {"role": "user", "content": page[:14000]}], ORDERS_SCHEMA, chat, max_tokens=3000)
     out = []
-    for o in _json(msg.get("content")).get("orders", []):
+    for o in got.get("orders", []):
         items = [i for i in (o.get("items") or []) if _on_page(re.sub(r"\s*x\s*\d+$", "", str(i)), page)]
         if _on_page(o.get("restaurant"), page) and items and _price_on_page(o.get("total"), page):
             out.append({"restaurant": o["restaurant"], "items": items, "total": o["total"], "date": o.get("date", "")})
@@ -55,11 +61,10 @@ def read_orders(page: str, chat=brain.chat) -> list[dict]:
 
 
 def read_offers(page: str, dish: str, chat=brain.chat) -> list[dict]:
-    msg = chat([{"role": "system", "content": f"This is the text of a Swiggy search page for '{dish}'. List every dish "
-                 "card on it that matches what was searched: JSON only: {\"offers\": [{\"restaurant\": \"...\", "
-                 "\"item\": \"...\", \"price\": 0, \"rating\": \"...\", \"eta\": \"...\"}]}. Copy names and prices "
-                 "exactly as written."}, {"role": "user", "content": page[:14000]}], max_tokens=3000)
-    return [o for o in _json(msg.get("content")).get("offers", [])
+    got = brain.extract([{"role": "system", "content": f"This is the text of a Swiggy search page for '{dish}'. List "
+                          "every dish card on it that matches what was searched. Copy names and prices exactly as "
+                          "written."}, {"role": "user", "content": page[:14000]}], OFFERS_SCHEMA, chat, max_tokens=3000)
+    return [o for o in got.get("offers", [])
             if _on_page(o.get("restaurant"), page) and _on_page(o.get("item"), page) and _price_on_page(o.get("price"), page)]
 
 

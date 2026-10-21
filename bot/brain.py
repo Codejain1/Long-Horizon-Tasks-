@@ -14,15 +14,15 @@ URL = os.environ.get("BOT_MODEL_URL", "http://127.0.0.1:8000/v1")
 MODEL = os.environ.get("BOT_MODEL", "local")
 
 
-def chat(messages: list, tools: list | None = None, url: str = "", model: str = "", key_env: str = "",
-         max_tokens: int = 1500, timeout: float = 120, temperature: float = 0.2) -> dict:
-    """One completion -> the assistant message ({"content", "tool_calls"?}). Retries busy servers twice."""
+def chat(messages: list, url: str = "", model: str = "", key_env: str = "",
+         max_tokens: int = 1500, timeout: float = 120, temperature: float = 0.2, schema: dict | None = None) -> dict:
+    """One completion -> the assistant message ({"content"}). Retries busy servers twice."""
     url, model = url or URL, model or MODEL
     body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     if url == URL:
         body["chat_template_kwargs"] = {"enable_thinking": False}
-    if tools:
-        body["tools"] = [{"type": "function", "function": t} for t in tools]
+    if schema:  # vLLM 0.31 constrains decoding to the schema: only valid JSON of that shape can come out
+        body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}}
     headers = {"Content-Type": "application/json"}
     if key_env and os.environ.get(key_env):
         headers["Authorization"] = f"Bearer {os.environ[key_env]}"
@@ -38,12 +38,12 @@ def chat(messages: list, tools: list | None = None, url: str = "", model: str = 
     raise RuntimeError("unreachable")
 
 
-def _json(s: str):
-    """json.loads, retried with thousands commas taken out of numbers (Qwen writes "max_price": 7,500)."""
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        return json.loads(re.sub(r"(?<=\d),(?=\d{3}\b)", "", s))
+def extract(messages: list, schema: dict, chat_fn=None, **kw) -> dict:
+    """Structured answer from the model, forced to `schema` (no hand parsing of free text: that was the biggest
+    source of live bugs: commas in numbers, calls written as text, a list followed by more text). The parse below
+    only matters for endpoints that ignore response_format."""
+    msg = (chat_fn or chat)(messages, schema=schema, **kw)
+    return first_json(msg.get("content") or "")
 
 
 def first_json(text: str) -> dict:
@@ -62,21 +62,3 @@ def first_json(text: str) -> dict:
     return {}
 
 
-def tool_call(msg: dict) -> tuple[str, dict] | None:
-    """The first tool call of a reply as (name, args), or None. Qwen sometimes writes the call as text
-    (`<tool_call>{...}</tool_call>`, seen live on "under 7,500"): that is read too."""
-    calls = msg.get("tool_calls") or []
-    if not calls:
-        m = re.search(r"<tool_call>\s*(\{.*\})\s*(</tool_call>|$)", msg.get("content") or "", re.S)
-        try:
-            d = _json(m[1]) if m else None
-        except json.JSONDecodeError:
-            d = None
-        return (d["name"], d.get("arguments") or {}) if isinstance(d, dict) and d.get("name") else None
-    f = calls[0]["function"]
-    args = f.get("arguments") or {}
-    try:
-        args = _json(args) if isinstance(args, str) else args
-    except json.JSONDecodeError:
-        args = {}
-    return f["name"], args if isinstance(args, dict) else {}
