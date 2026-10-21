@@ -1,0 +1,16 @@
+[Unit]
+Description=The owner's bot (replaces the Hermes gateway): WhatsApp, Telegram, scheduled jobs
+After=network-online.target owner-whatsapp-bridge.service embed-memory.service
+Wants=network-online.target
+
+[Service]
+User=hermes
+WorkingDirectory=/home/hermes
+Environment=BOT_HOME=/home/hermes/.bot HERMES_HOME=/home/hermes/.hermes PYTHONUNBUFFERED=1
+# Telegram token and allowed users come from Hermes's env file, read only by this service
+ExecStart=/bin/bash -c 'set -a; . /home/hermes/.hermes/.env; set +a; exec /usr/bin/python3 /opt/bot/bot/main.py'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

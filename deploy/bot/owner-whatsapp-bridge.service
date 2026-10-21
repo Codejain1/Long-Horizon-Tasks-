@@ -1,0 +1,15 @@
+[Unit]
+Description=WhatsApp bridge for the owner's bot (Hermes's bridge.js, same session: no re-pairing)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hermes
+WorkingDirectory=/home/hermes
+# the bridge's settings (WHATSAPP_MODE, WHATSAPP_ALLOWED_USERS, ...) come from Hermes's env file, read only here
+ExecStart=/bin/bash -c 'set -a; . /home/hermes/.hermes/.env; set +a; exec /home/hermes/.hermes/node/bin/node /opt/bot-bridge/bridge.js --port 3000 --session /home/hermes/.hermes/whatsapp/session --mode bot'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

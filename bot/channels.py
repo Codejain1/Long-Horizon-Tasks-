@@ -1,6 +1,9 @@
 """Where messages come from and go: WhatsApp through Hermes's Node bridge (bridge.js, HTTP on 127.0.0.1) and
 Telegram's Bot API. Each `poll()` returns new messages as {"channel", "chat", "text", "sender"}; only the owner's
-get through (WhatsApp: the bridge's own allowlist plus `fromOwner`/allowed ids; Telegram: TELEGRAM_ALLOWED_USERS)."""
+get through. WhatsApp: the bridge drops senders not in WHATSAPP_ALLOWED_USERS itself (its default DM policy
+"open"; its matcher also resolves WhatsApp's @lid ids, which a phone-number check here would wrongly reject), so
+here only groups are dropped; under policy "pairing" the bridge forwards strangers, and then the phone check
+here applies. Telegram: TELEGRAM_ALLOWED_USERS, private chats only."""
 
 from __future__ import annotations
 
@@ -24,13 +27,17 @@ def _ids(raw: str) -> set[str]:
 class WhatsApp:
     name = "whatsapp"
 
-    def __init__(self, url: str = "http://127.0.0.1:3000", allowed: str | None = None, http=_http):
+    def __init__(self, url: str = "http://127.0.0.1:3000", allowed: str | None = None, http=_http,
+                 policy: str | None = None):
         self.url, self.http = url, http
         self.allowed = _ids(os.environ.get("WHATSAPP_ALLOWED_USERS", "") if allowed is None else allowed)
+        self.bridge_filters = (os.environ.get("WHATSAPP_DM_POLICY", "open") if policy is None else policy).lower() != "pairing"
 
     def _owner(self, m: dict) -> bool:
         if m.get("isGroup"):
             return False
+        if self.bridge_filters:
+            return True
         who = str(m.get("senderId") or m.get("chatId") or "").split("@")[0].split(":")[0]
         return bool(m.get("fromOwner")) or who in self.allowed
 

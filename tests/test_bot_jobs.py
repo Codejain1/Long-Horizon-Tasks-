@@ -78,3 +78,31 @@ def test_reflect_never_invents_and_keeps_headings(tmp_path):
 def test_canary_proves_the_model_answers(tmp_path):
     jb = J.Jobs(tmp_path, log=lambda d: [], chat=lambda m, **kw: {"content": "ok"})
     assert jb.think({"name": "pipeline-canary"}, "").startswith("✅ Weekly canary OK — model=")
+
+
+def test_canary_and_switch_over_seed(tmp_path):
+    import time
+    sys.path.insert(0, str(Path(__file__).parent.parent / "bot"))
+    import companion_canary as K
+    st, learned = tmp_path / "jobs-state.json", tmp_path / "LEARNED.md"
+    learned.write_text("x")
+    now = time.time()
+    st.write_text(json.dumps({"daily-companion": {"sent": [{"at": time.strftime("%Y-%m-%dT%H:%M", time.gmtime(now - 3600))}]}}))
+    assert K.check(st, learned, now) == []
+    assert "36 h" in K.check(st, learned, now + 40 * 3600)[0]
+    assert any("LEARNED.md" in m for m in K.check(st, learned, now + 9 * 86400))
+    h = dict(HERMES)
+    h["jobs"] = [dict(HERMES["jobs"][0], last_run_at="2026-10-21T02:30:03.156519+00:00")]
+    (tmp_path / "jobs.json").write_text(json.dumps(h))
+    assert J.load(tmp_path / "jobs.json")[0]["last_run"] == "2026-10-21T02:30"
+
+
+def test_build_converts_hermes_jobs_and_seeds_state(tmp_path, monkeypatch):
+    import main as M
+    (tmp_path / "hermes" / "cron").mkdir(parents=True)
+    h = {"jobs": [dict(HERMES["jobs"][0], last_run_at="2026-10-21T02:30:03+00:00")]}
+    (tmp_path / "hermes" / "cron" / "jobs.json").write_text(json.dumps(h))
+    chans, bot, sched = M.build({"BOT_HOME": str(tmp_path / "bot"), "HERMES_HOME": str(tmp_path / "hermes")})
+    assert (tmp_path / "bot" / "jobs.json").exists() and [j["name"] for j in sched.jobs] == ["daily-infra-digest"]
+    assert sched.state["daily-infra-digest"]["sent"][0]["at"] == "2026-10-21T02:30"
+    assert set(chans) == {"whatsapp", "telegram"} and sched.think is not None

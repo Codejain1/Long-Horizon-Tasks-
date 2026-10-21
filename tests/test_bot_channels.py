@@ -23,10 +23,17 @@ def test_whatsapp_owner_only():
              {"chatId": "g@g.us", "isGroup": True, "fromOwner": True, "body": "group"},
              {"chatId": "919800000001@s.whatsapp.net", "senderId": "919800000001@s.whatsapp.net", "body": ""}]
     http = FakeHTTP([inbox, None])
-    wa = C.WhatsApp(allowed="+919800000001", http=http)
+    wa = C.WhatsApp(allowed="+919800000001", http=http, policy="pairing")  # bridge forwards strangers: we check
     assert [m["text"] for m in wa.poll()] == ["hi", "order food"]
     wa.send("x@lid", "on it")
     assert http.calls[-1] == ("http://127.0.0.1:3000/send", {"chatId": "x@lid", "message": "on it"})
+
+
+def test_whatsapp_trusts_the_bridge_allowlist_by_default():
+    inbox = [{"chatId": "8123@lid", "senderId": "8123@lid", "body": "owner via lid"},
+             {"chatId": "g@g.us", "isGroup": True, "body": "group"}]
+    wa = C.WhatsApp(allowed="+919800000001", http=FakeHTTP([inbox]), policy="open")
+    assert [m["text"] for m in wa.poll()] == ["owner via lid"]
 
 
 def test_telegram_owner_private_chats_and_offset():

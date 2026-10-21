@@ -40,6 +40,9 @@ def build(env=os.environ):
     joblist = json.loads(jobs_file.read_text()) if jobs_file.exists() else []
     sched = S.Scheduler(joblist, home / "jobs-state.json", lambda text, to: C.deliver(chans, to, text),
                         think=None, gather=None, scripts=hermes / "scripts")
+    for job in joblist:  # first start: Hermes's last runs, so canaries don't call a job dead at switch-over
+        if job.get("last_run") and job["name"] not in sched.state:
+            sched.state[job["name"]] = {"sent": [{"at": job["last_run"], "text": "(ran under Hermes)"}]}
     jb = J.Jobs(hermes / "memories", bot.log_days, sched.state)
     sched.think, sched.gather = jb.think, jb.gather
     return chans, bot, sched

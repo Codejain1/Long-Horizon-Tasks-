@@ -35,7 +35,8 @@ def load(hermes_jobs: Path) -> list[dict]:
         kind = "script" if j.get("no_agent") else "monitor" if j.get("monitor_script") else "model"
         out.append({"name": j["name"], "kind": kind, "schedule": j["schedule"]["expr"], "deliver": j["deliver"],
                     "enabled": bool(j.get("enabled", True)) and not j.get("paused_at"), "prompt": j.get("prompt", ""),
-                    "script": j.get("script") or j.get("monitor_script"), "seed": _seed(j.get("monitor_state"))})
+                    "script": j.get("script") or j.get("monitor_script"), "seed": _seed(j.get("monitor_state")),
+                    "last_run": (j.get("last_run_at") or "")[:16] or None})
     return out
 
 
