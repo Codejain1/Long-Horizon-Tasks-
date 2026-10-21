@@ -51,7 +51,7 @@ def test_booking_conversation_runs_in_code(tmp_path):
     assert say(b, "train from bangalore to chennai on 2 nov") == "Which class (SL, 3A, 2A, 1A)?"
     sys_prompt = m.seen[0][0][0]["content"]
     assert "reply in English" in sys_prompt and "vegetarian" in sys_prompt and "tired" in sys_prompt
-    assert m.seen[0][1] == ["task_start", "nearby_places"]
+    assert m.seen[0][1] == ["task_start", "nearby_places", "swiggy_orders"]
     r = say(b, "3A")
     assert r.startswith("Train:") and "class 3A" in r and "passengers Kartik" in r and r.endswith("(YES / no)")
     assert m.seen[1][1] == ["task_update"]
@@ -182,3 +182,66 @@ def test_a_repeated_chat_reply_is_asked_again_with_more_variety(tmp_path):
     assert say(b, "tell me a joke about trains") == joke["content"]
     assert say(b, "tell me a joke about trains") == "A different train joke."
     assert len(m.seen) == 3  # one extra call, only when it would have repeated
+
+
+class FakeSwiggy:
+    def __init__(self, offers=None, error=None):
+        self.offers, self.error, self.added = offers or [], error, []
+
+    def orders(self):
+        return [{"restaurant": "Meghana Foods", "items": ["Paneer Biryani"], "total": 420, "date": "Oct 12"},
+                {"restaurant": "Meghana Foods", "items": ["Paneer Biryani"], "total": 380, "date": "Oct 15"}]
+
+    def search(self, dish):
+        if self.error:
+            import food
+            raise food.NotReady(self.error)
+        return self.offers
+
+    def add(self, offer):
+        self.added.append(offer)
+        return {"total": "284", "in_cart": True, "text": ""}
+
+
+OFFERS = [{"restaurant": "Paradise", "item": "Veg Biryani", "price": 249, "rating": "4.3", "eta": "40 MINS"},
+          {"restaurant": "Biryani Blues", "item": "Chicken Biryani", "price": 199},
+          {"restaurant": "Meghana Foods", "item": "Paneer Biryani", "price": 320},
+          {"restaurant": "X", "item": "Royal Biryani", "price": 900}]
+
+
+def test_food_order_to_cart_without_placing_it(tmp_path):
+    m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
+    sw = FakeSwiggy(OFFERS)
+    b = bot(tmp_path, m)
+    b.swiggy = sw
+    notes = []
+    assert say(b, "order veg biryani under 400").endswith("(YES / no)")
+    r = b.handle({"channel": "whatsapp", "chat": "c1", "text": "yes"}, notify=notes.append)
+    assert notes == ["Looking for biryani on Swiggy…"]
+    assert r.splitlines()[1:3] == ["1. Veg Biryani — Paradise — ₹249 ★4.3 (40 MINS)", "2. Paneer Biryani — Meghana Foods — ₹320"]
+    assert "Chicken" not in r and "Royal" not in r  # veg owner, budget 400: filtered by code
+    r = say(b, "1")
+    assert sw.added == [OFFERS[0]] and "To pay: ₹284" in r and "stopped before ordering" in r
+    assert b.store.task(1)["status"] == "done" and len(m.seen) == 1  # YES, the search and the choice: no model calls
+
+
+def test_food_problems_are_said_plainly(tmp_path):
+    m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 100}))
+    b = bot(tmp_path, m)
+    b.swiggy = FakeSwiggy(OFFERS)
+    say(b, "order biryani under 100")
+    assert "none fit under ₹100" in say(b, "yes")
+    m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400}))
+    b.swiggy = FakeSwiggy(error="Swiggy is logged out in the bot's Chrome: log in there again (Hermes desktop).")
+    say(b, "order biryani under 400")
+    assert "logged out" in say(b, "yes")
+
+
+def test_order_history_feeds_recommendations(tmp_path):
+    m = Model(call("swiggy_orders"), {"content": "Try the paneer biryani again?"})
+    b = bot(tmp_path, m)
+    b.swiggy = FakeSwiggy()
+    r = say(b, "look at my swiggy orders")
+    assert r.startswith("Saved 2 new orders") and "paneer biryani (2)" in r and "Meghana Foods (2)" in r
+    say(b, "what should I eat tonight?")
+    assert "What the owner orders on Swiggy (2 orders)" in m.seen[1][0][0]["content"]

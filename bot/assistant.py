@@ -20,6 +20,7 @@ from pathlib import Path
 
 import booking as B
 import brain
+import food
 import places
 
 YES = re.compile(r"^\s*(yes|y|yep|yeah|haan|ha|ok(ay)?|go ahead|confirm(ed)?|do it|sure)\b[\s.!]*$", re.I)
@@ -40,6 +41,8 @@ just reply. Never invent facts about the owner. Today is {today}.
 
 PLACES_TOOL = {"name": "nearby_places", "description": "Real restaurants and cafes near the owner's shared location.",
                "parameters": {"type": "object", "properties": {"cuisine": {"type": "string"}}}}
+ORDERS_TOOL = {"name": "swiggy_orders", "description": "Read the owner's Swiggy order history (when they ask about their "
+               "past orders, or to learn what they like to eat).", "parameters": {"type": "object", "properties": {}}}
 UPDATE_TOOL = {"name": "task_update", "description": "Details the owner just added or changed for the pending task.",
                "parameters": {"type": "object", "properties": {"slots": {"type": "object"}}, "required": ["slots"]}}
 
@@ -108,8 +111,10 @@ def ground(store: B.Store, kind: str, text: str, slots: dict) -> dict:
 
 class Assistant:
     def __init__(self, home: Path, store: B.Store, memory_url: str = "http://127.0.0.1:8765", chat=brain.chat,
-                 post=_post, nearby=places.nearby_food):
+                 post=_post, nearby=places.nearby_food, swiggy=None):
         self.home, self.store, self.mem, self.chat, self.post, self.nearby = Path(home), store, memory_url, chat, post, nearby
+        self.swiggy = swiggy or food.Swiggy(chat=chat)
+        self.notify = lambda text: None
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS log (ts REAL, channel TEXT, chat TEXT, role TEXT, text TEXT)")
@@ -147,7 +152,7 @@ class Assistant:
             r = self.post(self.mem + "/search", {"query": text, "budget": 500, "skip": ["Hermes", "bot"],
                                                   "skip_chats": ["cron_"]})
         except Exception:
-            return "", {}  # memory down: answer without it
+            return self._with_taste([]), {}  # memory down: answer without it
         cur, parts = r.get("current", {}), []
         if r.get("rules"):
             parts.append("Standing rules from the owner (always follow):\n" + "\n".join(f"- {x['text']}" for x in r["rules"]))
@@ -157,7 +162,14 @@ class Assistant:
             parts.append(f"Owner's mood: {cur['mood']['mood']} ({cur['mood']['hours_ago']} h ago)")
         if r.get("context"):
             parts.append("What the owner said before:\n" + r["context"])
-        return "\n\n".join(parts), cur
+        return self._with_taste(parts), cur
+
+    def _with_taste(self, parts: list) -> str:
+        t = B.taste(self.store)
+        if t.get("orders"):
+            parts.append(f"What the owner orders on Swiggy ({t['orders']} orders): dishes {t['top_dishes']}, restaurants "
+                         f"{t['top_restaurants']}, usual spend ₹{t['typical_spend']}")
+        return "\n\n".join(parts)
 
     def _remember(self, chat: str, text: str):
         def go():
@@ -168,7 +180,9 @@ class Assistant:
         threading.Thread(target=go, daemon=True).start()
 
     # the turn --------------------------------------------------------------------------------------------------
-    def handle(self, msg: dict) -> str:
+    def handle(self, msg: dict, notify=None) -> str:
+        """notify(text): an interim message (e.g. "Looking on Swiggy...") while a slow step runs."""
+        self.notify = notify or (lambda text: None)
         chat, text = msg["chat"], msg["text"]
         self._log(msg["channel"], chat, "owner", text)
         reply = self._turn(chat, text)
@@ -187,14 +201,26 @@ class Assistant:
             return "I'm stopped. Say RESUME to continue."
         self._remember(chat, text)
         tid = self._pending(chat)
-        if tid:
+        offers = self.store.fact(f"choice:{tid}") if tid else None
+        if tid and offers and not offers["stale"]:
+            m = re.fullmatch(r"\s*#?([1-9])\s*", text)
+            if m and int(m[1]) <= len(offers["value"]):
+                return self._add_to_cart(chat, tid, offers["value"][int(m[1]) - 1])
+            if NO.match(text):
+                self._pending(chat, clear=True)
+                B.finish(self.store, tid, "cancelled")
+                return "Cancelled."
+            self._pending(chat, clear=True)  # something else: a new request
+        elif tid:
             if YES.match(text):
                 self._pending(chat, clear=True)
                 r = B.confirm(self.store, tid)
                 if "error" in r:
                     return "I can't confirm that yet: " + r["error"]
+                if self.store.task(tid)["kind"] == "food":
+                    return self._find_food(chat, tid, r["slots"])
                 return ("Confirmed ✅ " + self._summary_line(r["slots"], self.store.task(tid)["kind"])
-                        + "\nBooking it on the site comes with the next update; for now this is saved.")
+                        + "\nBooking it on the site comes with a later update; for now this is saved.")
             if NO.match(text):
                 self._pending(chat, clear=True)
                 B.finish(self.store, tid, "cancelled")
@@ -214,12 +240,14 @@ class Assistant:
         memory, cur = self._memory(text)
         system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory)
         msg = self.chat([{"role": "system", "content": system}, *self.recent(chat)[:-1], {"role": "user", "content": text}],
-                        tools=[B.TOOLS[0], PLACES_TOOL])
+                        tools=[B.TOOLS[0], PLACES_TOOL, ORDERS_TOOL])
         call = brain.tool_call(msg)
         if call and call[0] == "task_start":
             kind = call[1].get("kind", "")
             slots = ground(self.store, kind, text, call[1].get("slots") or {})
             return self._booking_reply(chat, B.start(self.store, kind, slots, call[1].get("site", "")))
+        if call and call[0] == "swiggy_orders":
+            return self._read_orders()
         if call and call[0] == "nearby_places":
             found = self.nearby(cur.get("location"), 3000, call[1].get("cuisine", ""), limit=8)
             if "error" in found:
@@ -238,6 +266,56 @@ class Assistant:
     def _said(self, chat: str, n: int = 5) -> list[str]:
         return [t for (t,) in self.db.execute("SELECT text FROM log WHERE chat=? AND role='bot' ORDER BY ts DESC LIMIT ?",
                                               (chat, n))]
+
+    # Swiggy ----------------------------------------------------------------------------------------------------
+    def _read_orders(self) -> str:
+        self.notify("Reading your Swiggy order history…")
+        try:
+            orders = self.swiggy.orders()
+        except food.NotReady as e:
+            return str(e)
+        if not orders:
+            return "I opened your Swiggy orders but couldn't read any orders from the page."
+        r = B.save_orders(self.store, "swiggy", orders)
+        t = r["order_history"]
+        dishes = ", ".join(f"{d} ({n})" for d, n in t["top_dishes"][:4])
+        places_ = ", ".join(f"{p} ({n})" for p, n in t["top_restaurants"][:3])
+        return (f"Saved {r['saved']} new orders ({t['orders']} in all). You mostly order {dishes}; from {places_}; "
+                f"usually about ₹{t['typical_spend']:g}.")
+
+    def _find_food(self, chat: str, tid: int, slots: dict) -> str:
+        dish = slots["dish"][0] if isinstance(slots["dish"], list) else slots["dish"]
+        self.notify(f"Looking for {dish} on Swiggy…")
+        try:
+            offers = self.swiggy.search(dish)
+        except food.NotReady as e:
+            return str(e)
+        veg = "veg" in str(slots.get("diet", "")).lower() and "non" not in str(slots.get("diet", "")).lower()
+        top = food.pick(offers, slots.get("max_total"), veg)
+        if not top:
+            B.finish(self.store, tid, "failed", f"no {dish} under ₹{slots.get('max_total')} on Swiggy", "swiggy")
+            return (f"I found {len(offers)} {dish} options on Swiggy, but none fit"
+                    f"{' veg and' if veg else ''} under ₹{slots.get('max_total'):g}. Want a higher budget?")
+        self.store.set_fact(f"choice:{tid}", top, "swiggy", ttl_h=1)
+        self._pending(chat, tid)
+        lines = [f"{i}. {o['item']} — {o['restaurant']} — ₹{o['price']}" + (f" ★{o['rating']}" if o.get("rating") else "")
+                 + (f" ({o['eta']})" if o.get("eta") else "") for i, o in enumerate(top, 1)]
+        return "Cheapest on Swiggy right now:\n" + "\n".join(lines) + "\nWhich one? (reply 1, 2 or 3)"
+
+    def _add_to_cart(self, chat: str, tid: int, offer: dict) -> str:
+        self.notify(f"Adding {offer['item']} from {offer['restaurant']} to your Swiggy cart…")
+        self._pending(chat, clear=True)
+        try:
+            r = self.swiggy.add(offer)
+        except food.NotReady as e:
+            B.finish(self.store, tid, "failed", str(e), "swiggy")
+            return str(e)
+        if not r["in_cart"]:
+            B.finish(self.store, tid, "failed", "item not in cart after ADD", "swiggy")
+            return "I clicked ADD but don't see it in your cart. Please check Swiggy."
+        B.finish(self.store, tid, "done", f"cart {offer['restaurant']} {offer['item']} ₹{r['total']}", "swiggy")
+        return (f"In your Swiggy cart: {offer['item']} from {offer['restaurant']}. To pay: ₹{r['total'] or '?'}.\n"
+                "I've stopped before ordering: open Swiggy to place it (cash on delivery or UPI).")
 
     def _summary_line(self, slots: dict, kind: str) -> str:
         return f"{kind.title()}: " + ", ".join(f"{k.replace('_', ' ')} {' + '.join(map(str, v)) if isinstance(v, list) else v}"

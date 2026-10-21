@@ -56,7 +56,7 @@ def serve(chans, bot, sched, once: bool = False):
         with busy.setdefault(m["chat"], threading.Lock()):  # one turn at a time per chat, in order
             t = time.time()
             try:
-                reply = bot.handle(m)
+                reply = bot.handle(m, notify=lambda text: ch.send(m["chat"], text))
             except Exception as e:
                 log.exception("turn failed")
                 reply = f"Sorry, something broke on my side ({type(e).__name__}). Try again in a minute."

@@ -1,0 +1,138 @@
+"""Swiggy, driven by code in the desktop Chrome where the owner is logged in. The model only reads page text into
+lists; everything it returns is checked against that text (restaurant, item and price must be on the page), so
+it can't invent a restaurant or a price. Never places an order: the furthest it goes is the checkout page.
+
+    orders()          the order history page -> [{restaurant, items, total, date}]
+    search(dish)      the search page's Dishes tab -> [{restaurant, item, price, rating, eta}]
+    add(offer)        click that dish's ADD on the search page, then read the checkout page -> {"total", "text"}
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import urllib.parse
+
+import brain
+import cdp
+
+ORDERS = "https://www.swiggy.com/my-account/orders"
+SEARCH = "https://www.swiggy.com/search?query={q}"
+CHECKOUT = "https://www.swiggy.com/checkout"
+NONVEG = re.compile(r"\b(chicken|mutton|lamb|egg|eggs|fish|prawns?|keema|beef|pork|crab|seafood|non[- ]?veg)\b", re.I)
+
+
+class NotReady(Exception):
+    """Swiggy isn't usable as is (logged out, location missing, blocked): the message says what the owner should do."""
+
+
+def _json(text: str) -> dict:
+    m = re.search(r"\{.*\}", text or "", re.S)
+    try:
+        return json.loads(m[0]) if m else {}
+    except json.JSONDecodeError:
+        return json.loads(re.sub(r"(?<=\d),(?=\d{3}\b)", "", m[0])) if m else {}
+
+
+def _on_page(value, page: str) -> bool:
+    return bool(value) and str(value).strip().lower() in page.lower()
+
+
+def _price_on_page(price, page: str) -> bool:
+    try:
+        n = float(str(price).replace(",", "").replace("₹", ""))
+    except ValueError:
+        return False
+    numbers = {float(x.replace(",", "")) for x in re.findall(r"\d[\d,]*(?:\.\d+)?", page)}
+    return n in numbers
+
+
+def read_orders(page: str, chat=brain.chat) -> list[dict]:
+    msg = chat([{"role": "system", "content": "This is the text of the owner's Swiggy order history page. List every "
+                 "order on it. JSON only: {\"orders\": [{\"restaurant\": \"...\", \"items\": [\"dish\", ...], "
+                 "\"total\": 0, \"date\": \"...\"}]}. Copy names exactly as written."},
+                {"role": "user", "content": page[:14000]}], max_tokens=3000)
+    out = []
+    for o in _json(msg.get("content")).get("orders", []):
+        items = [i for i in (o.get("items") or []) if _on_page(re.sub(r"\s*x\s*\d+$", "", str(i)), page)]
+        if _on_page(o.get("restaurant"), page) and items and _price_on_page(o.get("total"), page):
+            out.append({"restaurant": o["restaurant"], "items": items, "total": o["total"], "date": o.get("date", "")})
+    return out
+
+
+def read_offers(page: str, dish: str, chat=brain.chat) -> list[dict]:
+    msg = chat([{"role": "system", "content": f"This is the text of a Swiggy search page for '{dish}'. List every dish "
+                 "card on it that matches what was searched: JSON only: {\"offers\": [{\"restaurant\": \"...\", "
+                 "\"item\": \"...\", \"price\": 0, \"rating\": \"...\", \"eta\": \"...\"}]}. Copy names and prices "
+                 "exactly as written."}, {"role": "user", "content": page[:14000]}], max_tokens=3000)
+    return [o for o in _json(msg.get("content")).get("offers", [])
+            if _on_page(o.get("restaurant"), page) and _on_page(o.get("item"), page) and _price_on_page(o.get("price"), page)]
+
+
+def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3) -> list[dict]:
+    """Code, not the model: drop non-veg for a veg owner and anything over budget, cheapest first."""
+    ok = [o for o in offers if not (veg and NONVEG.search(str(o.get("item"))))
+          and (max_total is None or float(str(o["price"]).replace(",", "")) <= float(max_total))]
+    seen, out = set(), []
+    for o in sorted(ok, key=lambda o: float(str(o["price"]).replace(",", ""))):
+        key = (o["restaurant"].lower(), o["item"].lower())
+        if key not in seen:
+            seen.add(key)
+            out.append(o)
+    return out[:n]
+
+
+class Swiggy:
+    def __init__(self, tab=cdp.Tab, chat=brain.chat):
+        self.tab, self.chat = tab, chat
+
+    def _check(self, page: str) -> str:
+        low = page.lower()
+        if "access denied" in low or "captcha" in low:
+            raise NotReady("Swiggy blocked the request from the server.")
+        if ("login" in low and "phone number" in low) or "sign up" in low and "₹" not in page:
+            raise NotReady("Swiggy is logged out in the bot's Chrome: log in there again (Hermes desktop).")
+        return page
+
+    def orders(self) -> list[dict]:
+        t = self.tab()
+        try:
+            page = self._check(t.open(ORDERS))
+            for _ in range(3):  # older orders hide behind a button
+                if not t.click_text("show more orders"):
+                    break
+                page = t.settle()
+            return read_orders(page, self.chat)
+        finally:
+            t.close()
+
+    def _search_page(self, t, dish: str) -> str:
+        page = self._check(t.open(SEARCH.format(q=urllib.parse.quote(dish))))
+        if t.click_text("Dishes"):
+            page = t.settle()
+        if "location" in page.lower() and "₹" not in page:
+            raise NotReady("Swiggy has no delivery address set in the bot's Chrome: set it there once.")
+        return page
+
+    def search(self, dish: str) -> list[dict]:
+        t = self.tab()
+        try:
+            return read_offers(self._search_page(t, dish), dish, self.chat)
+        finally:
+            t.close()
+
+    def add(self, offer: dict) -> dict:
+        t = self.tab()
+        try:
+            self._search_page(t, offer["item"])
+            if not t.click_text(offer["restaurant"], offer["item"], button="ADD"):
+                raise NotReady(f"Couldn't find the ADD button for {offer['item']} from {offer['restaurant']} any more.")
+            page = t.settle(timeout=8)
+            if re.search(r"items already in cart|start afresh|replace cart", page, re.I):
+                raise NotReady("Your Swiggy cart has items from another restaurant: clear it first, then ask again.")
+            page = self._check(t.open(CHECKOUT))
+            m = re.search(r"to pay\D{0,20}([\d,]+(?:\.\d+)?)", page, re.I)
+            return {"total": m[1].replace(",", "") if m else None, "text": page[:3000],
+                    "in_cart": offer["item"].lower() in page.lower()}
+        finally:
+            t.close()

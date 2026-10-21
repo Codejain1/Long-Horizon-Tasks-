@@ -115,7 +115,25 @@ Evidence from the code and from the live Hermes memory (read-only):
 
 **Not carried over:** terminal/coding sandbox, image generation, skills, Discord/Slack, kanban (unused in 30 days).
 
-**Switch-over:** waiting for the owner to run it (the permission check blocks my live deploys).
+**Switch-over: done 2026-10-21 20:56 UTC (owner ran `deploy/bot/switch.sh`).**
+- `owner-bot` and `owner-whatsapp-bridge` are active; `hermes-gateway` is stopped and disabled; WhatsApp is
+  connected on the same session.
+- Owner: replies feel instant.
+- They got the same joke 3 times. Temperature 0.2 is on purpose, for repeatable extraction; a would-be repeat is now
+  asked again at 0.9 (deployed with `deploy/bot/update.sh`).
+
+**Swiggy (M2, built, not yet tried live):**
+- `bot/cdp.py`: a stdlib WebSocket and DevTools client; the bot uses its own tab in the desktop Chrome.
+- `bot/food.py`: code opens order history, search (Dishes tab) and checkout, and clicks ADD by visible text. The
+  model only turns page text into lists; every restaurant, item and price is checked against the page. Code filters
+  veg and budget and sorts by price. It never presses pay or place order.
+- In the bot:
+  - "look at my swiggy orders" saves the orders, and the pattern goes into every reply's memory;
+  - a food order, after YES, shows the 3 cheapest real options; replying 1–3 fills the cart and reports the
+    checkout total;
+  - interim "Looking on Swiggy…" messages are sent while it works.
+- **Untested on real Swiggy pages** (tests use page text written to look like Swiggy's). The first live run will
+  show the page shapes.
 
 
 The owner redefined the product after the held-out ward result. It is a personal assistant on a small model. It:
