@@ -11,6 +11,7 @@ a chat case passes when no booking starts. Prints pass rates and reply-time medi
 from __future__ import annotations
 
 import argparse
+import re
 import statistics
 import sys
 import tempfile
@@ -55,6 +56,11 @@ TEST4 = [
     ("Order something for dinner", "food", False, {}),
     ("Plan a trip to Coorg from 14 Nov to 16 Nov", "trip", True, {"arrive": "14 nov", "leave": "16 nov"}),
 ]
+# test5: written 2026-10-22 after the owner's live chat (login asked in words, suggestions), before any run on these.
+LOGIN5 = [("please sign me in to redbus", "redbus"), ("can you log into ixigo for me", "ixigo"),
+          ("login on makemytrip using my google account", "makemytrip"), ("sign in to swiggy", "swiggy")]
+SUGGEST5 = ["what should I have for lunch?", "suggest something light for dinner", "I'm bored, any food ideas?",
+            "what do I usually order?"]
 CHAT3 = ["what's the capital of Australia?", "good morning!", "remind me what you can do", "any good cafes near me?"]
 
 
@@ -94,11 +100,36 @@ def main() -> int:
     for rep in range(a.reps):
         cases = ([c for c in F.CASES if c[0] == "test2"] + [("chat", m, None, None, None) for m in CHAT]
                  + [("test3", m, k, r, v) for m, k, r, v in TEST3] + [("chat3", m, None, None, None) for m in CHAT3]
-                 + [("test4", m, k, r, v) for m, k, r, v in TEST4])
+                 + [("test4", m, k, r, v) for m, k, r, v in TEST4]
+                 + [("login5", m, site, None, None) for m, site in LOGIN5] + [("suggest5", m, None, None, None) for m in SUGGEST5])
         for i, case in enumerate(cases):
             home = Path(tempfile.mkdtemp())
             store = F.seeded(home / "b.db")
-            bot = A.Assistant(home / "h", store, post=down)
+            tried = []
+
+            class NoBrowserLogin:  # the smoke test never touches the real Chrome
+                def waiting_for(self, chat):
+                    return None
+
+                def start(self, chat, site, phone):
+                    tried.append(site)
+                    return "logged_in"
+
+                def google(self, site, email):
+                    tried.append(site)
+                    return True
+            class NoBrowserSwiggy:  # nor Swiggy (a run without it opened the owner's real order history)
+                def orders(self):
+                    tried.append("swiggy-orders")
+                    return []
+
+                def search(self, dish):
+                    return []
+
+                def add(self, offer):
+                    raise AssertionError("never")
+            bot = A.Assistant(home / "h", store, post=down, logins=NoBrowserLogin(), swiggy=NoBrowserSwiggy())
+            store.set_fact("owner:phone", "9800000001")
             t = time.time()
             try:
                 reply = bot.handle({"channel": "smoke", "chat": "c", "text": case[1]})
@@ -108,6 +139,11 @@ def main() -> int:
             task = store._q("SELECT kind FROM tasks")
             if case[0] in ("chat", "chat3"):
                 ok = not task and not reply.startswith("ERROR")
+            elif case[0] == "login5":
+                ok = tried == [case[2]] and not task
+            elif case[0] == "suggest5":
+                ok = not task and tried in ([], ["swiggy-orders"]) and not reply.lstrip().startswith(("ERROR", "Sorry", "{")) and not re.search(
+                    r"\bI (found|searched|checked|ordered|booked)\b", reply, re.I)
             else:
                 ready = reply.endswith("(YES / no)")
                 ok = bool(task) and task[0][0] == case[2] and ready == case[3]
@@ -115,7 +151,7 @@ def main() -> int:
                     ok = values_ok(store, case[4])
             rows.append((case[0], ok, secs))
             print(f"{'ok  ' if ok else 'FAIL'} {secs:5.1f}s {case[1]!r} -> {reply[:110]!r}", flush=True)
-    for kind in ("test2", "chat", "test3", "chat3", "test4"):
+    for kind in ("test2", "chat", "test3", "chat3", "test4", "login5", "suggest5"):
         rs = [r for r in rows if r[0] == kind]
         print(f"{kind}: {sum(r[1] for r in rs)}/{len(rs)} pass")
     ts = sorted(r[2] for r in rows)

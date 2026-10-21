@@ -87,6 +87,41 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Live chat broke on 2026-10-21 23:00-23:10: diagnosis and fixes (2026-10-22)
+**What went wrong (from the traces):**
+- "What should I eat now?" got an invented "I found a vegetarian biriyani option".
+- "do login on goibibo" became a flight "from goibibo to login".
+- A booking form then trapped the owner's next message.
+
+**Fixes:**
+- New actions: `login` (any wording; Goibibo and MakeMyTrip added) and `suggest_food` (a named dish is an order).
+- Replies may never claim a search, booking or login.
+- Messages about login, cancel or "something else" leave an open form.
+- Site names are never places.
+- Free-text replies get a plain-text prompt: the JSON routing prompt had produced a raw-JSON reply.
+
+**Found by measuring before deploying:**
+- Forced JSON stalls in endless whitespace in about 30 % of answers (13 s, unusable). The server rejects disabling it
+  per request.
+- Fix: stop sequences on whitespace runs plus closing the cut-off JSON (5 of 7 recovered), and `details` limited to
+  the real field names (the model had invented fields until the limit).
+
+**Botsmoke (real model, 2 reps):**
+
+| Set | Result |
+|---|---|
+| test2 | 40/40 |
+| test3 | 20/20 |
+| test4 | 14/16 |
+| fresh login5 | 8/8 |
+| fresh suggest5 | 8/8 |
+| chat | 16/16 |
+
+- Reply time: p90 3.1 s, max 11 s.
+- The broken intermediate version scored test3 15/20 and was never deployed.
+- One botsmoke run opened the owner's real Swiggy order history: Swiggy wasn't stubbed in the test. Its scratch data
+  was deleted, and the test now stubs Swiggy and logins.
+
 ## Logins built in (2026-10-22, owner's request)
 **Phone + OTP:**
 - The owner sends `login phone <number>` once.

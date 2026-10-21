@@ -167,3 +167,51 @@ def test_conversation_login_otp_redacted_and_task_resumed(tmp_path):
     assert r.startswith("Logged in to Swiggy ✅") and "1. Veg Biryani — Paradise — ₹249" in r  # carried on
     stored = json.dumps(b.db.execute("SELECT * FROM log").fetchall() + b.db.execute("SELECT * FROM traces").fetchall())
     assert "482913" not in stored and "[login OTP]" in stored  # the OTP is used, never stored
+
+
+def decision(action, **kw):
+    return {"content": json.dumps({"action": action, "kind": kw.pop("kind", "none"), "details": kw.pop("details", {}),
+                                   "reply": kw.pop("reply", ""), **kw})}
+
+
+def test_live_failures_of_2026_10_21_replayed(tmp_path):
+    """The owner's real messages that went wrong: login asked in words, a stuck form, an invented 'I found'."""
+    from test_bot_assistant import Model, bot, say
+    started = []
+
+    class FakeLogin:
+        def waiting_for(self, chat):
+            return None
+
+        def start(self, chat, site, phone):
+            started.append(site)
+            return "logged_in"
+
+        def google(self, site, email):
+            started.append(("google", site))
+            return True
+
+    # 1. "do login on goibibo with that" -> the login steps (Google, since it's set up), not a flight booking
+    m = Model(decision("login", site="Goibibo"))
+    b = bot(tmp_path, m)
+    b.login = FakeLogin()
+    b.store.set_fact("owner:google", "me@gmail.com")
+    assert say(b, "google sign in done, do login on goibibo with that").startswith("Logged in to Goibibo with Google ✅")
+    assert started == [("google", "goibibo")]
+    m.replies.append(decision("login", site="Paytm"))
+    assert say(b, "login to paytm").startswith("I can log in to swiggy, ixigo, redbus, goibibo, makemytrip, zomato")
+
+    # 2. a form the owner never wanted: "i am just asking to sign in" leaves it, and goes to the login
+    m.replies += [decision("book", kind="flight", details={"from": "goibibo", "to": "login", "date": "today"}),
+                  decision("login", site="goibibo")]
+    r = say(b, "do login on goibibo")
+    assert "goibibo" not in json.dumps(b.store.task(1)["slots"]).lower()  # a site is never a place
+    r = say(b, "i am just asking to sign in on goibibo with the email i have signed in")
+    assert r.startswith("Logged in to Goibibo") and b.store.task(1)["status"] == "cancelled"
+
+    # 3. "what should I eat now?" -> suggestions, and the prompt forbids claiming a search
+    m.replies.append(decision("suggest_food"))
+    m.replies.append({"content": "Maybe a paneer wrap or your usual Subway sandwich? Want me to order one?"})
+    assert say(b, "What should I eat now?").startswith("Maybe a paneer wrap")
+    assert "Don't claim to have searched" in m.seen[-1][0][0]["content"]
+    assert "NEVER say you searched" in m.seen[-2][0][0]["content"]

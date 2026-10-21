@@ -38,27 +38,45 @@ PERSONA = """You are the owner's personal assistant on WhatsApp/Telegram. Today 
 Decide what to do with the owner's message and answer as JSON:
 - action "book": any booking or order (flight, train, bus, cab, hotel, food delivery, trip). Set kind, and in
   details ONLY what the owner said in this message (dates and people exactly as said, e.g. "friday", "me and mom").
-  Detail names per kind: {kinds}. Naming a dish to eat means ordering it (kind food) unless they want to go out.
+  Detail names per kind: {kinds}. A named dish ("want to eat chole bhature", "craving pizza", "order biryani")
+  is an order: book, kind food, even without the word order.
 - action "places": places to go out to eat or visit near them (cuisine if they said one).
+- action "login": they ask to log in / sign in to a site (put the site's name in site).
+- action "suggest_food": they ask WHAT to eat and name no dish ("what should I eat?", "any food ideas?").
 - action "read_swiggy_orders": ONLY when they ask to read, check or refresh their Swiggy order history.
 - action "reply": anything else; write the reply: brief and plain, like a person. You only get this one reply:
-  never say "one moment" or "let me check"; answer now. Never invent facts about the owner.
+  never say "one moment" or "let me check"; answer now. Never invent facts about the owner. NEVER say you searched,
+  found, booked, ordered or logged in to anything: only the other actions do that, a reply just talks.
 {memory}"""
-VALUE = {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "array", "items": {"type": "string"}}]}
+VALUE = {"anyOf": [{"type": "string", "maxLength": 120}, {"type": "number"},
+                   {"type": "array", "items": {"type": "string", "maxLength": 60}, "maxItems": 8}]}
+# only real detail names: with any name allowed the model invented fields until max_tokens (measured live)
+DETAILS = {"type": "object", "properties": {k: VALUE for k in dict.fromkeys(x for t in B.TEMPLATES.values() for x in t)},
+           "additionalProperties": False}
 DECIDE = {"type": "object", "properties": {
-    "action": {"type": "string", "enum": ["reply", "book", "places", "read_swiggy_orders"]},
+    "action": {"type": "string", "enum": ["reply", "book", "places", "login", "suggest_food", "read_swiggy_orders"]},
     "kind": {"type": "string", "enum": [*B.TEMPLATES, "none"]},
-    "details": {"type": "object", "additionalProperties": VALUE},
+    "details": DETAILS,
     "cuisine": {"type": "string"},
-    "reply": {"type": "string"}}, "required": ["action", "kind", "details", "reply"]}
+    "site": {"type": "string", "maxLength": 40},
+    "reply": {"type": "string", "maxLength": 1200}}, "required": ["action", "kind", "details", "reply"]}
+CHAT = """You are the owner's personal assistant on WhatsApp/Telegram. Today is {today}. Reply in plain text, briefly,
+like a person. Never invent facts about the owner; never say you searched, found, booked or ordered anything.
+{memory}"""
 UPDATE = {"type": "object", "properties": {"action": {"type": "string", "enum": ["update", "new"]},
-                                           "details": {"type": "object", "additionalProperties": VALUE}},
+                                           "details": DETAILS},
           "required": ["action", "details"]}
 FRESH_H = 12  # order history read this recently is reused, not re-read from Swiggy
 SET_PHONE = re.compile(r"^\s*(set\s+)?(my\s+)?log ?in\s+phone(\s+number)?\s*(is|to|:|=)?\s*(\+?[\d][\d\s-]{8,15}\d)\s*$", re.I)
 SET_GOOGLE = re.compile(r"^\s*(use\s+)?google\s+(for\s+)?log ?ins?\s*(with|:|=)?\s*([\w.+-]+@[\w-]+\.[\w.]+)\s*$", re.I)
 LOGIN_TO = re.compile(r"^\s*(log ?in|sign ?in)\s+(to|on|into)?\s*(%s)\b" % "|".join(login.SITES), re.I)
 OTP = re.compile(r"^\s*(\d[\s-]?){4,8}\s*$")
+# a message that is clearly not an answer to the open form's questions (live: "i am just asking to sign in" was
+# taken as flight details): the form is dropped and the message routed afresh
+LEAVE_FORM = re.compile(r"\b(log ?in|sign ?in|cancel|never ?mind|forget it|something else|stop that|not that|"
+                        r"i (was|am) just asking)\b", re.I)
+NOT_PLACES = {*login.SITES, "login", "log in", "signin", "sign in", "account", "google", "otp"}
+PLACE_SLOTS = {"from", "to", "city", "pickup", "drop", "area"}
 
 
 def _post(url: str, body: dict, timeout: float = 5) -> dict:
@@ -81,6 +99,8 @@ def ground(store: B.Store, kind: str, text: str, slots: dict) -> dict:
     - one weekday/relative day in the message ('friday', 'tomorrow') is turned into the date by code;
     - travellers the message names ('mom', 'me', a saved name) become the passengers when the model gave none."""
     low, out = text.lower(), {}
+    slots = {k: v for k, v in slots.items()
+             if not (k in PLACE_SLOTS and str(v).strip().lower() in NOT_PLACES)}  # "from goibibo to login" (live)
     digits = re.sub(r"[,\s]", "", low)
     words = set(re.findall(r"[a-z]+", low))
     for k, v in slots.items():
@@ -297,42 +317,59 @@ class Assistant:
                 B.finish(self.store, tid, "cancelled")
                 return "Cancelled."
             t = self.store.task(tid)
-            d = brain.extract([{"role": "system", "content": f"The owner is answering questions for a {t['kind']} "
+            if LEAVE_FORM.search(text):
+                self._pending(chat, clear=True)
+                B.finish(self.store, tid, "cancelled")
+                tid = None
+            d = {} if tid is None else brain.extract([{"role": "system", "content": f"The owner is answering questions for a {t['kind']} "
                                 f"booking with these details so far: {json.dumps(t['slots'])}. Detail names: "
                                 f"{', '.join(B.TEMPLATES[t['kind']])}. If the message adds or changes details, action "
                                 "update with only those (dates and people as said); if it is a different request, "
                                 "action new."}, {"role": "user", "content": text}], UPDATE, self.chat, max_tokens=400)
-            if d.get("action") == "update" and d.get("details"):
+            if tid and d.get("action") == "update" and d.get("details"):
                 slots = ground(self.store, t["kind"], text, d["details"])
                 return self._booking_reply(chat, B.update(self.store, tid, slots))
-            self._pending(chat, clear=True)
-            B.finish(self.store, tid, "cancelled")
+            if tid:
+                self._pending(chat, clear=True)
+                B.finish(self.store, tid, "cancelled")
         memory, cur = self._memory(text)
         kinds = "; ".join(f"{k}: {', '.join(v)}" for k, v in B.TEMPLATES.items())
         system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory, kinds=kinds)
         talk = [*self.recent(chat)[:-1], {"role": "user", "content": text}]
-        d = brain.extract([{"role": "system", "content": system}, *talk], DECIDE, self.chat, max_tokens=700)
+        d = brain.extract([{"role": "system", "content": system}, *talk], DECIDE, self.chat, max_tokens=450)
+        plain = CHAT.format(today=time.strftime("%A %d %B %Y"), memory=memory)  # free text: never the JSON prompt
         action = d.get("action", "reply")
         if action == "book" and d.get("kind") in B.TEMPLATES:
             slots = ground(self.store, d["kind"], text, d.get("details") or {})
             return self._booking_reply(chat, B.start(self.store, d["kind"], slots))
+        if action == "login":
+            site = re.sub(r"[^a-z]", "", str(d.get("site") or "").lower())
+            site = next((k for k in login.SITES if k in site or (site and site in k)), None) or next(
+                (k for k in login.SITES if k in text.lower()), None)
+            if not site:
+                return f"I can log in to {', '.join(login.SITES)}. Which one?"
+            return self._need_login(chat, site, None)
+        if action == "suggest_food":
+            return self._say(plain + "\n\nSuggest what the owner could eat now: 2-3 concrete dishes (and where, if "
+                             "their Swiggy pattern above shows it), fitting their taste, diet and mood. Don't claim to "
+                             "have searched or found anything; offer to order one.", talk)
         if action == "read_swiggy_orders":
             last = self.store.fact("swiggy:orders_read")
             stale = (not B.taste(self.store).get("orders")) if not last else last["age_h"] >= FRESH_H
             if stale or re.search(r"\b(refresh|re-?read|again|update|latest)\b", text, re.I):
                 return self._read_orders()
             # read recently: the model chose this on a suggestion question (seen live): answer from memory
-            return self._say(system + "\n\nAnswer the owner's message using what they order on Swiggy (above), their "
+            return self._say(plain + "\n\nAnswer the owner's message using what they order on Swiggy (above), their "
                              "taste and mood. Suggest concrete dishes, briefly.", talk)
         if action == "places":
             found = self.nearby(cur.get("location"), 3000, d.get("cuisine", ""), limit=8)
             if "error" in found:
                 return "Share your location on WhatsApp (attach → Location) and I'll look around you."
-            return self._say(system + "\n\nPick the 3 best for the owner from ONLY these real places (name, km, one "
+            return self._say(plain + "\n\nPick the 3 best for the owner from ONLY these real places (name, km, one "
                              f"line why, maps link):\n{json.dumps(found['places'])}", talk)
         reply = str(d.get("reply") or "").strip()
         if reply and reply in self._said(chat):  # low temperature repeats itself ("same joke 3x")
-            reply = self._say(system + "\n\nYou already gave this exact answer; give a different one.", talk, 0.9) or reply
+            reply = self._say(plain + "\n\nYou already gave this exact answer; give a different one.", talk, 0.9) or reply
         return reply or "Sorry, I didn't get that. Could you say it another way?"
 
     def _say(self, system: str, talk: list, temperature: float = 0.2) -> str:

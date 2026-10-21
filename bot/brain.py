@@ -23,6 +23,9 @@ def chat(messages: list, url: str = "", model: str = "", key_env: str = "",
         body["chat_template_kwargs"] = {"enable_thinking": False}
     if schema:  # vLLM 0.31 constrains decoding to the schema: only valid JSON of that shape can come out
         body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}}
+        # measured live: ~30 % of answers stall in endless whitespace (tabs/newlines) until max_tokens, 13 s; these
+        # stop it at once (the grammar allows whitespace anywhere, the server rejects disabling it per request)
+        body["stop"] = ["\n\n\n", "\t\t\t", "    \n"]
     headers = {"Content-Type": "application/json"}
     if key_env and os.environ.get(key_env):
         headers["Authorization"] = f"Bearer {os.environ[key_env]}"
@@ -53,8 +56,18 @@ def extract(messages: list, schema: dict, chat_fn=None, **kw) -> dict:
 
 def first_json(text: str) -> dict:
     """The first JSON object in a reply, ignoring anything around or after it (seen live: a list, then more text,
-    broke json.loads with "Extra data"). {} if there is none."""
+    broke json.loads with "Extra data"); an answer cut off by the whitespace stop is closed and read (measured: 5 of 7
+    cut-off answers recovered). {} if there is none."""
     s = text or ""
+    cut = s.rstrip().rstrip(",").rstrip()
+    if cut.startswith("{"):
+        for suffix in ("", "}", "}}", '"}', '"}}', "]}", "]}}", '"]}}'):
+            try:
+                obj = json.loads(cut + suffix)
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                continue
     for i, ch in enumerate(s):
         if ch == "{":
             for candidate in (s[i:], re.sub(r"(?<=\d),(?=\d{3}\b)", "", s[i:])):

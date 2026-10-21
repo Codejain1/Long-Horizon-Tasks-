@@ -289,7 +289,7 @@ def test_every_turn_leaves_a_trace_and_errors_alert_the_owner(tmp_path):
     (ts, chat, text, reply, ms, steps), = b.db.execute("SELECT * FROM traces").fetchall()
     steps = json.loads(steps)
     assert text.startswith("train") and reply == "Which class (SL, 3A, 2A, 1A)?"
-    assert steps[0]["step"] == "model" and steps[0]["schema"] == ["action", "kind", "details", "cuisine", "reply"]
+    assert steps[0]["step"] == "model" and steps[0]["schema"] == ["action", "kind", "details", "cuisine", "site", "reply"]
     assert '"action": "book"' in steps[0]["out"]
 
     import main as M
@@ -328,3 +328,17 @@ def test_an_unusable_forced_answer_is_retried_once(tmp_path):
         return {"content": '{"action": "book", "kind": "cab", "details": {"drop": "Koramangala     ' if len(seen) == 1
                 else json.dumps({"action": "reply", "kind": "none", "details": {}, "reply": "ok"})}
     assert brain.extract([], A.DECIDE, chat, max_tokens=700)["reply"] == "ok" and seen == [0.2, 0.5]
+
+
+def test_cut_off_answers_are_closed_and_read_and_free_text_never_gets_the_json_prompt(tmp_path):
+    import brain
+    cut = '{\n  "action": "book",\n  "kind": "cab",\n  "details": {\n    "pickup": "home",\n    "drop": "Koramangala"\n  }\n  '
+    assert brain.first_json(cut)["details"] == {"pickup": "home", "drop": "Koramangala"}  # stopped mid-whitespace
+    assert set(A.DETAILS["properties"]) >= {"dish", "max_total", "passengers", "checkin"} and not A.DETAILS["additionalProperties"]
+    m = Model(call("swiggy_orders"), {"content": "Maybe a wrap?"})
+    b = bot(tmp_path, m)
+    b.swiggy = FakeSwiggy()
+    b.store.set_fact("swiggy:orders_read", 20)
+    B.save_orders(b.store, "swiggy", FakeSwiggy().orders())
+    say(b, "what do I usually eat?")
+    assert "answer as JSON" not in m.seen[-1][0][0]["content"] and "plain text" in m.seen[-1][0][0]["content"]
