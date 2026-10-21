@@ -245,3 +245,22 @@ def test_order_history_feeds_recommendations(tmp_path):
     assert r.startswith("Saved 2 new orders") and "paneer biryani (2)" in r and "Meghana Foods (2)" in r
     say(b, "what should I eat tonight?")
     assert "What the owner orders on Swiggy (2 orders)" in m.seen[1][0][0]["content"]
+
+
+def test_suggestion_after_a_fresh_read_answers_instead_of_rereading(tmp_path):
+    m = Model(call("swiggy_orders"), call("swiggy_orders"), {"content": "How about a Veggie Delite from Subway?"})
+    b = bot(tmp_path, m)
+    sw = FakeSwiggy()
+    calls = []
+    sw.orders = lambda: calls.append(1) or FakeSwiggy().orders()
+    b.swiggy = sw
+    say(b, "look at my swiggy orders")
+    r = say(b, "so what should I eat at this time?")
+    assert r == "How about a Veggie Delite from Subway?" and calls == [1]  # Swiggy opened once
+    assert "using what they order" in m.seen[2][0][0]["content"]
+
+
+def test_dish_names_are_cleaned_for_the_pattern():
+    import booking as Bk
+    assert Bk.dish_name("Chilli Bean Patty Sandwich (15cm) + Coke(Save 31%) x 1") == "chilli bean patty sandwich"
+    assert Bk.dish_name("Veggie & Cheese Toastie x 2") == "veggie & cheese toastie"

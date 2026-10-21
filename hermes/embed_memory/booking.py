@@ -414,6 +414,14 @@ def save_orders(store: Store, platform: str, orders: list[dict]) -> dict:
     return {"saved": new, "order_history": taste(store)}
 
 
+def dish_name(item: str) -> str:
+    """'Chilli Bean Patty Sandwich (15cm) + Coke(Save 31%) x 1' -> 'chilli bean patty sandwich' (for counting)."""
+    s = str(item).split("+")[0]
+    s = re.sub(r"\([^)]*\)", "", s)
+    s = re.sub(r"\s*x\s*\d+\s*$", "", s.strip(), flags=re.I)
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
 def taste(store: Store) -> dict:
     """What the owner orders: top dishes and restaurants, typical spend (from done food tasks)."""
     from collections import Counter
@@ -423,7 +431,7 @@ def taste(store: Store) -> dict:
     for (raw,) in rows:
         sl = json.loads(raw)
         d = sl.get("dish")
-        dishes.update(x.lower() for x in (d if isinstance(d, list) else [d]) if x)
+        dishes.update(n for n in {dish_name(x) for x in (d if isinstance(d, list) else [d]) if x} if n)
         if sl.get("restaurant"):
             places[sl["restaurant"]] += 1
         if sl.get("max_total"):

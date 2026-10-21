@@ -41,8 +41,10 @@ just reply. Never invent facts about the owner. Today is {today}.
 
 PLACES_TOOL = {"name": "nearby_places", "description": "Real restaurants and cafes near the owner's shared location.",
                "parameters": {"type": "object", "properties": {"cuisine": {"type": "string"}}}}
-ORDERS_TOOL = {"name": "swiggy_orders", "description": "Read the owner's Swiggy order history (when they ask about their "
-               "past orders, or to learn what they like to eat).", "parameters": {"type": "object", "properties": {}}}
+ORDERS_TOOL = {"name": "swiggy_orders", "description": "Open Swiggy and read the owner's order history: ONLY when they ask "
+               "to read, check or refresh their Swiggy orders. For food suggestions just answer, using what they "
+               "order (given above).", "parameters": {"type": "object", "properties": {}}}
+FRESH_H = 12  # order history read this recently is reused, not re-read from Swiggy
 UPDATE_TOOL = {"name": "task_update", "description": "Details the owner just added or changed for the pending task.",
                "parameters": {"type": "object", "properties": {"slots": {"type": "object"}}, "required": ["slots"]}}
 
@@ -247,7 +249,14 @@ class Assistant:
             slots = ground(self.store, kind, text, call[1].get("slots") or {})
             return self._booking_reply(chat, B.start(self.store, kind, slots, call[1].get("site", "")))
         if call and call[0] == "swiggy_orders":
-            return self._read_orders()
+            last = self.store.fact("swiggy:orders_read")
+            stale = (not B.taste(self.store).get("orders")) if not last else last["age_h"] >= FRESH_H
+            if stale or re.search(r"\b(refresh|re-?read|again|update|latest)\b", text, re.I):
+                return self._read_orders()
+            # read recently: the model reached for the tool on a suggestion question (seen live): answer from memory
+            msg = self.chat([{"role": "system", "content": system + "\n\nAnswer the owner's message using what they "
+                              "order on Swiggy (above), their taste and mood. Suggest concrete dishes, briefly."},
+                             *self.recent(chat)[:-1], {"role": "user", "content": text}])
         if call and call[0] == "nearby_places":
             found = self.nearby(cur.get("location"), 3000, call[1].get("cuisine", ""), limit=8)
             if "error" in found:
@@ -277,6 +286,7 @@ class Assistant:
         if not orders:
             return "I opened your Swiggy orders but couldn't read any orders from the page."
         r = B.save_orders(self.store, "swiggy", orders)
+        self.store.set_fact("swiggy:orders_read", len(orders), "swiggy")
         t = r["order_history"]
         dishes = ", ".join(f"{d} ({n})" for d, n in t["top_dishes"][:4])
         places_ = ", ".join(f"{p} ({n})" for p, n in t["top_restaurants"][:3])
