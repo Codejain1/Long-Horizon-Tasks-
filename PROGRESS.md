@@ -120,6 +120,21 @@ The coding-ticket benchmarks are no longer the target.
   - The owner is logged in to Swiggy, ixigo and redbus. Zomato login fails from the server (likely a data-centre IP
     block); its menus are readable without login.
 
+- **2026-10-21 18:02, first live try and fixes:**
+  - **Seen:** the owner asked for the cheapest veg biryani on Swiggy. Hermes called `nearby_food` (OpenStreetMap)
+    twice and never opened the browser or `task_start`. The plugin's old food guidance said "use nearby_food for
+    every food recommendation".
+  - **Latency:** a turn took 65 s of Qwen thinking (6.3k characters of reasoning), then 38 s of `nearby_food`, then
+    7 s. The model server itself takes 0.4 s for a tiny request with no queue.
+  - **Measured:** `/no_think` gives 1.1–1.3 s per call vs 9–19 s, with the same tool choice. The forms bench was
+    also run with thinking off.
+  - **Deployed (owner ran it; backup `backup-plugin-embed_memory-20261021-180226`):**
+    - ordering, delivery and compare requests go to the app in the browser, with `task_start`;
+    - `nearby_food` is only for eating out;
+    - `save_orders` saves past orders from Swiggy's order history page, and food tasks return `order_history`
+      (top dishes, restaurants, usual spend);
+    - `/no_think` added.
+
 **What was built:**
 - **`hermes/embed_memory/booking.py`:** a task is a form (template per kind). The model fills only what the owner
   said. Code then:
