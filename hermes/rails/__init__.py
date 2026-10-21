@@ -46,6 +46,7 @@ OTHER_PAY = re.compile(r"\bcards?\b|credit card|debit card|card number|net ?bank
 UPI_OPT = re.compile(r"\bupi\b|\bvpa\b", re.I)
 PAY_BTN = re.compile(COMMIT.pattern + r"|verify (and |& )?pay|send (payment )?request|request (payment|money)|"
                      r"\bpay\s*(₹|rs|inr|now)", re.I)
+TYPING = re.compile(r"\b(type|fill|send_keys|insert_text|press_sequentially|keyboard)\w*\s*\(", re.I)
 UPI_ID = re.compile(r"^[\w.\-]{2,256}@[a-z][a-z0-9]{1,63}$", re.I)
 PAY_FIELD = re.compile(r"\bcvv\b|\bcvc\b|\botp\b|one.time.password|upi ?pin|\bmpin\b|card ?number|expiry|"
                        r"name on card", re.I)
@@ -127,6 +128,10 @@ def decide(tool: str, args: dict[str, Any], state: dict) -> dict | None:
     if tool in INTERACT and (_luhn_card(typed) or (typed and PAY_FIELD.search(label))):
         return {"action": "block", "message": "Blocked by rails: Hermes never enters card numbers, CVV, OTP or UPI PIN. "
                                               "Send the owner the payment link instead."}
+
+    if tool in SCRIPTED and (_luhn_card(text) or (TYPING.search(text) and PAY_FIELD.search(text))):
+        return {"action": "block", "message": "Blocked by rails: scripted browser code may not type card numbers, CVV, OTP "
+                                              "or UPI PIN."}
 
     upi = upi_id()
     travel, food = _site(url, TRAVEL), _site(url, FOOD)

@@ -117,3 +117,11 @@ def test_upi_handoff_on_payment_pages(tmp_path, monkeypatch):
     assert act("browser_click", {"ref": "@e12"}, sw, SWIGGY_CART) == "approve"
     assert act("browser_click", {"ref": "@e2"}, sw, RAZORPAY) == "block"        # cards: never
     assert act("browser_click", {"ref": "@e6"}, sw, RAZORPAY) == "block"        # PhonePe app: still blocked
+
+
+def test_scripted_browser_code_cannot_type_payment_secrets(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "HOME", tmp_path)
+    assert act("browser_exec", {"code": "fill('#card', '4111 1111 1111 1111')"}) == "block"
+    assert act("browser_exec", {"code": "type_text(find('Enter OTP'), '482913')"}) == "block"
+    assert act("browser_exec", {"code": "goto('https://www.swiggy.com'); print(page_text())"}) == "allow"
+    assert act("browser_exec", {"code": "print('OTP sent?' in page_text())"}) == "allow"  # reading is fine
