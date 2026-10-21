@@ -87,7 +87,37 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
-## New direction: the booking assistant (2026-10-21)
+## Our bot replaces Hermes (2026-10-22, owner's decision: "replace", keep the jobs and extras)
+**Why:**
+- On Qwen3-14B, Hermes's free-roaming agent kept picking the wrong tool or handing work back to the owner.
+- Code-run steps were measured better: forms 85 % vs plain 32 %.
+- Hermes took 60–110 s per reply, mostly Qwen's thinking.
+
+**Inventory (read-only):**
+- Owner chats were rare: 4 on WhatsApp, 1 on Telegram.
+- 8 cron jobs did most of the work: 619 runs, all delivered to Telegram, on OpenRouter Nemotron (free).
+- WhatsApp runs through Hermes's standalone Node bridge.
+
+**Built (`bot/`, `docs/BOT.md`, 220 tests pass):**
+- channels;
+- the assistant: one model call per step, bookings as forms;
+- grounding: drops details the message doesn't support, code resolves weekdays and named travellers, tool calls
+  written as text are read;
+- the scheduler with the 8 jobs (script / monitor seeded from Hermes / model), all on Qwen now;
+- the switch and rollback kit.
+
+**Real-model check (`bench/botsmoke.py`, memory off, 2 reps):**
+- **reply time median 1.6 s, max 2.4 s** (Hermes: 60–110 s);
+- chat 16/16;
+- test2 (shaped the grounding) 38/40;
+- **held-out test3 18/20 with values checked**. Its 2 failures (comma numbers, two-weekday ranges) were then fixed,
+  so test3 is now seen too.
+
+**Not carried over:** terminal/coding sandbox, image generation, skills, Discord/Slack, kanban (unused in 30 days).
+
+**Switch-over:** waiting for the owner to run it (the permission check blocks my live deploys).
+
+
 The owner redefined the product after the held-out ward result. It is a personal assistant on a small model. It:
 - books flights, trains, buses, cabs and hotels, and plans trips around a ticket;
 - recommends and orders food, comparing the same order across platforms on price and reviews;
@@ -331,6 +361,12 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-22: Hermes is replaced by our bot (owner's call). The bot keeps Hermes's WhatsApp session, env file,
+  scripts and memory files, and copies the bridge to `/opt/bot-bridge`, so Hermes's install can be removed later.
+- 2026-10-22: the cron jobs run on the local Qwen instead of free OpenRouter Nemotron (rate-limited in the logs, and
+  one model to keep alive).
+- 2026-10-22: WhatsApp owner filtering is the bridge's own (LID-aware) allowlist. A phone-number check in the bot
+  would drop the owner's `@lid` messages.
 - 2026-10-21: the target is the booking assistant (owner's spec). Tasks are forms with code-checked slots, not open
   goals, because the measured small-model failures were mostly misreading the task or what "done" means.
 - 2026-10-21: only habit slots become defaults (from, passengers, class, seat, cab type, diet...). Destination,
