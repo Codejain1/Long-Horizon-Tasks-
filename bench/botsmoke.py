@@ -42,6 +42,19 @@ TEST3 = [
      {"passengers": ["kartik", "rahul"], "class": "2a", "date": "4 dec"}),
     ("Cab to the airport tomorrow at 6am", "cab", True, {"drop": "airport"}),
 ]
+# test4: written 2026-10-22 with the forced-JSON router, before any run on these.
+TEST4 = [
+    ("Need a bus from Pune to Goa this Friday night for me and Rahul, under 1,800", "bus", True,
+     {"date": "friday", "passengers": ["kartik", "rahul"], "max_price": 1800}),
+    ("Book a flight to Jaipur", "flight", False, {}),
+    ("Cab from home to Koramangala at 8pm today", "cab", True, {"pickup": "home", "drop": "koramangala"}),
+    ("I'm craving a margherita pizza, budget 450", "food", True, {"dish": "margherita pizza", "max_total": 450}),
+    ("Hotel in Mysore for mom from 9 Nov to 11 Nov under 2,500 a night", "hotel", True,
+     {"guests": ["sunita"], "checkin": "9 nov", "checkout": "11 nov", "max_price_per_night": 2500}),
+    ("Train to Hubli tomorrow in sleeper", "train", True, {"date": "tomorrow", "class": "sl|sleeper"}),
+    ("Order something for dinner", "food", False, {}),
+    ("Plan a trip to Coorg from 14 Nov to 16 Nov", "trip", True, {"arrive": "14 nov", "leave": "16 nov"}),
+]
 CHAT3 = ["what's the capital of Australia?", "good morning!", "remind me what you can do", "any good cafes near me?"]
 
 
@@ -53,6 +66,8 @@ def values_ok(store, want: dict) -> bool:
         g = got.get(k)
         if k in B.DATES:
             ok = g == B._iso(v, date.today())
+        elif isinstance(v, str) and "|" in v:
+            ok = g is not None and any(x in str(g).lower() for x in v.split("|"))
         elif isinstance(v, list):
             ok = isinstance(g, list) and sorted(str(x).split()[0].lower() for x in g) == sorted(v)
         elif isinstance(v, (int, float)):
@@ -78,7 +93,8 @@ def main() -> int:
     rows = []
     for rep in range(a.reps):
         cases = ([c for c in F.CASES if c[0] == "test2"] + [("chat", m, None, None, None) for m in CHAT]
-                 + [("test3", m, k, r, v) for m, k, r, v in TEST3] + [("chat3", m, None, None, None) for m in CHAT3])
+                 + [("test3", m, k, r, v) for m, k, r, v in TEST3] + [("chat3", m, None, None, None) for m in CHAT3]
+                 + [("test4", m, k, r, v) for m, k, r, v in TEST4])
         for i, case in enumerate(cases):
             home = Path(tempfile.mkdtemp())
             store = F.seeded(home / "b.db")
@@ -95,11 +111,11 @@ def main() -> int:
             else:
                 ready = reply.endswith("(YES / no)")
                 ok = bool(task) and task[0][0] == case[2] and ready == case[3]
-                if ok and case[0] == "test3":
+                if ok and case[0] in ("test3", "test4"):
                     ok = values_ok(store, case[4])
             rows.append((case[0], ok, secs))
             print(f"{'ok  ' if ok else 'FAIL'} {secs:5.1f}s {case[1]!r} -> {reply[:110]!r}", flush=True)
-    for kind in ("test2", "chat", "test3", "chat3"):
+    for kind in ("test2", "chat", "test3", "chat3", "test4"):
         rs = [r for r in rows if r[0] == kind]
         print(f"{kind}: {sum(r[1] for r in rs)}/{len(rs)} pass")
     ts = sorted(r[2] for r in rows)

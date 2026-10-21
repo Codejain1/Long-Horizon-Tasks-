@@ -242,7 +242,7 @@ def test_food_problems_are_said_plainly(tmp_path):
 
 
 def test_order_history_feeds_recommendations(tmp_path):
-    m = Model(call("swiggy_orders"), {"content": "Try the paneer biryani again?"})
+    m = Model(call("swiggy_orders"), reply("Try the paneer biryani again?"))
     b = bot(tmp_path, m)
     b.swiggy = FakeSwiggy()
     r = say(b, "look at my swiggy orders")
@@ -317,3 +317,14 @@ def test_every_turn_leaves_a_trace_and_errors_alert_the_owner(tmp_path):
     assert any(c == "owner-chat" and t.startswith("⚠ bot error on 'hi'") for c, t in ch.out)
     (*_, steps), = broken.db.execute("SELECT * FROM traces").fetchall()
     assert json.loads(steps)[-1]["step"] == "error"
+
+
+def test_an_unusable_forced_answer_is_retried_once(tmp_path):
+    import brain
+    seen = []
+
+    def chat(messages, **kw):
+        seen.append(kw.get("temperature", 0.2))
+        return {"content": '{"action": "book", "kind": "cab", "details": {"drop": "Koramangala     ' if len(seen) == 1
+                else json.dumps({"action": "reply", "kind": "none", "details": {}, "reply": "ok"})}
+    assert brain.extract([], A.DECIDE, chat, max_tokens=700)["reply"] == "ok" and seen == [0.2, 0.5]

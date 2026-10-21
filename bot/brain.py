@@ -42,8 +42,13 @@ def extract(messages: list, schema: dict, chat_fn=None, **kw) -> dict:
     """Structured answer from the model, forced to `schema` (no hand parsing of free text: that was the biggest
     source of live bugs: commas in numbers, calls written as text, a list followed by more text). The parse below
     only matters for endpoints that ignore response_format."""
-    msg = (chat_fn or chat)(messages, schema=schema, **kw)
-    return first_json(msg.get("content") or "")
+    fn = chat_fn or chat
+    got = first_json(fn(messages, schema=schema, **kw).get("content") or "")
+    if not all(k in got for k in schema.get("required", [])):
+        # seen live: one run kept generating inside the JSON until max_tokens (29 s, nothing usable): retry once,
+        # a little warmer so it doesn't take the same path
+        got = first_json(fn(messages, schema=schema, **{**kw, "temperature": 0.5}).get("content") or "")
+    return got
 
 
 def first_json(text: str) -> dict:

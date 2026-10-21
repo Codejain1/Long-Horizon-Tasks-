@@ -276,7 +276,7 @@ class Assistant:
                                 f"booking with these details so far: {json.dumps(t['slots'])}. Detail names: "
                                 f"{', '.join(B.TEMPLATES[t['kind']])}. If the message adds or changes details, action "
                                 "update with only those (dates and people as said); if it is a different request, "
-                                "action new."}, {"role": "user", "content": text}], UPDATE, self.chat)
+                                "action new."}, {"role": "user", "content": text}], UPDATE, self.chat, max_tokens=400)
             if d.get("action") == "update" and d.get("details"):
                 slots = ground(self.store, t["kind"], text, d["details"])
                 return self._booking_reply(chat, B.update(self.store, tid, slots))
@@ -286,7 +286,7 @@ class Assistant:
         kinds = "; ".join(f"{k}: {', '.join(v)}" for k, v in B.TEMPLATES.items())
         system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory, kinds=kinds)
         talk = [*self.recent(chat)[:-1], {"role": "user", "content": text}]
-        d = brain.extract([{"role": "system", "content": system}, *talk], DECIDE, self.chat)
+        d = brain.extract([{"role": "system", "content": system}, *talk], DECIDE, self.chat, max_tokens=700)
         action = d.get("action", "reply")
         if action == "book" and d.get("kind") in B.TEMPLATES:
             slots = ground(self.store, d["kind"], text, d.get("details") or {})
