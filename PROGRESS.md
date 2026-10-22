@@ -87,6 +87,22 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Location fixed, Swiggy data feed, option cards (2026-10-23, deployed `/opt/bot-20261022-233026`)
+**Found live:**
+- The phone sent its location (Jaito, Punjab), but the bot answered "near Whitefield" from old memory.
+- **Swiggy had been searching its default location, Mumbai (19.0748, 72.8856)**, because no address was set in the
+  bot's Chrome. So every past search was in the wrong city.
+
+**Fixes:**
+- The phone's location gets a place name (OpenStreetMap reverse lookup, cached per ~1 km) and comes first in the
+  prompt.
+- Swiggy is searched through its **own data feed at the owner's location**: `/dapi/restaurants/search/v3`, with the
+  structure checked live (DishGroup, price in paise, isVeg, inStock, image, `/restaurants/<slug>-<id>`). No model
+  page-reading, and each price is exact to its dish.
+- "Nothing here" is said plainly: at Jaito the feed returned no restaurants.
+- Page reading stays only as a fallback.
+- The app shows option **cards**: photo, veg dot, restaurant + area, price, rating, Google note.
+
 ## iPhone app, first version (2026-10-23, owner chose Expo Go)
 **Why an app:** WhatsApp can't ask for location, voice is clumsy, and choices are polls only. The owner uses an
 iPhone; a native app is the goal, starting in Expo Go (no Xcode, no 7-day reinstalls, instant updates while
