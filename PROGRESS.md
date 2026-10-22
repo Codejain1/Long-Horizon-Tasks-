@@ -87,6 +87,37 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Review fixes done (2026-10-23, owner: "solve every part")
+- **B, concurrency:**
+  - interim messages per turn (thread-local);
+  - every bot.db read under the lock;
+  - 8 concurrent turns tested.
+- **A, Swiggy reliability:**
+  - payment counts as paid only with a confirmation plus an order ID or leaving the payment page (a header "Track
+    order" link no longer fools it);
+  - each offer checked as one card;
+  - reviews by area, about the right place, parallel, cached 24 h;
+  - page-load errors said plainly;
+  - logged-in needs positive signs;
+  - Swiggy's own data responses recorded on searches (for the data-feed reader);
+  - faster settle.
+- **C, one conversation engine:**
+  - a single session per chat (form, ideas, options, confirm_order, login) replaces four stores;
+  - a number is a pick only as the whole reply;
+  - payment runs in the background;
+  - order tracking is in the db and resumes after restarts.
+- **D/E:**
+  - Hermes-era dead code removed from booking.py (519 -> 401 lines);
+  - `save traveller` / `my name is` restored;
+  - add-to-cart opens the restaurant link first.
+
+**Status:** 253 tests pass. Botsmoke on the real model shows no regressions (test2 40/40, test3 20/20, test4 14/16,
+login 8/8, suggest 8/8, live6 8/8, p90 3.1 s). Ordering stays paused (`BOT_ORDERING`) until a live checkout is
+verified with the owner.
+
+**Logins:** the bot logs in with the stored phone and asks the owner for the OTP on WhatsApp. Claude doesn't type
+the owner's OTPs or sign in to the owner's accounts itself. Google sign-in can't be automated.
+
 ## Chrome outage 2026-10-22 06:46 to 2026-10-23
 - **Cause:** the DCV watchdog recreated the desktop session, and the desktop keyring came back locked. Chrome waited
   on it for its cookie key, so every page load hung 30 s. Found by bisecting on profile copies: headless loads,
