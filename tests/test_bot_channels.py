@@ -59,3 +59,50 @@ def test_deliver_routes_by_prefix():
             got.append((chat, text))
     C.deliver({"telegram": Ch()}, "telegram:1000000001", "digest")
     assert got == [("1000000001", "digest")]
+
+
+def test_telegram_choices_are_buttons_and_whatsapp_gets_the_numbered_text():
+    http = FakeHTTP([])
+    tg = C.Telegram(token="T", allowed="42", http=http)
+    tg.send_choice("42", "Best options:\n1. Veg Biryani ₹249", ["1. Veg Biryani ₹249", "No"])
+    body = http.calls[-1][1]
+    assert body["reply_markup"]["keyboard"] == [[{"text": "1. Veg Biryani ₹249"}], [{"text": "No"}]]
+    assert body["reply_markup"]["one_time_keyboard"] is True
+    wa_http = FakeHTTP([])
+    C.WhatsApp(http=wa_http).send_choice("x@lid", "Best options:\n1. Veg Biryani ₹249", ["1. Veg Biryani ₹249"])
+    assert wa_http.calls[-1][1]["message"].endswith("1. Veg Biryani ₹249")
+
+
+def test_main_sends_choices_as_buttons():
+    import sys as _s
+    from pathlib import Path as _P
+    _s.path.insert(0, str(_P(__file__).parent.parent / "bot"))
+    import assistant as A
+    import main as M
+
+    class Ch:
+        name = "telegram"
+
+        def __init__(self):
+            self.inbox, self.plain, self.choices = [{"channel": "telegram", "chat": "42", "text": "hi"}], [], []
+
+        def poll(self):
+            msgs, self.inbox = self.inbox, []
+            return msgs
+
+        def send(self, chat, text):
+            self.plain.append(text)
+
+        def send_choice(self, chat, text, choices):
+            self.choices.append(choices)
+
+    class Bot:
+        def handle(self, m, notify=None):
+            return A.Reply("Pick one", ["1. A", "2. B"])
+
+    class Sched:
+        def tick(self):
+            pass
+    ch = Ch()
+    M.serve({"telegram": ch}, Bot(), Sched(), once=True, check=lambda: True)
+    assert ch.choices == [["1. A", "2. B"]] and ch.plain == []

@@ -157,11 +157,10 @@ def test_conversation_login_otp_redacted_and_task_resumed(tmp_path):
     m = Model(call("task_start", kind="food", slots={"dish": "veg biryani", "max_total": 400}))
     b = bot(tmp_path, m)
     b.swiggy, b.login = OutThenIn(OFFERS), FakeLogin()
-    assert "login phone" in (say(b, "order veg biryani under 400"), say(b, "yes"))[1]  # no phone yet
+    assert "login phone" in say(b, "order veg biryani under 400")  # no phone yet
     assert say(b, "login phone +91 98000 00001").startswith("Saved: I'll use your number ending 0001")
     m.replies.append(call("task_start", kind="food", slots={"dish": "veg biryani", "max_total": 400}))
-    say(b, "order veg biryani under 400")
-    r = say(b, "yes")
+    r = say(b, "order veg biryani under 400")
     assert "sent an OTP to your number ending 0001" in r
     r = say(b, "482913")
     assert r.startswith("Logged in to Swiggy ✅") and "1. Veg Biryani — Paradise — ₹249 on Swiggy" in r  # carried on

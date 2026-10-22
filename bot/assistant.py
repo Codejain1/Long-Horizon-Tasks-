@@ -99,6 +99,15 @@ NOT_PLACES = {*login.SITES, "login", "log in", "signin", "sign in", "account", "
 PLACE_SLOTS = {"from", "to", "city", "pickup", "drop", "area"}
 
 
+class Reply(str):
+    """A reply with tap options: the text (which also lists them, numbered, for channels without buttons) and the
+    choices the channel shows as buttons / a poll. The owner's tap comes back as the choice's text."""
+    def __new__(cls, text: str, choices: list[str] | None = None):
+        r = super().__new__(cls, text)
+        r.choices = list(choices or [])
+        return r
+
+
 def _post(url: str, body: dict, timeout: float = 5) -> dict:
     req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -382,7 +391,7 @@ class Assistant:
             return self._need_login(chat, m[3].lower(), None)
         self._remember(chat, text)
         sess = self._session(chat)
-        if sess and sess["mode"] in ("ideas", "options", "confirm_order"):
+        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order"):
             r = self._stage(chat, text, sess)
             if r is not None:
                 return r
@@ -546,30 +555,50 @@ class Assistant:
         ideas = [i for i in got.get("ideas", []) if i.get("dish")][:3]
         if not ideas:
             return "Tell me a dish or two you feel like and I'll compare them across the apps."
-        self._start(chat, "ideas", 1, ideas=ideas)
-        return ("\n".join(f"{n}. {i['dish']} — {i['why']}" for n, i in enumerate(ideas, 1))
-                + "\nReply 1, 2 or 3 and I'll compare it across the food apps near you, with reviews.")
+        labels = [f"{n}. {i['dish']}" for n, i in enumerate(ideas, 1)]
+        self._start(chat, "ideas", 1, ideas=ideas, labels=labels)
+        return Reply("\n".join(f"{n}. {i['dish']} — {i['why']}" for n, i in enumerate(ideas, 1))
+                     + "\nTap one (or reply its number) and I'll compare it across the food apps, with reviews.", labels)
+
+    ACTIONS = {"link": "Send me the link", "cart": "Add to my Swiggy cart", "order": "Order it for me"}
 
     def _stage(self, chat: str, text: str, st: dict) -> str | None:
-        """The owner answering a list the bot sent (ideas or options) or an order to confirm; None = not an answer
-        (the session ends and the message is understood afresh). A number counts only as the whole reply: live,
-        "2 tickets to Mysore" was taken as "pick 2"."""
+        """The owner answering choices the bot sent (a tap arrives as the choice's text; a number works too) or a
+        payment to confirm. None = not an answer: the session ends and the message is understood afresh. A number
+        counts only as the whole reply (live: "2 tickets to Mysore" was taken as "pick 2")."""
+        t = text.strip()
         if st["mode"] == "confirm_order":
             self._end(chat)
-            if YES.match(text) or (YES_IN.search(text) and not NO_IN.search(text)):
+            if t.lower().startswith("yes") or YES.match(t) or (YES_IN.search(t) and not NO_IN.search(t)):
                 return self._place(chat, st)
-            if NO.match(text):
+            if t.lower() == "no" or NO.match(t):
                 return "Okay, not ordering. It's still in your Swiggy cart."
             return None
-        if st["mode"] == "ideas":
-            m = re.fullmatch(r"\s*#?([1-3])\s*[.!]?\s*", text)
+        if st["mode"] == "act":
+            # the button's text or a short answer only: "order veg biryani under 400" is a new request, not "order it"
+            how = next((k for k, label in self.ACTIONS.items() if t.lower() == label.lower() or
+                        re.fullmatch(rf"(send (me )?the |the |a )?{k}( it| me| please)?[.!]?", t, re.I)), None)
             self._end(chat)
-            if m and int(m[1]) <= len(st["ideas"]):
-                return self._compare(chat, {"dish": st["ideas"][int(m[1]) - 1]["dish"]}, None)
+            return self._choose(chat, st["offer"], how, st.get("task")) if how else None
+        labels = [x.lower() for x in st.get("labels", [])]
+        n = labels.index(t.lower()) + 1 if t.lower() in labels else None
+        m = re.fullmatch(r"\s*#?([1-3])\s*[,.]?\s*(link|cart|order|order it|for me|place it|place)?\s*[.!]?\s*", t, re.I)
+        if n is None and m:
+            n = int(m[1])
+        if st["mode"] == "ideas":
+            self._end(chat)
+            if n and n <= len(st["ideas"]):
+                return self._compare(chat, {"dish": st["ideas"][n - 1]["dish"]}, None)
             return None
-        m = re.fullmatch(r"\s*#?([1-3])\s*[,.]?\s*(link|cart|order|order it|for me|place it|place)?\s*[.!]?\s*", text, re.I)
-        if m and int(m[1]) <= len(st["options"]):
-            return self._choose(chat, st["options"][int(m[1]) - 1], m[2] or "", st.get("task"))
+        if n and n <= len(st["options"]):
+            offer, how = st["options"][n - 1], (m[2] if m else None)
+            if how:  # "1 link" typed in one go
+                self._end(chat)
+                return self._choose(chat, offer, how, st.get("task"))
+            acts = ["link", "cart"] + (["order"] if ORDERING else [])
+            self._start(chat, "act", 1, offer=offer, task=st.get("task"))
+            return Reply(f"{offer['item']} from {offer['restaurant']}, ₹{offer['price']:g}. What should I do?",
+                         [self.ACTIONS[a] for a in acts])
         self._end(chat)
         return None
 
@@ -600,7 +629,8 @@ class Assistant:
         t0 = time.time()
         self._add_reviews(top)
         self._step("reviews", ms=int(1000 * (time.time() - t0)), n=len(top))
-        self._start(chat, "options", 1, options=top, task=tid)
+        labels = [f"{n}. {o['item']} ₹{o['price']:g}" for n, o in enumerate(top, 1)]
+        self._start(chat, "options", 1, options=top, task=tid, labels=labels)
         lines = []
         for n, o in enumerate(top, 1):
             g = o.get("google")
@@ -610,10 +640,7 @@ class Assistant:
                          + (f" ★{o['rating']}" if o.get("rating") else "") + (f" ({o['eta']})" if o.get("eta") else "")
                          + rev)
         tail = f"\n(Couldn't read {', '.join(failed)} this time.)" if failed else ""
-        return (note + "Best options:\n" + "\n".join(lines) + tail
-                + ("\nReply with a number plus 'order' (I order it, you approve the UPI request), 'cart' (I fill your "
-                   "cart) or 'link' (you order), e.g. '1 order'." if ORDERING else
-                   "\nReply with a number plus 'cart' (I fill your Swiggy cart) or 'link' (you order), e.g. '1 cart'."))
+        return Reply(note + "Best options:\n" + "\n".join(lines) + tail + "\nTap one (or reply its number).", labels)
 
     def _prepare_order(self, chat: str, offer: dict, tid) -> str:
         """Cart, then the checkout page read back (items, total, address) for the owner's YES: nothing is paid yet."""
@@ -632,8 +659,9 @@ class Assistant:
             return (f"The total is ₹{summary['total']:g}, over your order cap of ₹{cap}. It's in your Swiggy cart; pay "
                     "there, or send 'order cap <amount>' to raise the cap.")
         self._start(chat, "confirm_order", 0.25, summary=summary, upi=upi, task=tid)
-        return (f"Order {', '.join(summary['items']) or offer['item']} from {offer['restaurant']}, delivered to "
-                f"{summary['address']}, total ₹{summary['total']:g}, paid by a UPI request to {upi}? (YES / no)")
+        return Reply(f"Order {', '.join(summary['items']) or offer['item']} from {offer['restaurant']}, delivered to "
+                     f"{summary['address']}, total ₹{summary['total']:g}, paid by a UPI request to {upi}?",
+                     [f"Yes, pay ₹{summary['total']:g}", "No"])
 
     def _place(self, chat: str, st: dict) -> str:
         """Payment runs in the background (the owner approves in their UPI app; the chat stays free); the result
@@ -774,4 +802,11 @@ class Assistant:
             return " ".join(dict.fromkeys(asks))
         if v.get("missing"):
             return " ".join(ASK.get(s, f"What's the {s.replace('_', ' ')}?") for s in v["missing"])
-        return v["summary"] + " (YES / no)"
+        # complete: searching is harmless, so no "go ahead?" (owner, 2026-10-23); a YES is asked only before paying
+        tid = v["task_id"]
+        r = B.confirm(self.store, tid)
+        self._end(chat)
+        if v["kind"] == "food":
+            return self._compare(chat, r["slots"], tid)
+        return (f"Got it: {self._summary_line(r['slots'], v['kind'])}. Searching {v['kind']}s on the sites isn't built "
+                "yet, so I've saved it; food is the part that works end to end today.")

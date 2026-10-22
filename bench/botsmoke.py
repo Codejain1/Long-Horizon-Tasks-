@@ -158,7 +158,8 @@ def main() -> int:
                 ok = not task and tried in ([], ["swiggy-orders"]) and not reply.lstrip().startswith(("ERROR", "Sorry", "{")) and not re.search(
                     r"\bI (found|searched|checked|ordered|booked)\b", reply, re.I)
             else:
-                ready = reply.endswith("(YES / no)")
+                # complete = acted on at once (no "go ahead?" since 2026-10-23): the task got confirmed
+                ready = bool(store._q("SELECT 1 FROM tasks WHERE status IN ('confirmed', 'done', 'failed')"))
                 ok = bool(task) and task[0][0] == case[2] and ready == case[3]
                 if ok and case[0] in ("test3", "test4"):
                     ok = values_ok(store, case[4])

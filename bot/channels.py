@@ -52,6 +52,11 @@ class WhatsApp:
     def send(self, chat: str, text: str) -> None:
         self.http(self.url + "/send", {"chatId": chat, "message": text})
 
+    def send_choice(self, chat: str, text: str, choices: list[str]) -> None:
+        """WhatsApp: the text already lists the choices numbered (a reply with the number or the text works).
+        Polls via the bridge's /send-poll come once their votes are checked to arrive back as messages."""
+        self.send(chat, text)
+
     def healthy(self) -> bool:
         try:
             return (self.http(self.url + "/health", timeout=5) or {}).get("status") == "connected"
@@ -87,7 +92,13 @@ class Telegram:
 
     def send(self, chat: str, text: str) -> None:
         for i in range(0, len(text), 4000):  # Telegram's limit is 4096 characters
-            self._api("sendMessage", chat_id=chat, text=text[i:i + 4000])
+            self._api("sendMessage", chat_id=chat, text=text[i:i + 4000], reply_markup={"remove_keyboard": True})
+
+    def send_choice(self, chat: str, text: str, choices: list[str]) -> None:
+        """Buttons under the message: a tap sends the button's text back as the owner's message."""
+        self._api("sendMessage", chat_id=chat, text=text[:4000],
+                  reply_markup={"keyboard": [[{"text": c}] for c in choices], "one_time_keyboard": True,
+                                "resize_keyboard": True})
 
 
 def deliver(channels: dict, target: str, text: str) -> None:

@@ -69,11 +69,10 @@ def test_booking_conversation_runs_in_code(tmp_path):
     assert "- keep every dish under ₹200. (corrected 2x)" in sys_prompt
     assert m.seen[0][1] is A.DECIDE  # forced JSON, no tool calling
     r = say(b, "3A")
-    assert r.startswith("Train:") and "class 3A" in r and "passengers Kartik" in r and r.endswith("(YES / no)")
     assert m.seen[1][1] is A.UPDATE
-    r = say(b, "yes")
-    assert r.startswith("Confirmed ✅") and len(m.seen) == 2  # YES needs no model call
-    assert b.store.task(1)["status"] == "confirmed" and b._pending("c1") is None
+    # complete: no "Go ahead? (YES / no)" (owner, 2026-10-23); travel search isn't built, said plainly
+    assert r.startswith("Got it: Train:") and "class 3A" in r and "passengers Kartik" in r and "isn't built" in r
+    assert b.store.task(1)["status"] == "confirmed" and b._pending("c1") is None and len(m.seen) == 2
 
 
 def test_no_cancels_and_new_request_replaces_pending(tmp_path):
@@ -218,27 +217,27 @@ OFFERS = [{"restaurant": "Paradise", "item": "Veg Biryani", "price": 249, "ratin
           {"restaurant": "X", "item": "Royal Biryani", "price": 900}]
 
 
-def test_food_order_compares_then_cart_or_link_never_placing_it(tmp_path):
+def test_food_order_goes_straight_to_options_then_taps(tmp_path):
     m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
     sw = FakeSwiggy(OFFERS)
     b = bot(tmp_path, m)
     b.swiggy = sw
     notes = []
-    assert say(b, "order veg biryani under 400").endswith("(YES / no)")
-    r = b.handle({"channel": "whatsapp", "chat": "c1", "text": "yes"}, notify=notes.append)
-    assert notes == ["Comparing biryani on swiggy, with reviews…"]
+    r = b.handle({"channel": "whatsapp", "chat": "c1", "text": "order veg biryani under 400"}, notify=notes.append)
+    assert notes == ["Comparing biryani on swiggy, with reviews…"]  # no "go ahead?": searching is harmless
     lines = r.splitlines()
     assert lines[1] == ("1. Veg Biryani — Paradise — ₹249 on Swiggy ★4.3 (40 MINS) · Google ★4.4 (1200): "
                         "+great taste, big portions; −slow delivery")
-    assert lines[2] == "2. Paneer Biryani — Meghana Foods — ₹320 on Swiggy"
+    assert r.choices == ["1. Veg Biryani ₹249", "2. Paneer Biryani ₹320"]  # buttons / poll
     assert "Chicken" not in r and "Royal" not in r  # veg owner, budget 400: filtered by code
-    assert say(b, "2 link") == ("Here's Paneer Biryani from Meghana Foods on Swiggy: "
-                                "https://www.swiggy.com/search?query=biryani")
+    act = say(b, "2. Paneer Biryani ₹320")  # a tap arrives as the button's text
+    assert act.choices == ["Send me the link", "Add to my Swiggy cart"]  # ordering paused: no "Order it for me"
+    assert say(b, "Send me the link") == "Here's Paneer Biryani from Meghana Foods on Swiggy: https://www.swiggy.com/search?query=biryani"
     m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
-    say(b, "order veg biryani under 400"), say(b, "yes")
-    r = say(b, "1 cart")
+    say(b, "order veg biryani under 400")
+    r = say(b, "1 cart")  # typing still works
     assert sw.added[-1]["item"] == "Veg Biryani" and "To pay: ₹284" in r and "stopped before ordering" in r
-    assert len(m.seen) == 2  # one routing call per order; YES, compare and choosing are all code
+    assert len(m.seen) == 2  # one routing call per request; options, taps and the cart are all code
 
 
 def test_ideas_from_history_then_compare(tmp_path):
@@ -249,7 +248,7 @@ def test_ideas_from_history_then_compare(tmp_path):
     b = bot(tmp_path, m)
     b.swiggy = FakeSwiggy(OFFERS)
     r = say(b, "what should I eat now?")
-    assert r.startswith("1. Veg Biryani — your usual") and "Reply 1, 2 or 3" in r
+    assert r.startswith("1. Veg Biryani — your usual") and r.choices == ["1. Veg Biryani", "2. Masala Dosa", "3. Pav Bhaji"]
     assert m.seen[1][1] is A.IDEAS
     r = say(b, "1")
     assert r.startswith("Best options:") and "Veg Biryani — Paradise" in r
@@ -260,12 +259,10 @@ def test_food_problems_are_said_plainly(tmp_path):
     m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 100}))
     b = bot(tmp_path, m)
     b.swiggy = FakeSwiggy(OFFERS)
-    say(b, "order biryani under 100")
-    assert "couldn't find biryani under ₹100" in say(b, "yes")
+    assert "couldn't find biryani under ₹100" in say(b, "order biryani under 100")
     m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400}))
     b.swiggy = FakeSwiggy(error="Swiggy is logged out in the bot's Chrome: log in there again (Hermes desktop).")
-    say(b, "order biryani under 400")
-    assert "logged out" in say(b, "yes")
+    assert "logged out" in say(b, "order biryani under 400")
 
 
 def test_order_history_feeds_recommendations(tmp_path):
@@ -301,12 +298,10 @@ def test_veg_in_the_dish_name_filters_and_empty_search_is_explained(tmp_path):
     m = Model(call("task_start", kind="food", slots={"dish": "veg Biriyani", "max_total": 400}))
     b = bot(tmp_path, m)
     b.swiggy = FakeSwiggy(OFFERS)
-    say(b, "Order veg Biriyani under 400")
-    assert "Chicken" not in say(b, "Yes")  # no diet setting: 'veg' in the dish name is enough
+    assert "Chicken" not in say(b, "Order veg Biriyani under 400")  # no diet setting: 'veg' in the dish name is enough
     m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400}))
     b.swiggy = FakeSwiggy([])
-    say(b, "order biryani under 400")
-    assert "couldn't find biryani under ₹400" in say(b, "yes")
+    assert "couldn't find biryani under ₹400" in say(b, "order biryani under 400")
 
 
 def test_every_turn_leaves_a_trace_and_errors_alert_the_owner(tmp_path):
@@ -377,8 +372,7 @@ def test_a_named_app_that_is_not_connected_is_said_not_silently_swapped(tmp_path
                                       "max_total": 150}, "site": "Zomato", "reply": ""})})
     b = bot(tmp_path, m)
     b.swiggy = FakeSwiggy([{"restaurant": "Guru Kirpa", "item": "Chole bhature", "price": 50}])
-    say(b, "Find chole bhature on Zomato under 150")
-    r = say(b, "yes")
+    r = say(b, "Find chole bhature on Zomato under 150")
     assert r.startswith("Zomato isn't connected to me yet") and "Chole bhature — Guru Kirpa — ₹50 on Swiggy" in r
     assert "one moment" in A.CHAT.lower()  # banned in plain-text replies too
 
@@ -402,7 +396,7 @@ def order_bot(tmp_path, orders):
     b.swiggy, b.orders = FakeSwiggy(OFFERS), orders
     tracked = []
     b._track = lambda chat, send: tracked.append(chat)
-    say(b, "order veg biryani under 400"), say(b, "yes")
+    say(b, "order veg biryani under 400")
     return b, tracked
 
 
@@ -423,12 +417,12 @@ def test_order_for_me_needs_upi_then_yes_on_the_exact_total(tmp_path):
     assert "upi id" in say(b, "1 order").lower()  # no UPI ID yet: asks for it once
     assert say(b, "upi id Me@OkAxis").startswith("Saved your UPI ID me@okaxis")
     b.model.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
-    say(b, "order veg biryani under 400"), say(b, "yes")
+    say(b, "order veg biryani under 400")
     r = say(b, "1 order")
     assert r == ("Order Veg Biryani x 1 from Paradise, delivered to Home, Koramangala, total ₹284, paid by a UPI "
-                 "request to me@okaxis? (YES / no)")
+                 "request to me@okaxis?") and r.choices == ["Yes, pay ₹284", "No"]  # the one YES: before paying
     assert orders.paid == []  # nothing paid before YES
-    r, notes = say_and_wait(b, "yes")
+    r, notes = say_and_wait(b, "Yes, pay ₹284")  # the tap
     assert r.startswith("Sending the payment request for ₹284 to me@okaxis")  # the chat isn't blocked
     assert orders.paid == [("me@okaxis", 284.0)] and notes[-1].startswith("Paid and ordered ✅ ₹284") and tracked == ["c1"]
 
@@ -493,10 +487,12 @@ def test_a_number_is_a_pick_only_as_the_whole_reply(tmp_path):
 def test_a_yes_inside_a_longer_answer_counts(tmp_path):
     assert A.YES_IN.search("Upi request and yes") and not A.NO_IN.search("Upi request and yes")
     assert A.NO_IN.search("yes but not now")
-    m = Model(call("task_start", kind="cab", slots={"pickup": "home", "drop": "airport", "when": "now"}))
-    b = bot(tmp_path, m)
-    say(b, "cab home to airport now")
-    assert say(b, "Upi request and yes").startswith("Confirmed ✅")
+    orders = FakeOrders()
+    b, _ = order_bot(tmp_path, orders)
+    b.store.set_fact("owner:upi", "me@okaxis")
+    say(b, "1 order")
+    r, notes = say_and_wait(b, "Upi request and yes")  # live 2026-10-22: was asked again
+    assert r.startswith("Sending the payment request") and orders.paid == [("me@okaxis", 284.0)]
 
 
 def test_chrome_health_alerts_once_when_it_breaks_and_once_when_back():
@@ -517,7 +513,9 @@ def test_ordering_is_paused_by_default_and_fills_the_cart(tmp_path, monkeypatch)
     b.swiggy, b.orders = FakeSwiggy(OFFERS), FakeOrders()
     b.store.set_fact("owner:upi", "me@okaxis")
     say(b, "order veg biryani under 400")
-    assert "'cart'" in say(b, "yes") and "'order'" not in b._said("c1")[0]
+    assert say(b, "1").choices == ["Send me the link", "Add to my Swiggy cart"]  # no "Order it for me" while paused
+    m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
+    say(b, "order veg biryani under 400")
     r = say(b, "1 order")
     assert "To pay: ₹284" in r and "Ordering for you is paused" in r and b.orders.paid == []
 
@@ -570,8 +568,7 @@ def test_swiggy_not_loading_is_said_plainly(tmp_path):
             import cdp
             raise cdp.PageError("www.swiggy.com didn't load: net::ERR_TIMED_OUT")
     b.swiggy = Down()
-    say(b, "order dosa under 300")
-    assert say(b, "yes").startswith("Swiggy didn't load just now")
+    assert say(b, "order dosa under 300").startswith("Swiggy didn't load just now")
 
 
 def test_travellers_can_be_saved_again(tmp_path):
@@ -580,3 +577,16 @@ def test_travellers_can_be_saved_again(tmp_path):
     assert say(b, "my name is kartik jain") == "Saved: you = Kartik Jain."
     assert b.store.fact("traveller:mom")["value"] == {"name": "Sunita", "age": 55}
     assert b.store.fact("traveller:self")["value"]["name"] == "Kartik Jain"
+
+
+def test_a_new_request_during_a_choice_is_not_taken_as_the_choice(tmp_path):
+    m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400}),
+              call("task_start", kind="food", slots={"dish": "dosa", "max_total": 300}))
+    b = bot(tmp_path, m)
+    b.swiggy = FakeSwiggy(OFFERS + [{"restaurant": "MTR", "item": "Masala Dosa", "price": 120}])
+    say(b, "order biryani under 400")
+    say(b, "1")  # -> what should I do?
+    r = say(b, "order dosa under 300")
+    assert r.startswith("Best options:") and "Masala Dosa" in r and b.swiggy.added == []
+    assert say(b, "1").choices[0] == "Send me the link"
+    assert say(b, "link").startswith("Here's Masala Dosa")

@@ -102,7 +102,10 @@ def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float
                 reply = f"Sorry, something broke on my side ({type(e).__name__}). Try again in a minute."
                 alert(f"⚠ bot error on {m['text'][:60]!r}: {e!r}"[:500])
             try:
-                ch.send(m["chat"], reply)
+                if getattr(reply, "choices", None) and hasattr(ch, "send_choice"):
+                    ch.send_choice(m["chat"], str(reply), reply.choices)  # taps instead of typing
+                else:
+                    ch.send(m["chat"], reply)
             except Exception:
                 log.exception("send failed")
             log.info("turn %s %.1fs", ch.name, time.time() - t)
