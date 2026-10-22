@@ -231,6 +231,7 @@ def test_food_order_goes_straight_to_options_then_taps(tmp_path):
     assert lines[1] == ("1. Veg Biryani — Paradise — ₹249 on Swiggy ★4.3 (40 MINS) · Google ★4.4 (1200): "
                         "+great taste, big portions; −slow delivery")
     assert r.choices == ["1. Veg Biryani ₹249", "2. Paneer Biryani ₹320"]  # buttons / poll
+    assert r.cards[0]["choice"] == r.choices[0] and r.cards[0]["note"] == "Google ★4.4: great taste, big portions"
     assert "Chicken" not in r and "Royal" not in r  # veg owner, budget 400: filtered by code
     act = say(b, "2. Paneer Biryani ₹320")  # a tap arrives as the button's text
     assert act.choices == ["Send me the link", "Add to my Swiggy cart"]  # ordering paused: no "Order it for me"

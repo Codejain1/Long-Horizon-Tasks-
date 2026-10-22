@@ -3,7 +3,8 @@
 // allowed), and replies can be read aloud. Talks to bot/appapi.py with a secret key (app/.env.local).
 import { useEffect, useRef, useState } from 'react';
 import {
-  FlatList, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View,
+  FlatList, Image, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput,
+  View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Location from 'expo-location';
@@ -13,7 +14,11 @@ const URL = process.env.EXPO_PUBLIC_BOT_URL ?? '';
 const KEY = process.env.EXPO_PUBLIC_BOT_KEY ?? '';
 const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${KEY}` };
 
-type Msg = { id: string; from: 'me' | 'bot'; text: string; choices?: string[] };
+type Card = {
+  choice: string; title: string; subtitle?: string; price?: string; rating?: string; image?: string; note?: string;
+  veg?: boolean | null;
+};
+type Msg = { id: string; from: 'me' | 'bot'; text: string; choices?: string[]; cards?: Card[] };
 type Coords = { lat: number; lng: number } | null;
 
 const LINK = /(https?:\/\/[^\s]+)/g; // for split/replace
@@ -77,8 +82,8 @@ export default function App() {
             after.current = events[events.length - 1].id;
             setMsgs((m) => [
               ...m,
-              ...events.map((e: { id: number; text: string; choices?: string[] }) => ({
-                id: `b${e.id}`, from: 'bot' as const, text: e.text, choices: e.choices,
+              ...events.map((e: { id: number; text: string; choices?: string[]; cards?: Card[] }) => ({
+                id: `b${e.id}`, from: 'bot' as const, text: e.text, choices: e.choices, cards: e.cards,
               })),
             ]);
             if (speakRef.current) {
@@ -131,8 +136,31 @@ export default function App() {
         onContentSizeChange={() => list.current?.scrollToEnd({ animated: true })}
         renderItem={({ item }) => (
           <View style={[styles.bubble, item.from === 'me' ? styles.mine : styles.theirs]}>
-            <Body text={item.text} mine={item.from === 'me'} />
-            {item.choices && item === last && (
+            {item.cards?.length ? (
+              <>
+                <Text style={styles.text}>{item.text.split('\n')[0]}</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.cards}>
+                  {item.cards.map((c) => (
+                    <Pressable key={c.choice} style={styles.card} onPress={() => send(c.choice)}>
+                      {c.image ? <Image source={{ uri: c.image }} style={styles.cardImage} /> : <View style={styles.cardImage} />}
+                      <View style={styles.cardBody}>
+                        <Text style={styles.cardTitle} numberOfLines={2}>
+                          {c.veg === true ? '🟢 ' : c.veg === false ? '🔴 ' : ''}{c.title}
+                        </Text>
+                        {!!c.subtitle && <Text style={styles.cardSub} numberOfLines={1}>{c.subtitle}</Text>}
+                        <Text style={styles.cardPrice}>
+                          {c.price}{c.rating ? `  ★ ${c.rating}` : ''}
+                        </Text>
+                        {!!c.note && <Text style={styles.cardNote} numberOfLines={2}>{c.note}</Text>}
+                      </View>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </>
+            ) : (
+              <Body text={item.text} mine={item.from === 'me'} />
+            )}
+            {item.choices && !item.cards?.length && item === last && (
               <View style={styles.choices}>
                 {item.choices.map((c) => (
                   <Pressable key={c} style={styles.choice} onPress={() => send(c)}>
@@ -173,13 +201,21 @@ const styles = StyleSheet.create({
   small: { fontSize: 13, color: '#555' },
   offline: { fontSize: 12, color: '#C0392B', marginRight: 6 },
   list: { padding: 12, gap: 8 },
-  bubble: { maxWidth: '86%', padding: 10, borderRadius: 14 },
+  bubble: { maxWidth: '92%', padding: 10, borderRadius: 14 },
   mine: { alignSelf: 'flex-end', backgroundColor: '#1F6FEB' },
   theirs: { alignSelf: 'flex-start', backgroundColor: '#fff' },
   text: { fontSize: 15, color: '#111', lineHeight: 21 },
   textMine: { color: '#fff' },
   link: { color: '#1F6FEB', textDecorationLine: 'underline' },
   choices: { marginTop: 8, gap: 6 },
+  cards: { marginTop: 8, marginHorizontal: -4 },
+  card: { width: 190, marginHorizontal: 4, borderRadius: 12, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e3e3e3', overflow: 'hidden' },
+  cardImage: { width: 190, height: 110, backgroundColor: '#eee' },
+  cardBody: { padding: 8, gap: 2 },
+  cardTitle: { fontSize: 14, fontWeight: '700', color: '#111' },
+  cardSub: { fontSize: 12, color: '#666' },
+  cardPrice: { fontSize: 14, fontWeight: '700', color: '#1F6FEB', marginTop: 2 },
+  cardNote: { fontSize: 11, color: '#555' },
   choice: { borderWidth: 1, borderColor: '#1F6FEB', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10 },
   choiceText: { color: '#1F6FEB', fontSize: 15, fontWeight: '600' },
   composer: { flexDirection: 'row', padding: 10, paddingBottom: 28, gap: 8, backgroundColor: '#fff' },

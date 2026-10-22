@@ -101,10 +101,12 @@ PLACE_SLOTS = {"from", "to", "city", "pickup", "drop", "area"}
 
 class Reply(str):
     """A reply with tap options: the text (which also lists them, numbered, for channels without buttons) and the
-    choices the channel shows as buttons / a poll. The owner's tap comes back as the choice's text."""
-    def __new__(cls, text: str, choices: list[str] | None = None):
+    choices the channel shows as buttons / a poll. The owner's tap comes back as the choice's text. cards: richer
+    data for the app (photo, title, price, rating), one per choice."""
+    def __new__(cls, text: str, choices: list[str] | None = None, cards: list[dict] | None = None):
         r = super().__new__(cls, text)
         r.choices = list(choices or [])
+        r.cards = list(cards or [])
         return r
 
 
@@ -676,7 +678,11 @@ class Assistant:
                          + (f" ★{o['rating']}" if o.get("rating") else "") + (f" ({o['eta']})" if o.get("eta") else "")
                          + rev)
         tail = f"\n(Couldn't read {', '.join(failed)} this time.)" if failed else ""
-        return Reply(note + "Best options:\n" + "\n".join(lines) + tail + "\nTap one (or reply its number).", labels)
+        cards = [{"choice": lab, "title": o["item"], "subtitle": o["restaurant"] + (f" · {o['area']}" if o.get("area") else ""),
+                  "price": f"₹{o['price']:g}", "rating": o.get("rating") or "", "image": o.get("image") or "",
+                  "note": (f"Google ★{o['google']['rating']:g}: " + ", ".join(o["google"]["liked"][:2])) if o.get("google") else "",
+                  "veg": o.get("veg")} for lab, o in zip(labels, top)]
+        return Reply(note + "Best options:\n" + "\n".join(lines) + tail + "\nTap one (or reply its number).", labels, cards)
 
     def _prepare_order(self, chat: str, offer: dict, tid) -> str:
         """Cart, then the checkout page read back (items, total, address) for the owner's YES: nothing is paid yet."""

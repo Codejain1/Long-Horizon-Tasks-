@@ -47,3 +47,14 @@ def test_token_file_is_created_private(tmp_path, monkeypatch):
     t = appapi.load_token(tmp_path)
     assert len(t) > 30 and appapi.load_token(tmp_path) == t
     assert oct((tmp_path / "app.token").stat().st_mode)[-3:] == "600"
+
+
+def test_cards_reach_the_app():
+    app = appapi.App("k", port=0)
+    try:
+        app.send_cards("owner", "Best options", ["1. Veg Biryani ₹249"],
+                       [{"choice": "1. Veg Biryani ₹249", "title": "Veg Biryani", "image": "https://img/x", "price": "₹249"}])
+        ev = call(app, "/events?after=0&wait=0")[1]["events"][0]
+        assert ev["cards"][0]["image"] == "https://img/x" and ev["choices"] == ["1. Veg Biryani ₹249"]
+    finally:
+        app.close()

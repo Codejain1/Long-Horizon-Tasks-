@@ -4,7 +4,8 @@ A small HTTP API on 127.0.0.1 (the app reaches it through a tunnel; nothing is p
 secret key in `Authorization: Bearer <key>`:
 
     POST /messages   {"text": "...", "location"?: {"lat", "lng"}}   -> {"ok": true}
-    GET  /events?after=<id>&wait=<s>  -> {"events": [{"id", "text", "choices"?, "ts"}]}  (waits up to `wait` s for new)
+    GET  /events?after=<id>&wait=<s>  -> {"events": [{"id", "text", "choices"?, "cards"?, "ts"}]}  (waits up to `wait` s)
+         cards: [{"choice", "title", "subtitle", "price", "rating", "image", "note", "veg"}]: the app shows them
     GET  /health                       -> {"ok": true}   (no key needed)
 
 The key is BOT_APP_TOKEN, or BOT_HOME/app.token (created on first start, readable only by the bot's user).
@@ -56,6 +57,9 @@ class App:
 
     def send_choice(self, chat: str, text: str, choices: list[str]) -> None:
         self._emit({"text": text, "choices": choices})
+
+    def send_cards(self, chat: str, text: str, choices: list[str], cards: list[dict]) -> None:
+        self._emit({"text": text, "choices": choices, "cards": cards})
 
     def _emit(self, ev: dict) -> None:
         with self.cond:
