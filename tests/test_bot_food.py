@@ -117,3 +117,27 @@ def test_unreadable_pages_are_captured_for_replay(tmp_path):
     assert sw.search("biryani") == []
     (saved,) = list((tmp_path / "cap").iterdir())
     assert saved.name.endswith("-search.txt") and "something new" in saved.read_text()
+
+
+def test_google_reviews_need_the_rating_on_the_page():
+    page = "Paradise Biryani  4.3 ★★★★☆ (2,140)  Dine-in · Delivery  'Great biryani, big portions' 'Delivery was slow'"
+    good = model({"rating": 4.3, "reviews": 2140, "liked": ["great biryani"], "disliked": ["slow delivery"]})
+    assert F.read_reviews(page, good)["rating"] == 4.3
+    assert F.read_reviews(page, model({"rating": 4.8, "reviews": 9, "liked": [], "disliked": []})) is None  # invented
+    assert F.google_reviews("X", tab=lambda: (_ for _ in ()).throw(OSError("no chrome"))) is None  # never a blocker
+
+
+def test_compare_across_apps_keeps_each_app_and_reports_failures():
+    class App:
+        def __init__(self, offers=None, boom=False):
+            self.offers, self.boom = offers or [], boom
+
+        def search(self, dish):
+            if self.boom:
+                raise RuntimeError("page changed")
+            return self.offers
+    same = {"restaurant": "Paradise", "item": "Veg Biryani"}
+    top, failed = F.compare("veg biryani", {"swiggy": App([{**same, "price": 249}]), "zomato": App([{**same, "price": 239}]),
+                                            "magicpin": App(boom=True)})
+    assert [(o["platform"], o["price"]) for o in top] == [("zomato", 239), ("swiggy", 249)]
+    assert failed == ["magicpin"] and top[0]["link"].startswith("https://www.zomato.com/bangalore/")

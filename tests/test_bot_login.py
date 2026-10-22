@@ -164,7 +164,7 @@ def test_conversation_login_otp_redacted_and_task_resumed(tmp_path):
     r = say(b, "yes")
     assert "sent an OTP to your number ending 0001" in r
     r = say(b, "482913")
-    assert r.startswith("Logged in to Swiggy ✅") and "1. Veg Biryani — Paradise — ₹249" in r  # carried on
+    assert r.startswith("Logged in to Swiggy ✅") and "1. Veg Biryani — Paradise — ₹249 on Swiggy" in r  # carried on
     stored = json.dumps(b.db.execute("SELECT * FROM log").fetchall() + b.db.execute("SELECT * FROM traces").fetchall())
     assert "482913" not in stored and "[login OTP]" in stored  # the OTP is used, never stored
 
@@ -209,9 +209,10 @@ def test_live_failures_of_2026_10_21_replayed(tmp_path):
     r = say(b, "i am just asking to sign in on goibibo with the email i have signed in")
     assert r.startswith("Logged in to Goibibo") and b.store.task(1)["status"] == "cancelled"
 
-    # 3. "what should I eat now?" -> suggestions, and the prompt forbids claiming a search
+    # 3. "what should I eat now?" -> 3 ideas from the pattern (code lists them; no invented "I found")
     m.replies.append(decision("suggest_food"))
-    m.replies.append({"content": "Maybe a paneer wrap or your usual Subway sandwich? Want me to order one?"})
-    assert say(b, "What should I eat now?").startswith("Maybe a paneer wrap")
-    assert "Don't claim to have searched" in m.seen[-1][0][0]["content"]
+    m.replies.append({"content": json.dumps({"ideas": [{"dish": "Paneer Wrap", "why": "light"}, {"dish": "Veggie Sub",
+                                                        "why": "your usual"}, {"dish": "Dosa", "why": "quick"}]})})
+    r = say(b, "What should I eat now?")
+    assert r.startswith("1. Paneer Wrap — light") and "found" not in r.lower()
     assert "NEVER say you searched" in m.seen[-2][0][0]["content"]

@@ -47,7 +47,12 @@ def bot(tmp_path, model, post=memory_ok, nearby=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     s = B.Store(tmp_path / "b.db")
     s.set_fact("traveller:self", {"name": "Kartik"})
-    return A.Assistant(tmp_path / "home", s, chat=model, post=post, nearby=nearby or (lambda *a, **k: {}))
+    b = A.Assistant(tmp_path / "home", s, chat=model, post=post, nearby=nearby or (lambda *a, **k: {}))
+    b.reviews = lambda restaurant: REVIEW if restaurant == "Paradise" else None  # never a real browser in tests
+    return b
+
+
+REVIEW = {"rating": 4.4, "reviews": 1200, "liked": ["great taste", "big portions"], "disliked": ["slow delivery"]}
 
 
 def say(b, text, chat="c1"):
@@ -213,7 +218,7 @@ OFFERS = [{"restaurant": "Paradise", "item": "Veg Biryani", "price": 249, "ratin
           {"restaurant": "X", "item": "Royal Biryani", "price": 900}]
 
 
-def test_food_order_to_cart_without_placing_it(tmp_path):
+def test_food_order_compares_then_cart_or_link_never_placing_it(tmp_path):
     m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
     sw = FakeSwiggy(OFFERS)
     b = bot(tmp_path, m)
@@ -221,12 +226,34 @@ def test_food_order_to_cart_without_placing_it(tmp_path):
     notes = []
     assert say(b, "order veg biryani under 400").endswith("(YES / no)")
     r = b.handle({"channel": "whatsapp", "chat": "c1", "text": "yes"}, notify=notes.append)
-    assert notes == ["Looking for biryani on Swiggy…"]
-    assert r.splitlines()[1:3] == ["1. Veg Biryani — Paradise — ₹249 ★4.3 (40 MINS)", "2. Paneer Biryani — Meghana Foods — ₹320"]
+    assert notes == ["Comparing biryani on swiggy, with reviews…"]
+    lines = r.splitlines()
+    assert lines[1] == ("1. Veg Biryani — Paradise — ₹249 on Swiggy ★4.3 (40 MINS) · Google ★4.4 (1200): "
+                        "+great taste, big portions; −slow delivery")
+    assert lines[2] == "2. Paneer Biryani — Meghana Foods — ₹320 on Swiggy"
     assert "Chicken" not in r and "Royal" not in r  # veg owner, budget 400: filtered by code
+    assert say(b, "2 link") == ("Here's Paneer Biryani from Meghana Foods on Swiggy: "
+                                "https://www.swiggy.com/search?query=biryani")
+    m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
+    say(b, "order veg biryani under 400"), say(b, "yes")
+    r = say(b, "1 cart")
+    assert sw.added[-1]["item"] == "Veg Biryani" and "To pay: ₹284" in r and "stopped before ordering" in r
+    assert len(m.seen) == 2  # one routing call per order; YES, compare and choosing are all code
+
+
+def test_ideas_from_history_then_compare(tmp_path):
+    ideas = {"content": json.dumps({"ideas": [{"dish": "Veg Biryani", "why": "your usual"},
+                                              {"dish": "Masala Dosa", "why": "light"}, {"dish": "Pav Bhaji", "why": "new"}]})}
+    m = Model(call("suggest_food") if False else {"content": json.dumps({"action": "suggest_food", "kind": "none",
+                                                                          "details": {}, "reply": ""})}, ideas)
+    b = bot(tmp_path, m)
+    b.swiggy = FakeSwiggy(OFFERS)
+    r = say(b, "what should I eat now?")
+    assert r.startswith("1. Veg Biryani — your usual") and "Reply 1, 2 or 3" in r
+    assert m.seen[1][1] is A.IDEAS
     r = say(b, "1")
-    assert sw.added == [OFFERS[0]] and "To pay: ₹284" in r and "stopped before ordering" in r
-    assert b.store.task(1)["status"] == "done" and len(m.seen) == 1  # YES, the search and the choice: no model calls
+    assert r.startswith("Best options:") and "Veg Biryani — Paradise" in r
+    assert say(b, "1 link").startswith("Here's Veg Biryani from Paradise")
 
 
 def test_food_problems_are_said_plainly(tmp_path):
@@ -234,7 +261,7 @@ def test_food_problems_are_said_plainly(tmp_path):
     b = bot(tmp_path, m)
     b.swiggy = FakeSwiggy(OFFERS)
     say(b, "order biryani under 100")
-    assert "none fit under ₹100" in say(b, "yes")
+    assert "couldn't find biryani under ₹100" in say(b, "yes")
     m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400}))
     b.swiggy = FakeSwiggy(error="Swiggy is logged out in the bot's Chrome: log in there again (Hermes desktop).")
     say(b, "order biryani under 400")
@@ -279,7 +306,7 @@ def test_veg_in_the_dish_name_filters_and_empty_search_is_explained(tmp_path):
     m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400}))
     b.swiggy = FakeSwiggy([])
     say(b, "order biryani under 400")
-    assert "couldn't read any dishes" in say(b, "yes")
+    assert "couldn't find biryani under ₹400" in say(b, "yes")
 
 
 def test_every_turn_leaves_a_trace_and_errors_alert_the_owner(tmp_path):
@@ -342,3 +369,14 @@ def test_cut_off_answers_are_closed_and_read_and_free_text_never_gets_the_json_p
     B.save_orders(b.store, "swiggy", FakeSwiggy().orders())
     say(b, "what do I usually eat?")
     assert "answer as JSON" not in m.seen[-1][0][0]["content"] and "plain text" in m.seen[-1][0][0]["content"]
+
+
+def test_a_named_app_that_is_not_connected_is_said_not_silently_swapped(tmp_path):
+    m = Model({"content": json.dumps({"action": "book", "kind": "food", "details": {"dish": "chole bhature",
+                                      "max_total": 150}, "site": "Zomato", "reply": ""})})
+    b = bot(tmp_path, m)
+    b.swiggy = FakeSwiggy([{"restaurant": "Guru Kirpa", "item": "Chole bhature", "price": 50}])
+    say(b, "Find chole bhature on Zomato under 150")
+    r = say(b, "yes")
+    assert r.startswith("Zomato isn't connected to me yet") and "Chole bhature — Guru Kirpa — ₹50 on Swiggy" in r
+    assert "one moment" in A.CHAT.lower()  # banned in plain-text replies too

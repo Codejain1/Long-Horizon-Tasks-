@@ -1,4 +1,4 @@
-"""Swiggy, driven by code in the desktop Chrome where the owner is logged in. The model only reads page text into
+"""Food apps, driven by code in the desktop Chrome where the owner is logged in. The model only reads page text into
 lists; everything it returns is checked against that text (restaurant, item and price must be on the page), so
 it can't invent a restaurant or a price. Never places an order: the furthest it goes is the checkout page.
 
@@ -16,6 +16,24 @@ import brain
 import cdp
 import login
 
+# Every app the comparison may use. An app runs only once its real search page has been checked ("verified"):
+# guessing how outside sites look was the main source of bugs (PROGRESS 2026-10-22).
+PLATFORMS = {
+    "swiggy": {"search": "https://www.swiggy.com/search?query={q}", "verified": True},
+    "zomato": {"search": "https://www.zomato.com/{city}/delivery?q={q}", "verified": False},
+    "magicpin": {"search": "https://magicpin.in/{city}/search/?q={q}", "verified": False},
+    "eatclub": {"search": "https://www.eatclub.in/search?q={q}", "verified": False},
+}
+MAPS = "https://www.google.com/maps/search/{q}"
+REVIEWS_SCHEMA = {"type": "object", "properties": {
+    "rating": {"type": "number"}, "reviews": {"type": "number"},
+    "liked": {"type": "array", "items": {"type": "string", "maxLength": 80}, "maxItems": 3},
+    "disliked": {"type": "array", "items": {"type": "string", "maxLength": 80}, "maxItems": 3}},
+    "required": ["rating", "reviews", "liked", "disliked"]}
+LINKS_JS = """((names) => names.map(n => {
+  const a = [...document.querySelectorAll('a[href]')].find(a => (a.innerText || '').toLowerCase().includes(n.toLowerCase()));
+  return a ? a.href : null;
+}))(%s)"""
 ORDERS = "https://www.swiggy.com/my-account/orders"
 SEARCH = "https://www.swiggy.com/search?query={q}"
 CHECKOUT = "https://www.swiggy.com/checkout"
@@ -79,7 +97,7 @@ def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3) -> l
           and (max_total is None or float(str(o["price"]).replace(",", "")) <= float(max_total))]
     seen, out = set(), []
     for o in sorted(ok, key=lambda o: float(str(o["price"]).replace(",", ""))):
-        key = (o["restaurant"].lower(), o["item"].lower())
+        key = (o.get("platform", ""), o["restaurant"].lower(), o["item"].lower())  # same dish on two apps: two options
         if key not in seen:
             seen.add(key)
             out.append(o)
@@ -137,6 +155,10 @@ class Swiggy:
             got = read_offers(page, dish, self.chat)
             if not got:
                 self._capture("search", page)
+            links = (t.js(LINKS_JS % __import__("json").dumps([o["restaurant"] for o in got])) or []) if got else []
+            for o, link in zip(got, links):
+                o["platform"] = "swiggy"
+                o["link"] = link or SEARCH.format(q=urllib.parse.quote(dish))
             return got
         finally:
             t.close()
@@ -158,3 +180,46 @@ class Swiggy:
                     "in_cart": offer["item"].lower() in page.lower()}
         finally:
             t.close()
+
+
+def read_reviews(page: str, chat=brain.chat) -> dict | None:
+    """Rating and what people say, from a Google Maps place page's text. None if the rating isn't on the page."""
+    got = brain.extract([{"role": "system", "content": "This is the text of a restaurant's Google Maps page. Give its "
+                          "star rating, number of reviews, and up to 3 things reviewers like and 3 they dislike, in "
+                          "a few words each, taken from the reviews on the page."},
+                         {"role": "user", "content": page[:12000]}], REVIEWS_SCHEMA, chat, max_tokens=400)
+    r = got.get("rating")
+    if not isinstance(r, (int, float)) or not 1 <= r <= 5 or f"{r:.1f}" not in page:
+        return None
+    return {"rating": r, "reviews": got.get("reviews"), "liked": got.get("liked", []), "disliked": got.get("disliked", [])}
+
+
+def google_reviews(restaurant: str, area: str = "", tab=cdp.Tab, chat=brain.chat) -> dict | None:
+    t = None
+    try:
+        t = tab()
+        return read_reviews(t.open(MAPS.format(q=urllib.parse.quote(f"{restaurant} {area}".strip()))), chat)
+    except Exception:
+        return None  # reviews are a bonus: a failure never stops the comparison
+    finally:
+        if t:
+            t.close()
+
+
+def compare(dish: str, apps: dict, max_total=None, veg: bool = False, n: int = 3) -> tuple[list[dict], list[str]]:
+    """The dish on every verified app, in parallel -> (best n by price within budget, apps that failed).
+    apps: name -> object with .search(dish)."""
+    from concurrent.futures import ThreadPoolExecutor
+    found, failed = [], []
+    with ThreadPoolExecutor(len(apps) or 1) as pool:
+        futures = {name: pool.submit(app.search, dish) for name, app in apps.items()}
+        for name, f in futures.items():
+            try:
+                for o in f.result(timeout=90):
+                    link = o.get("link") or PLATFORMS[name]["search"].format(q=urllib.parse.quote(dish), city="bangalore")
+                    found.append({**o, "platform": o.get("platform", name), "link": link})
+            except NotReady:
+                raise
+            except Exception:
+                failed.append(name)
+    return pick(found, max_total, veg, n), failed

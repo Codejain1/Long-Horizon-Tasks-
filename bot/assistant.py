@@ -60,8 +60,13 @@ DECIDE = {"type": "object", "properties": {
     "cuisine": {"type": "string"},
     "site": {"type": "string", "maxLength": 40},
     "reply": {"type": "string", "maxLength": 1200}}, "required": ["action", "kind", "details", "reply"]}
+IDEAS = {"type": "object", "properties": {"ideas": {"type": "array", "minItems": 3, "maxItems": 3, "items": {
+    "type": "object", "properties": {"dish": {"type": "string", "maxLength": 50}, "why": {"type": "string", "maxLength": 90}},
+    "required": ["dish", "why"]}}}, "required": ["ideas"]}
+PICK = re.compile(r"^\s*#?([1-3])\b\s*(.*)$", re.I)
 CHAT = """You are the owner's personal assistant on WhatsApp/Telegram. Today is {today}. Reply in plain text, briefly,
-like a person. Never invent facts about the owner; never say you searched, found, booked or ordered anything.
+like a person. Never invent facts about the owner; never say you searched, found, booked or ordered anything. You
+only get this one reply: never say "one moment", "let me check" or that you'll come back.
 {memory}"""
 UPDATE = {"type": "object", "properties": {"action": {"type": "string", "enum": ["update", "new"]},
                                            "details": DETAILS},
@@ -291,25 +296,20 @@ class Assistant:
         if m:
             return self._need_login(chat, m[3].lower(), None)
         self._remember(chat, text)
+        stage = self.store.fact(f"stage:{chat}")
+        if stage and not stage["stale"]:
+            r = self._stage(chat, text, stage["value"])
+            if r is not None:
+                return r
         tid = self._pending(chat)
-        offers = self.store.fact(f"choice:{tid}") if tid else None
-        if tid and offers and not offers["stale"]:
-            m = re.fullmatch(r"\s*#?([1-9])\s*", text)
-            if m and int(m[1]) <= len(offers["value"]):
-                return self._add_to_cart(chat, tid, offers["value"][int(m[1]) - 1])
-            if NO.match(text):
-                self._pending(chat, clear=True)
-                B.finish(self.store, tid, "cancelled")
-                return "Cancelled."
-            self._pending(chat, clear=True)  # something else: a new request
-        elif tid:
+        if tid:
             if YES.match(text):
                 self._pending(chat, clear=True)
                 r = B.confirm(self.store, tid)
                 if "error" in r:
                     return "I can't confirm that yet: " + r["error"]
                 if self.store.task(tid)["kind"] == "food":
-                    return self._find_food(chat, tid, r["slots"])
+                    return self._compare(chat, r["slots"], tid)
                 return ("Confirmed ✅ " + self._summary_line(r["slots"], self.store.task(tid)["kind"])
                         + "\nBooking it on the site comes with a later update; for now this is saved.")
             if NO.match(text):
@@ -341,7 +341,7 @@ class Assistant:
         action = d.get("action", "reply")
         if action == "book" and d.get("kind") in B.TEMPLATES:
             slots = ground(self.store, d["kind"], text, d.get("details") or {})
-            return self._booking_reply(chat, B.start(self.store, d["kind"], slots))
+            return self._booking_reply(chat, B.start(self.store, d["kind"], slots, str(d.get("site") or "")))
         if action == "login":
             site = re.sub(r"[^a-z]", "", str(d.get("site") or "").lower())
             site = next((k for k in login.SITES if k in site or (site and site in k)), None) or next(
@@ -350,9 +350,7 @@ class Assistant:
                 return f"I can log in to {', '.join(login.SITES)}. Which one?"
             return self._need_login(chat, site, None)
         if action == "suggest_food":
-            return self._say(plain + "\n\nSuggest what the owner could eat now: 2-3 concrete dishes (and where, if "
-                             "their Swiggy pattern above shows it), fitting their taste, diet and mood. Don't claim to "
-                             "have searched or found anything; offer to order one.", talk)
+            return self._ideas(chat, plain, talk)
         if action == "read_swiggy_orders":
             last = self.store.fact("swiggy:orders_read")
             stale = (not B.taste(self.store).get("orders")) if not last else last["age_h"] >= FRESH_H
@@ -420,9 +418,11 @@ class Assistant:
             return "What would you like me to do?"
         if resume.get("do") == "orders":
             return self._read_orders()
+        if resume.get("do") == "compare":
+            return self._compare(chat, resume["slots"], resume.get("task"))
         if resume.get("do") == "find":
             t = self.store.task(resume["task"])
-            return self._find_food(chat, t["id"], t["slots"])
+            return self._compare(chat, t["slots"], t["id"])
         return "Done."
 
     def _read_orders(self) -> str:
@@ -443,35 +443,85 @@ class Assistant:
         return (f"Saved {r['saved']} new orders ({t['orders']} in all). You mostly order {dishes}; from {places_}; "
                 f"usually about ₹{t['typical_spend']:g}.")
 
-    def _find_food(self, chat: str, tid: int, slots: dict) -> str:
-        dish = slots["dish"][0] if isinstance(slots["dish"], list) else slots["dish"]
-        self.notify(f"Looking for {dish} on Swiggy…")
-        try:
-            offers = self.swiggy.search(dish)
-        except food.LoggedOut:
-            return self._need_login(chat, "swiggy", {"do": "find", "task": tid})
-        except (food.NotReady, food.cdp.Blocked) as e:
-            return str(e)
-        if not offers:
-            B.finish(self.store, tid, "failed", f"no {dish} read from the search page", "swiggy")
-            return (f"I opened Swiggy's search for {dish} but couldn't read any dishes with prices from the page. "
-                    "Try a simpler dish name, or check that a delivery address is set in Swiggy.")
+    # food v2: ideas -> compare across apps + reviews -> choose -> link / cart -----------------------------------
+    def _ideas(self, chat: str, plain: str, talk: list) -> str:
+        """3 dishes from the owner's order pattern, taste, mood and the time of day; they pick one to compare."""
+        got = brain.extract([{"role": "system", "content": plain + "\n\nSuggest exactly 3 dishes the owner could eat now, "
+                              "based on what they order (above), their taste, diet and mood, and the time of day. "
+                              f"It is {time.strftime('%H:%M')}. One short reason each."}, *talk], IDEAS, self.chat,
+                            max_tokens=300)
+        ideas = [i for i in got.get("ideas", []) if i.get("dish")][:3]
+        if not ideas:
+            return "Tell me a dish or two you feel like and I'll compare them across the apps."
+        self.store.set_fact(f"stage:{chat}", {"stage": "ideas", "ideas": ideas}, "bot", ttl_h=1)
+        return ("\n".join(f"{n}. {i['dish']} — {i['why']}" for n, i in enumerate(ideas, 1))
+                + "\nReply 1, 2 or 3 and I'll compare it across the food apps near you, with reviews.")
+
+    def _stage(self, chat: str, text: str, st: dict) -> str | None:
+        """The owner answering a list the bot sent (ideas or options); None = not an answer, route normally."""
+        m = PICK.match(text)
+        if not m:
+            self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
+            return None
+        n = int(m[1])
+        if st["stage"] == "ideas" and n <= len(st["ideas"]):
+            self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
+            return self._compare(chat, {"dish": st["ideas"][n - 1]["dish"]}, None)
+        if st["stage"] == "options" and n <= len(st["options"]):
+            return self._choose(chat, st["options"][n - 1], m[2], st.get("task"))
+        return None
+
+    def _compare(self, chat: str, slots: dict, tid: int | None) -> str:
+        dish = slots["dish"][0] if isinstance(slots.get("dish"), list) else slots.get("dish", "")
+        apps = {name: self.swiggy for name, p in food.PLATFORMS.items() if p["verified"] and name == "swiggy"}
+        asked = next((n for n in food.PLATFORMS if tid and n in str(self.store.task(tid).get("site") or "")), None)
+        note = ""
+        if asked and asked not in apps:  # live: "on Zomato" was searched on Swiggy without a word
+            note = (f"{asked.title()} isn't connected to me yet (it blocks the server or I haven't checked its pages), "
+                    f"so here's {', '.join(a.title() for a in apps)}.\n")
+        self.notify(f"Comparing {dish} on {', '.join(apps)}, with reviews…")
         said = f"{slots.get('diet', '')} {dish}".lower()
         veg = bool(re.search(r"\bveg(etarian)?\b", said)) and not re.search(r"non[- ]?veg", said)
-        top = food.pick(offers, slots.get("max_total"), veg)
+        try:
+            top, failed = food.compare(dish, apps, slots.get("max_total"), veg)
+        except food.LoggedOut:
+            return self._need_login(chat, "swiggy", {"do": "compare", "slots": slots, "task": tid})
+        except (food.NotReady, food.cdp.Blocked) as e:
+            return str(e)
         if not top:
-            B.finish(self.store, tid, "failed", f"no {dish} under ₹{slots.get('max_total')} on Swiggy", "swiggy")
-            return (f"I found {len(offers)} {dish} options on Swiggy, but none fit"
-                    f"{' veg and' if veg else ''} under ₹{slots.get('max_total'):g}. Want a higher budget?")
-        self.store.set_fact(f"choice:{tid}", top, "swiggy", ttl_h=1)
-        self._pending(chat, tid)
-        lines = [f"{i}. {o['item']} — {o['restaurant']} — ₹{o['price']}" + (f" ★{o['rating']}" if o.get("rating") else "")
-                 + (f" ({o['eta']})" if o.get("eta") else "") for i, o in enumerate(top, 1)]
-        return "Cheapest on Swiggy right now:\n" + "\n".join(lines) + "\nWhich one? (reply 1, 2 or 3)"
+            if tid:
+                B.finish(self.store, tid, "failed", f"no {dish} found", "swiggy")
+            budget = f" under ₹{slots['max_total']:g}" if slots.get("max_total") else ""
+            return f"I couldn't find {dish}{budget} on {', '.join(apps)} right now. Want something else?"
+        for o in top:  # reviews: a bonus, never a blocker
+            o["google"] = self.reviews(o["restaurant"])
+        self.store.set_fact(f"stage:{chat}", {"stage": "options", "options": top, "task": tid}, "bot", ttl_h=1)
+        lines = []
+        for n, o in enumerate(top, 1):
+            g = o.get("google")
+            rev = (f" · Google ★{g['rating']:g} ({g['reviews']:g}): +{', '.join(g['liked'][:2])}"
+                   + (f"; −{g['disliked'][0]}" if g.get("disliked") else "")) if g else ""
+            lines.append(f"{n}. {o['item']} — {o['restaurant']} — ₹{o['price']:g} on {o['platform'].title()}"
+                         + (f" ★{o['rating']}" if o.get("rating") else "") + (f" ({o['eta']})" if o.get("eta") else "")
+                         + rev)
+        tail = f"\n(Couldn't read {', '.join(failed)} this time.)" if failed else ""
+        return (note + "Best options:\n" + "\n".join(lines) + tail
+                + "\nReply with a number, plus 'link' (you order) or 'cart' (I add it to your cart), e.g. '1 link'.")
 
-    def _add_to_cart(self, chat: str, tid: int, offer: dict) -> str:
+    def reviews(self, restaurant: str):
+        return food.google_reviews(restaurant)
+
+    def _choose(self, chat: str, offer: dict, how: str, tid: int | None) -> str:
+        self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
+        if re.search(r"\b(cart|order|you order|for me)\b", how, re.I) and offer.get("platform") == "swiggy":
+            return self._add_to_cart(chat, tid, offer)
+        return f"Here's {offer['item']} from {offer['restaurant']} on {offer['platform'].title()}: {offer.get('link')}"
+
+    def _add_to_cart(self, chat: str, tid, offer: dict) -> str:
         self.notify(f"Adding {offer['item']} from {offer['restaurant']} to your Swiggy cart…")
         self._pending(chat, clear=True)
+        if tid is None:
+            tid = B.start(self.store, "food", {"dish": offer["item"], "max_total": float(offer["price"]) * 2})["task_id"]
         try:
             r = self.swiggy.add(offer)
         except food.LoggedOut:
