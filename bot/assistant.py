@@ -257,6 +257,25 @@ class Assistant:
         return s["task"] if s and s["mode"] == "form" else None
 
     # memory ----------------------------------------------------------------------------------------------------
+    def _here(self, loc: dict, source: str) -> None:
+        """The phone's location, with a place name (cached per ~1 km), as the owner's current location."""
+        key = f"geo:{loc['lat']:.2f},{loc['lng']:.2f}"
+        place = self.store.fact(key)
+        name = place["value"] if place else self.geocode(loc["lat"], loc["lng"])
+        if not place and name:
+            self.store.set_fact(key, name, "openstreetmap", ttl_h=24 * 7)
+        self.store.set_fact("owner:location", {**loc, **(name or {})}, source, ttl_h=2)
+        if (name or {}).get("area") or (name or {}).get("city"):
+            self.store.set_fact("owner:area", ", ".join(x for x in (name.get("area"), name.get("city")) if x), source,
+                                ttl_h=24)
+
+    def geocode(self, lat, lng) -> dict:
+        return places.reverse(lat, lng)
+
+    def _where(self) -> dict | None:
+        here = self.store.fact("owner:location")
+        return here["value"] if here and not here["stale"] else None
+
     def _memory(self, text: str) -> tuple[str, dict]:
         t0 = time.time()
         try:
@@ -265,19 +284,25 @@ class Assistant:
             self._step("memory", ms=int(1000 * (time.time() - t0)))
 
     def _memory_inner(self, text: str) -> tuple[str, dict]:
+        here, parts0 = self.store.fact("owner:location"), []
+        if here and not here["stale"]:  # first, above any older memory (live: "near Whitefield" while in Punjab)
+            v = here["value"]
+            name = ", ".join(x for x in (v.get("area"), v.get("city")) if x) or f"{v['lat']:.4f},{v['lng']:.4f}"
+            parts0.append(f"Where the owner is right now (from their phone, {here['age_h'] * 60:.0f} min ago): {name}. "
+                          "This overrides any older location in memory.")
         try:
             r = self.post(self.mem + "/search", {"query": text, "budget": 500, "skip": ["Hermes", "bot"],
                                                   "skip_chats": ["cron_"], "scope": "hermes"})
         except Exception:
-            return self._with_taste([]), {}  # memory down: answer without it
-        cur, parts = r.get("current", {}), []
+            return self._with_taste(parts0), {}  # memory down: answer without it
+        cur, parts = r.get("current", {}), parts0
         if r.get("rules"):
             parts.append("Standing rules from the owner (always follow):\n" + "\n".join(f"- {x['text']}" for x in r["rules"]))
         if r.get("warnings"):  # the owner corrected these before: Hermes showed them in every reply, so does the bot
             parts.append("Mistakes the owner corrected before (don't repeat them):\n" + "\n".join(
                 f"- {w['error'] or w['check']}" + (f" (corrected {w['seen']}x)" if w.get("seen", 1) > 1 else "")
                 for w in r["warnings"]))
-        if (cur.get("location") or {}).get("area"):  # for reviews of the right branch
+        if (cur.get("location") or {}).get("area") and not self._where():  # for reviews of the right branch
             self.store.set_fact("owner:area", cur["location"]["area"], "memory", ttl_h=24)
         if cur.get("profile"):
             parts.append("Owner's taste (private):\n" + "\n".join(f"- {p['text']}" for p in cur["profile"]))
@@ -333,7 +358,7 @@ class Assistant:
         self.local.secret = secret
         self._log(msg["channel"], chat, "owner", shown)
         if msg.get("location"):  # the app sends the phone's location with each message (owner allowed it once)
-            self.store.set_fact("owner:location", msg["location"], msg["channel"], ttl_h=2)
+            self._here(msg["location"], msg["channel"])
         reply = None
         try:
             reply = self._turn(chat, text)
@@ -615,11 +640,16 @@ class Assistant:
         if asked and asked not in apps:  # live: "on Zomato" was searched on Swiggy without a word
             note = (f"{asked.title()} isn't connected to me yet (it blocks the server or I haven't checked its pages), "
                     f"so here's {', '.join(a.title() for a in apps)}.\n")
+        self.swiggy.where = self._where() or self._memory_location()
         self.notify(f"Comparing {dish} on {', '.join(apps)}, with reviews…")
         said = f"{slots.get('diet', '')} {dish}".lower()
         veg = bool(re.search(r"\bveg(etarian)?\b", said)) and not re.search(r"non[- ]?veg", said)
         try:
             top, failed = food.compare(dish, apps, slots.get("max_total"), veg)
+        except food.NothingHere as e:
+            v = self.swiggy.where or {}
+            near = ", ".join(x for x in (v.get("area"), v.get("city")) if x)
+            return str(e).replace("where you are now", f"near {near}" if near else "where you are now")
         except food.LoggedOut:
             return self._need_login(chat, "swiggy", {"do": "compare", "slots": slots, "task": tid})
         except (food.NotReady, food.cdp.Blocked) as e:
@@ -641,7 +671,8 @@ class Assistant:
             g = o.get("google")
             rev = (f" · Google ★{g['rating']:g} ({g['reviews']:g}): +{', '.join(g['liked'][:2])}"
                    + (f"; −{g['disliked'][0]}" if g.get("disliked") else "")) if g else ""
-            lines.append(f"{n}. {o['item']} — {o['restaurant']} — ₹{o['price']:g} on {o['platform'].title()}"
+            lines.append(f"{n}. {o['item']} — {o['restaurant']}" + (f" ({o['area']})" if o.get("area") else "")
+                         + f" — ₹{o['price']:g} on {o['platform'].title()}"
                          + (f" ★{o['rating']}" if o.get("rating") else "") + (f" ({o['eta']})" if o.get("eta") else "")
                          + rev)
         tail = f"\n(Couldn't read {', '.join(failed)} this time.)" if failed else ""
@@ -737,6 +768,15 @@ class Assistant:
             threading.Thread(target=self._track, args=(chat, lambda text, c=chat, ch=channel: sender(ch, c, text)),
                              daemon=True).start()
         return len(rows)
+
+    def _memory_location(self) -> dict | None:
+        """The last location shared on WhatsApp (memory), when the phone hasn't sent one."""
+        try:
+            with urllib.request.urlopen(self.mem + "/current", timeout=3) as r:
+                loc = json.loads(r.read()).get("location")
+            return {"lat": loc["lat"], "lng": loc["lng"], "area": loc.get("area", "")} if loc else None
+        except Exception:
+            return None
 
     def reviews(self, restaurant: str):
         area = (self.store.fact("owner:area") or {}).get("value") or "Bangalore"

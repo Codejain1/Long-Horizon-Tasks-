@@ -49,6 +49,8 @@ def bot(tmp_path, model, post=memory_ok, nearby=None):
     s.set_fact("traveller:self", {"name": "Kartik"})
     b = A.Assistant(tmp_path / "home", s, chat=model, post=post, nearby=nearby or (lambda *a, **k: {}))
     b.reviews = lambda restaurant: REVIEW if restaurant == "Paradise" else None  # never a real browser in tests
+    b.geocode = lambda lat, lng: {"area": "Kotkapura", "city": "Faridkot"}  # nor a real map service
+    b._memory_location = lambda: None
     return b
 
 
@@ -602,4 +604,25 @@ def test_the_apps_location_is_used_for_places(tmp_path):
     m = Model(call("nearby_places"), {"content": "Sattvam, 0.3 km"})
     b = bot(tmp_path, m, nearby=nearby)
     b.handle({"channel": "app", "chat": "owner", "text": "cafes near me", "location": {"lat": 12.97, "lng": 77.59}})
-    assert got["loc"] == {"lat": 12.97, "lng": 77.59}  # the phone's, not the older WhatsApp one
+    assert (got["loc"]["lat"], got["loc"]["lng"]) == (12.97, 77.59)  # the phone's, not the older WhatsApp one
+
+
+
+def test_the_phones_location_comes_first_and_drives_the_search(tmp_path):
+    m = Model(reply("You're in Kotkapura, Faridkot."), call("task_start", kind="food", slots={"dish": "dosa", "max_total": 300}))
+    b = bot(tmp_path, m)
+    seen = {}
+
+    class Sw(FakeSwiggy):
+        def search(self, dish):
+            seen["where"] = dict(self.where)
+            import food
+            raise food.NothingHere(f"Swiggy shows nothing for {dish} where you are now; it may not deliver there.")
+    b.swiggy = Sw()
+    b.handle({"channel": "app", "chat": "owner", "text": "where am I?", "location": {"lat": 30.44, "lng": 74.88}})
+    prompt = m.seen[0][0][0]["content"]
+    assert "Where the owner is right now (from their phone" in prompt and "Kotkapura, Faridkot" in prompt
+    assert prompt.index("Where the owner is right now") < prompt.index("What the owner said before")  # above memory
+    r = b.handle({"channel": "app", "chat": "owner", "text": "order dosa under 300", "location": {"lat": 30.44, "lng": 74.88}})
+    assert seen["where"]["lat"] == 30.44 and seen["where"]["city"] == "Faridkot"
+    assert r == "Swiggy shows nothing for dosa near Kotkapura, Faridkot; it may not deliver there."

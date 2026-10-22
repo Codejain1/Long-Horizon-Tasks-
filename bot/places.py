@@ -82,3 +82,17 @@ def nearby_food(loc: dict | None, radius_m: int = 2000, cuisine: str = "", limit
     places.sort(key=lambda p: (p["vegetarian"] not in ("only", "yes"), p["km"]))
     return {"near": loc.get("area") or f"{loc['lat']},{loc['lng']}", "radius_m": radius_m, "count": len(places),
             "places": places[:limit]}
+
+
+def reverse(lat: float, lng: float, fetch=None) -> dict:
+    """A place name for coordinates (OpenStreetMap): {"area", "city"}; {} if it can't tell."""
+    fetch = fetch or _http_json
+    try:
+        r = fetch("https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode(
+            {"lat": lat, "lon": lng, "format": "jsonv2", "zoom": 16}))
+    except Exception:
+        return {}
+    a = (r or {}).get("address") or {}
+    area = a.get("suburb") or a.get("neighbourhood") or a.get("village") or a.get("town") or a.get("city_district") or ""
+    city = a.get("city") or a.get("town") or a.get("county") or a.get("state_district") or ""
+    return {k: v for k, v in (("area", area), ("city", city)) if v}

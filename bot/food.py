@@ -35,13 +35,48 @@ LINKS_JS = """((names) => names.map(n => {
   return a ? a.href : null;
 }))(%s)"""
 ORDERS = "https://www.swiggy.com/my-account/orders"
+# Swiggy's own search data (checked live 2026-10-23): data.cards[1].groupedCard.cardGroupMap.DISH.cards[] ->
+# DishGroup{restaurant.info{id,name,areaName,avgRating,slugs.restaurant}, dishes[].info{name,price (paise),isVeg,
+# inStock,imageId}}; restaurant page = /restaurants/<slug>-<id>. Called at the owner's real location (lat/lng):
+# without it Swiggy searched its default, Mumbai.
+FEED = ("/dapi/restaurants/search/v3?lat={lat}&lng={lng}&str={q}&submitAction=ENTER&selectedPWATab=DISH")
+IMAGE = "https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,w_300/{}"
 SEARCH = "https://www.swiggy.com/search?query={q}"
 CHECKOUT = "https://www.swiggy.com/checkout"
 NONVEG = re.compile(r"\b(chicken|mutton|lamb|egg|eggs|fish|prawns?|keema|beef|pork|crab|seafood|non[- ]?veg)\b", re.I)
 
 
+def read_feed(body: dict) -> list[dict]:
+    """Dish offers from Swiggy's search data: exact, no model, every price tied to its own dish and restaurant."""
+    out = []
+    try:
+        groups = body["data"]["cards"][1]["groupedCard"]["cardGroupMap"].get("DISH", {}).get("cards", [])
+    except (KeyError, IndexError, TypeError):
+        return out
+    for g in groups:
+        card = (g.get("card") or {}).get("card") or {}
+        if not str(card.get("@type", "")).endswith("DishGroup"):
+            continue
+        r = (card.get("restaurant") or {}).get("info") or {}
+        link = f"https://www.swiggy.com/restaurants/{(r.get('slugs') or {}).get('restaurant', '')}-{r.get('id', '')}"
+        for d in card.get("dishes") or []:
+            i = d.get("info") or {}
+            paise = i.get("price") or i.get("defaultPrice")
+            if not i.get("name") or not paise or i.get("inStock") == 0:
+                continue
+            out.append({"restaurant": r.get("name", ""), "item": i["name"], "price": round(paise / 100, 2),
+                        "rating": str(r["avgRating"]) if r.get("avgRating") else "", "area": r.get("areaName", ""),
+                        "veg": bool(i.get("isVeg")), "link": link,
+                        "image": IMAGE.format(i["imageId"]) if i.get("imageId") else "", "platform": "swiggy"})
+    return out
+
+
 class NotReady(Exception):  # (cdp.Blocked, a rail, is also reported to the owner as is)
     """Swiggy isn't usable as is (logged out, location missing, blocked): the message says what the owner should do."""
+
+
+class NothingHere(NotReady):
+    """Swiggy answered, but has nothing for that dish at the owner's location (it may not deliver there)."""
 
 
 class LoggedOut(NotReady):
@@ -111,7 +146,7 @@ def read_offers(page: str, dish: str, chat=brain.chat) -> list[dict]:
 
 def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3) -> list[dict]:
     """Code, not the model: drop non-veg for a veg owner and anything over budget, cheapest first."""
-    ok = [o for o in offers if not (veg and NONVEG.search(str(o.get("item"))))
+    ok = [o for o in offers if not (veg and (o.get("veg") is False or NONVEG.search(str(o.get("item")))))
           and (max_total is None or float(str(o["price"]).replace(",", "")) <= float(max_total))]
     seen, out = set(), []
     for o in sorted(ok, key=lambda o: float(str(o["price"]).replace(",", ""))):
@@ -124,8 +159,9 @@ def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3) -> l
 
 class Swiggy:
     def __init__(self, tab=cdp.Tab, chat=brain.chat, captures=None):
-        """captures: a folder where a page the bot couldn't read is saved, to test the fix on the real page."""
-        self.tab, self.chat, self.captures = tab, chat, captures
+        """captures: a folder where a page the bot couldn't read is saved, to test the fix on the real page.
+        where: the owner's location {"lat", "lng"} for searches (set by the assistant from the phone)."""
+        self.tab, self.chat, self.captures, self.where = tab, chat, captures, None
 
     def _capture(self, kind: str, page: str) -> None:
         if self.captures:
@@ -169,6 +205,10 @@ class Swiggy:
         return page
 
     def search(self, dish: str) -> list[dict]:
+        if self.where:  # Swiggy's own data at the owner's real location (fast, exact); page reading is the fallback
+            got = self._search_feed(dish)
+            if got is not None:
+                return got
         t = self.tab()
         try:
             page = self._search_page(t, dish)
@@ -187,6 +227,26 @@ class Swiggy:
             return got
         finally:
             t.close()
+
+    def _search_feed(self, dish: str) -> list[dict] | None:
+        """None = the data request itself failed (use the page); [] never: no dishes there raises NothingHere."""
+        import json as _json
+        t = self.tab()
+        try:
+            t.open("https://www.swiggy.com/")
+            url = FEED.format(lat=self.where["lat"], lng=self.where["lng"], q=urllib.parse.quote(dish))
+            raw = t.js(f"fetch({_json.dumps(url)}, {{credentials: 'include'}}).then(r => r.text())")
+            body = _json.loads(raw or "null")
+        except Exception:
+            return None
+        finally:
+            t.close()
+        if not isinstance(body, dict) or body.get("statusCode") not in (0, None):
+            return None
+        got = read_feed(body)
+        if not got:
+            raise NothingHere(f"Swiggy shows nothing for {dish} where you are now; it may not deliver there.")
+        return got
 
     def add(self, offer: dict) -> dict:
         t = self.tab()

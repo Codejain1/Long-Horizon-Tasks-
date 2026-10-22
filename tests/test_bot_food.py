@@ -243,3 +243,47 @@ def test_add_to_cart_uses_the_restaurant_link_before_searching():
     r = F.Swiggy(tab=LinkTab).add({"restaurant": "Paradise", "item": "Veg Biryani", "price": 249,
                                    "link": "https://www.swiggy.com/restaurants/paradise-123"})
     assert opened == ["https://www.swiggy.com/restaurants/paradise-123", F.CHECKOUT] and r["total"] == "284"
+
+
+
+FEED = {"statusCode": 0, "data": {"cards": [
+    {"card": {"card": {"@type": "type.googleapis.com/swiggy.gandalf.widgets.v2.Navigation", "tab": []}}},
+    {"groupedCard": {"cardGroupMap": {"DISH": {"cards": [
+        {"card": {"card": {"@type": "x.SearchFilterSortWidget"}}},
+        {"card": {"card": {"@type": "type.googleapis.com/swiggy.presentation.food.v2.DishGroup",
+                           "restaurant": {"info": {"id": "123", "name": "Paradise", "areaName": "HSR", "avgRating": 4.3,
+                                                   "slugs": {"restaurant": "paradise-hsr-bangalore", "city": "bangalore"}}},
+                           "dishes": [{"info": {"name": "Veg Biryani", "price": 24900, "isVeg": 1, "inStock": 1, "imageId": "abc"}},
+                                      {"info": {"name": "Chicken Biryani", "price": 28900, "isVeg": 0, "inStock": 1}},
+                                      {"info": {"name": "Sold Out Biryani", "price": 19900, "isVeg": 1, "inStock": 0}}]}}}]}}}}]}}
+
+
+def test_swiggy_data_feed_is_read_exactly_without_the_model():
+    got = F.read_feed(FEED)
+    assert [(o["item"], o["price"], o["veg"]) for o in got] == [("Veg Biryani", 249.0, True), ("Chicken Biryani", 289.0, False)]
+    assert got[0]["link"] == "https://www.swiggy.com/restaurants/paradise-hsr-bangalore-123" and got[0]["rating"] == "4.3"
+    assert got[0]["image"].endswith("/abc") and got[0]["area"] == "HSR"
+    assert [o["item"] for o in F.pick(got, veg=True)] == ["Veg Biryani"]  # Swiggy's own veg flag
+    assert F.read_feed({"data": {"cards": [{}, {"groupedCard": {"cardGroupMap": {"RESTAURANT": {"cards": []}}}}]}}) == []
+
+
+def test_search_uses_the_feed_at_the_owners_location_and_says_when_nothing_is_there():
+    import json as _json
+    calls = []
+
+    class FeedTab(FakeTab):
+        body = FEED
+
+        def js(self, expr):
+            calls.append(expr)
+            return _json.dumps(self.body)
+    sw = F.Swiggy(tab=FeedTab, chat=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no model")))
+    sw.where = {"lat": 12.9116, "lng": 77.6474}
+    got = sw.search("veg biryani")
+    assert got[0]["item"] == "Veg Biryani" and "lat=12.9116&lng=77.6474&str=veg%20biryani" in calls[-1]
+    FeedTab.body = {"statusCode": 0, "data": {"cards": [{}, {"groupedCard": {"cardGroupMap": {"RESTAURANT": {"cards": []}}}}]}}
+    try:
+        sw.search("veg biryani")
+        raise AssertionError("should have raised")
+    except F.NothingHere as e:
+        assert "nothing for veg biryani" in str(e)
