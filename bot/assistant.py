@@ -84,6 +84,8 @@ SET_GOOGLE = re.compile(r"^\s*(use\s+)?google\s+(for\s+)?log ?ins?\s*(with|:|=)?
 LOGIN_TO = re.compile(r"^\s*(log ?in|sign ?in)\s+(to|on|into)?\s*(%s)\b" % "|".join(login.SITES), re.I)
 SET_UPI = re.compile(r"^\s*(set\s+)?(my\s+)?upi(\s+id)?\s*(is|to|:|=)?\s*([\w.\-]{2,256}@[a-z][a-z0-9]{1,63})\s*$", re.I)
 SET_CAP = re.compile(r"^\s*(set\s+)?(my\s+)?order\s+cap\s*(is|to|:|=)?\s*₹?\s*([\d,]{2,7})\s*$", re.I)
+# placing orders stays off until the payment check is fixed and verified on a real checkout (code review 2026-10-23)
+ORDERING = os.environ.get("BOT_ORDERING", "0") == "1"
 CAP = 1500  # ₹ per order unless the owner sets another (owner, 2026-10-22: "you decide, I'll tell you if it changes")
 TRACK_EVERY_S, TRACK_FOR_S = 120, 2 * 3600
 OTP = re.compile(r"^\s*(\d[\s-]?){4,8}\s*$")
@@ -553,8 +555,9 @@ class Assistant:
                          + rev)
         tail = f"\n(Couldn't read {', '.join(failed)} this time.)" if failed else ""
         return (note + "Best options:\n" + "\n".join(lines) + tail
-                + "\nReply with a number plus 'order' (I order it, you approve the UPI request), 'cart' (I fill your "
-                "cart) or 'link' (you order), e.g. '1 order'.")
+                + ("\nReply with a number plus 'order' (I order it, you approve the UPI request), 'cart' (I fill your "
+                   "cart) or 'link' (you order), e.g. '1 order'." if ORDERING else
+                   "\nReply with a number plus 'cart' (I fill your Swiggy cart) or 'link' (you order), e.g. '1 cart'."))
 
     def _prepare_order(self, chat: str, offer: dict, tid) -> str:
         """Cart, then the checkout page read back (items, total, address) for the owner's YES: nothing is paid yet."""
@@ -622,6 +625,9 @@ class Assistant:
     def _choose(self, chat: str, offer: dict, how: str, tid: int | None) -> str:
         self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
         if re.search(r"\b(order|for me|place)\b", how, re.I) and offer.get("platform") == "swiggy":
+            if not ORDERING:
+                return (self._add_to_cart(chat, tid, offer) + "\n(Ordering for you is paused until I've verified the "
+                        "payment step on a real Swiggy checkout with you, so I filled the cart instead.)")
             return self._prepare_order(chat, offer, tid)
         if re.search(r"\bcart\b", how, re.I) and offer.get("platform") == "swiggy":
             return self._add_to_cart(chat, tid, offer)

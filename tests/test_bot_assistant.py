@@ -396,6 +396,7 @@ class FakeOrders:
 
 
 def order_bot(tmp_path, orders):
+    A.ORDERING = True  # the order tests exercise the (paused) ordering path
     m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
     b = bot(tmp_path, m)
     b.swiggy, b.orders = FakeSwiggy(OFFERS), orders
@@ -463,3 +464,16 @@ def test_chrome_health_alerts_once_when_it_breaks_and_once_when_back():
         w.tick()
     assert sent == ["⚠ The bot's Chrome isn't loading pages, so Swiggy and logins won't work until it's fixed.",
                     "✅ The bot's Chrome loads pages again."]
+
+
+
+def test_ordering_is_paused_by_default_and_fills_the_cart(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "ORDERING", False)
+    m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
+    b = bot(tmp_path, m)
+    b.swiggy, b.orders = FakeSwiggy(OFFERS), FakeOrders()
+    b.store.set_fact("owner:upi", "me@okaxis")
+    say(b, "order veg biryani under 400")
+    assert "'cart'" in say(b, "yes") and "'order'" not in b._said("c1")[0]
+    r = say(b, "1 order")
+    assert "To pay: ₹284" in r and "Ordering for you is paused" in r and b.orders.paid == []
