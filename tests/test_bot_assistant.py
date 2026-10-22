@@ -401,9 +401,20 @@ def order_bot(tmp_path, orders):
     b = bot(tmp_path, m)
     b.swiggy, b.orders = FakeSwiggy(OFFERS), orders
     tracked = []
-    b._track = lambda send: tracked.append(send)
+    b._track = lambda chat, send: tracked.append(chat)
     say(b, "order veg biryani under 400"), say(b, "yes")
     return b, tracked
+
+
+def say_and_wait(b, text, chat="c1", wait=2.0):
+    """A turn whose work finishes in the background (payment): the reply, then the messages sent after it."""
+    import time as _t
+    notes = []
+    r = b.handle({"channel": "whatsapp", "chat": chat, "text": text}, notify=notes.append)
+    end = _t.time() + wait
+    while _t.time() < end and not any(n.startswith(("Paid", "Not ordered", "Stopped", "The payment")) for n in notes):
+        _t.sleep(0.02)
+    return r, notes
 
 
 def test_order_for_me_needs_upi_then_yes_on_the_exact_total(tmp_path):
@@ -417,8 +428,9 @@ def test_order_for_me_needs_upi_then_yes_on_the_exact_total(tmp_path):
     assert r == ("Order Veg Biryani x 1 from Paradise, delivered to Home, Koramangala, total ₹284, paid by a UPI "
                  "request to me@okaxis? (YES / no)")
     assert orders.paid == []  # nothing paid before YES
-    r = say(b, "yes")
-    assert orders.paid == [("me@okaxis", 284.0)] and r.startswith("Paid and ordered ✅ ₹284") and len(tracked) == 1
+    r, notes = say_and_wait(b, "yes")
+    assert r.startswith("Sending the payment request for ₹284 to me@okaxis")  # the chat isn't blocked
+    assert orders.paid == [("me@okaxis", 284.0)] and notes[-1].startswith("Paid and ordered ✅ ₹284") and tracked == ["c1"]
 
 
 def test_cap_no_and_timeout(tmp_path):
@@ -433,7 +445,8 @@ def test_cap_no_and_timeout(tmp_path):
     b3.store.set_fact("owner:upi", "me@okaxis")
     assert say(b3, "order cap 2000").startswith("Order cap set to ₹2000")
     say(b3, "1 order")
-    assert "didn't approve the request in time" in say(b3, "yes")
+    r, notes = say_and_wait(b3, "yes")
+    assert "didn't approve the request in time" in notes[-1]
 
 
 def test_tracking_sends_only_changes_until_delivered(tmp_path):
@@ -443,8 +456,38 @@ def test_tracking_sends_only_changes_until_delivered(tmp_path):
                 {"status": "Delivered", "delivered": True}])
     b.orders = type("O", (), {"status": lambda self: next(seq)})()
     sent = []
-    A.Assistant._track(b, sent.append, sleep=lambda s: None)
+    import time as _t
+    b.db.execute("INSERT INTO trackers VALUES ('c1', 'whatsapp', '', ?)", (_t.time() + 3600,))
+    A.Assistant._track(b, "c1", sent.append, sleep=lambda s: None)
     assert sent == ["🛵 Order confirmed", "🛵 Out for delivery, about 5 min away", "🛵 Delivered"]
+    assert b._read("SELECT * FROM trackers") == []  # done: removed
+
+
+def test_tracking_resumes_after_a_restart(tmp_path):
+    import time as _t
+    b = bot(tmp_path, Model())
+    b.db.execute("INSERT INTO trackers VALUES ('c9', 'telegram', 'Order confirmed', ?)", (_t.time() + 3600,))
+    b.db.commit()
+    started = []
+    b._track = lambda chat, send: started.append((chat, send))
+    assert b.resume_trackers(lambda channel, chat, text: None) == 1
+    _t.sleep(0.05)
+    assert started[0][0] == "c9"
+
+
+def test_a_number_is_a_pick_only_as_the_whole_reply(tmp_path):
+    ideas = {"content": json.dumps({"ideas": [{"dish": "Veg Biryani", "why": "usual"}, {"dish": "Dosa", "why": "light"},
+                                              {"dish": "Pav Bhaji", "why": "new"}]})}
+    m = Model({"content": json.dumps({"action": "suggest_food", "kind": "none", "details": {}, "reply": ""})}, ideas,
+              call("task_start", kind="train", slots={"from": "Bangalore", "to": "Mysore", "date": "sunday",
+                                                       "passengers": "2"}))
+    b = bot(tmp_path, m)
+    b.swiggy = FakeSwiggy(OFFERS)
+    say(b, "what should I eat?")
+    r = say(b, "2 tickets to Mysore on Sunday from Bangalore")  # live: was taken as "pick idea 2"
+    assert "Mysore" in json.dumps(b.store.task(1)["slots"]) and not r.startswith("Best options")
+    assert b._session("c1")["mode"] == "form"
+
 
 
 def test_a_yes_inside_a_longer_answer_counts(tmp_path):

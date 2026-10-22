@@ -79,6 +79,8 @@ class ChromeWatch:
 
 def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float = 300):
     pool = ThreadPoolExecutor(4)
+    if hasattr(bot, "resume_trackers"):  # orders being tracked before a restart carry on
+        bot.resume_trackers(lambda channel, chat, text: chans[channel].send(chat, text) if channel in chans else None)
     busy: dict[str, threading.Lock] = {}
     owner = next((j["deliver"] for j in getattr(sched, "jobs", []) if j.get("deliver")), None)
 

@@ -174,7 +174,10 @@ class Assistant:
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS log (ts REAL, channel TEXT, chat TEXT, role TEXT, text TEXT)")
-        self.db.execute("CREATE TABLE IF NOT EXISTS pending (chat TEXT PRIMARY KEY, task INTEGER)")
+        # one conversation state per chat (form | ideas | options | confirm_order | login), replacing four stores
+        self.db.execute("CREATE TABLE IF NOT EXISTS sessions (chat TEXT PRIMARY KEY, mode TEXT, data TEXT, expires REAL)")
+        # orders being tracked: survive restarts (resume_trackers)
+        self.db.execute("CREATE TABLE IF NOT EXISTS trackers (chat TEXT PRIMARY KEY, channel TEXT, last TEXT, until REAL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS traces (ts REAL, chat TEXT, text TEXT, reply TEXT, ms INTEGER, "
                         "steps TEXT)")
         self.lock = threading.Lock()
@@ -207,15 +210,40 @@ class Assistant:
         rows = self._read("SELECT ts, role, text FROM log WHERE ts > ? ORDER BY ts", (time.time() - days * 86400,))
         return [(time.strftime("%Y-%m-%dT%H:%M", time.gmtime(ts)), role, text) for ts, role, text in rows]
 
-    def _pending(self, chat, task=None, clear=False):
+    def _session(self, chat: str) -> dict | None:
+        """The one thing this chat is in the middle of, or None."""
+        rows = self._read("SELECT mode, data, expires FROM sessions WHERE chat=?", (chat,))
+        if not rows:
+            return None
+        mode, data, expires = rows[0]
+        if expires < time.time():
+            self._end(chat)
+            return None
+        return {"mode": mode, **json.loads(data)}
+
+    def _start(self, chat: str, mode: str, ttl_h: float, **data) -> None:
+        """Begin a session: it replaces whatever this chat was in before (one thing at a time)."""
         with self.lock:
-            if clear:
-                self.db.execute("DELETE FROM pending WHERE chat=?", (chat,))
-            elif task is not None:
-                self.db.execute("INSERT OR REPLACE INTO pending VALUES (?,?)", (chat, task))
+            self.db.execute("INSERT OR REPLACE INTO sessions VALUES (?,?,?,?)",
+                            (chat, mode, json.dumps(data, ensure_ascii=False), time.time() + 3600 * ttl_h))
             self.db.commit()
-            r = self.db.execute("SELECT task FROM pending WHERE chat=?", (chat,)).fetchone()
-        return r[0] if r else None
+
+    def _end(self, chat: str) -> None:
+        with self.lock:
+            self.db.execute("DELETE FROM sessions WHERE chat=?", (chat,))
+            self.db.commit()
+
+    def _pending(self, chat, task=None, clear=False):
+        """The open booking form's task id (compat: a 'form' session)."""
+        if clear:
+            s = self._session(chat)
+            if s and s["mode"] == "form":
+                self._end(chat)
+            return None
+        if task is not None:
+            self._start(chat, "form", 2, task=task)
+        s = self._session(chat)
+        return s["task"] if s and s["mode"] == "form" else None
 
     # memory ----------------------------------------------------------------------------------------------------
     def _memory(self, text: str) -> tuple[str, dict]:
@@ -287,6 +315,7 @@ class Assistant:
         self.notify = notify or (lambda text: None)
         chat, text, t = msg["chat"], msg["text"], time.time()
         self.local.steps = steps = []
+        self.local.channel = msg.get("channel", "whatsapp")
         food.cdp.TIMER.set(steps.append)  # browser actions (also in the parallel app searches) time themselves
         secret = bool(self.login.waiting_for(chat) and OTP.match(text))  # a login OTP: used, never stored
         shown = "[login OTP]" if secret else text
@@ -343,9 +372,9 @@ class Assistant:
         if m:
             return self._need_login(chat, m[3].lower(), None)
         self._remember(chat, text)
-        stage = self.store.fact(f"stage:{chat}")
-        if stage and not stage["stale"]:
-            r = self._stage(chat, text, stage["value"])
+        sess = self._session(chat)
+        if sess and sess["mode"] in ("ideas", "options", "confirm_order"):
+            r = self._stage(chat, text, sess)
             if r is not None:
                 return r
         tid = self._pending(chat)
@@ -451,7 +480,7 @@ class Assistant:
             return self._resume(chat, resume) if resume else f"You're already logged in to {site.title()}."
         if r != "otp_sent":
             return r
-        self.store.set_fact(f"resume:{chat}", resume, "bot", ttl_h=0.2)
+        self._start(chat, "login", 0.2, site=site, resume=resume)
         return f"{site.title()} sent an OTP to your number ending {phone[-4:]}. Send it here (just the digits)."
 
     def _finish_login(self, chat: str, text: str) -> str:
@@ -463,8 +492,10 @@ class Assistant:
             return str(e)
         if not ok:
             return f"That didn't log me in to {site.title()} (wrong or expired OTP?). Say 'login to {site}' to try again."
-        resume = self.store.fact(f"resume:{chat}")
-        return f"Logged in to {site.title()} ✅\n" + self._resume(chat, resume["value"] if resume and not resume["stale"] else None)
+        sess = self._session(chat)
+        resume = sess.get("resume") if sess and sess["mode"] == "login" else None
+        self._end(chat)
+        return f"Logged in to {site.title()} ✅\n" + self._resume(chat, resume)
 
     def _resume(self, chat: str, resume: dict | None) -> str:
         if not resume:
@@ -506,30 +537,31 @@ class Assistant:
         ideas = [i for i in got.get("ideas", []) if i.get("dish")][:3]
         if not ideas:
             return "Tell me a dish or two you feel like and I'll compare them across the apps."
-        self.store.set_fact(f"stage:{chat}", {"stage": "ideas", "ideas": ideas}, "bot", ttl_h=1)
+        self._start(chat, "ideas", 1, ideas=ideas)
         return ("\n".join(f"{n}. {i['dish']} — {i['why']}" for n, i in enumerate(ideas, 1))
                 + "\nReply 1, 2 or 3 and I'll compare it across the food apps near you, with reviews.")
 
     def _stage(self, chat: str, text: str, st: dict) -> str | None:
-        """The owner answering a list the bot sent (ideas or options) or an order to confirm; None = not an answer,
-        route normally."""
-        if st["stage"] == "confirm_order":
-            self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
+        """The owner answering a list the bot sent (ideas or options) or an order to confirm; None = not an answer
+        (the session ends and the message is understood afresh). A number counts only as the whole reply: live,
+        "2 tickets to Mysore" was taken as "pick 2"."""
+        if st["mode"] == "confirm_order":
+            self._end(chat)
             if YES.match(text) or (YES_IN.search(text) and not NO_IN.search(text)):
                 return self._place(chat, st)
             if NO.match(text):
                 return "Okay, not ordering. It's still in your Swiggy cart."
             return None
-        m = PICK.match(text)
-        if not m:
-            self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
+        if st["mode"] == "ideas":
+            m = re.fullmatch(r"\s*#?([1-3])\s*[.!]?\s*", text)
+            self._end(chat)
+            if m and int(m[1]) <= len(st["ideas"]):
+                return self._compare(chat, {"dish": st["ideas"][int(m[1]) - 1]["dish"]}, None)
             return None
-        n = int(m[1])
-        if st["stage"] == "ideas" and n <= len(st["ideas"]):
-            self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
-            return self._compare(chat, {"dish": st["ideas"][n - 1]["dish"]}, None)
-        if st["stage"] == "options" and n <= len(st["options"]):
-            return self._choose(chat, st["options"][n - 1], m[2], st.get("task"))
+        m = re.fullmatch(r"\s*#?([1-3])\s*[,.]?\s*(link|cart|order|order it|for me|place it|place)?\s*[.!]?\s*", text, re.I)
+        if m and int(m[1]) <= len(st["options"]):
+            return self._choose(chat, st["options"][int(m[1]) - 1], m[2] or "", st.get("task"))
+        self._end(chat)
         return None
 
     def _compare(self, chat: str, slots: dict, tid: int | None) -> str:
@@ -559,7 +591,7 @@ class Assistant:
         t0 = time.time()
         self._add_reviews(top)
         self._step("reviews", ms=int(1000 * (time.time() - t0)), n=len(top))
-        self.store.set_fact(f"stage:{chat}", {"stage": "options", "options": top, "task": tid}, "bot", ttl_h=1)
+        self._start(chat, "options", 1, options=top, task=tid)
         lines = []
         for n, o in enumerate(top, 1):
             g = o.get("google")
@@ -590,33 +622,50 @@ class Assistant:
         if summary["total"] > cap:
             return (f"The total is ₹{summary['total']:g}, over your order cap of ₹{cap}. It's in your Swiggy cart; pay "
                     "there, or send 'order cap <amount>' to raise the cap.")
-        self.store.set_fact(f"stage:{chat}", {"stage": "confirm_order", "summary": summary, "upi": upi, "task": tid},
-                            "bot", ttl_h=0.25)
+        self._start(chat, "confirm_order", 0.25, summary=summary, upi=upi, task=tid)
         return (f"Order {', '.join(summary['items']) or offer['item']} from {offer['restaurant']}, delivered to "
                 f"{summary['address']}, total ₹{summary['total']:g}, paid by a UPI request to {upi}? (YES / no)")
 
     def _place(self, chat: str, st: dict) -> str:
+        """Payment runs in the background (the owner approves in their UPI app; the chat stays free); the result
+        and then delivery updates arrive as messages."""
         total, upi = st["summary"]["total"], st["upi"]
-        self.notify(f"Placing it: approve the UPI request for ₹{total:g} on your phone ({upi}).")
-        try:
-            r = self.orders.pay(upi, total)
-        except food.cdp.Blocked as e:
-            return f"Stopped by the safety rules: {e}. Nothing was paid. It's still in your Swiggy cart."
-        if r != "paid":
-            why = "you didn't approve the request in time" if r == "timeout" else r.replace("failed: ", "")
-            return f"Not ordered: {why}. It's still in your Swiggy cart."
-        if st.get("task"):
-            B.finish(self.store, st["task"], "done", f"ordered ₹{total:g} by UPI", "swiggy")
-        send = self.notify
-        threading.Thread(target=self._track, args=(send,), daemon=True).start()
-        return f"Paid and ordered ✅ ₹{total:g}. I'll send you updates until it arrives."
+        send, channel = self.notify, getattr(self.local, "channel", "whatsapp")
 
-    def _track(self, send, sleep=time.sleep) -> None:
-        """Order updates until delivered: only when the status changes; stops after 3 failed reads in a row."""
-        last, fails, waited = None, 0, 0
-        while waited < TRACK_FOR_S:
+        def run():
+            try:
+                r = self.orders.pay(upi, total)
+            except food.cdp.Blocked as e:
+                send(f"Stopped by the safety rules: {e}. Nothing was paid. It's still in your Swiggy cart.")
+                return
+            except Exception as e:
+                send(f"The payment step broke ({type(e).__name__}). Nothing was confirmed; check Swiggy.")
+                return
+            if r != "paid":
+                why = "you didn't approve the request in time" if r == "timeout" else r.replace("failed: ", "")
+                send(f"Not ordered: {why}. It's still in your Swiggy cart.")
+                return
+            if st.get("task"):
+                B.finish(self.store, st["task"], "done", f"ordered ₹{total:g} by UPI", "swiggy")
+            with self.lock:
+                self.db.execute("INSERT OR REPLACE INTO trackers VALUES (?,?,?,?)",
+                                (chat, channel, "", time.time() + TRACK_FOR_S))
+                self.db.commit()
+            send(f"Paid and ordered ✅ ₹{total:g}. I'll send you updates until it arrives.")
+            self._track(chat, send)
+        threading.Thread(target=run, daemon=True).start()
+        return f"Sending the payment request for ₹{total:g} to {upi}: approve it in your UPI app. I'll confirm here."
+
+    def _track(self, chat: str, send, sleep=time.sleep) -> None:
+        """Order updates until delivered: only when the status changes; stops after 3 failed reads in a row. State is
+        in the trackers table, so a restart resumes it (resume_trackers)."""
+        fails = 0
+        while True:
+            row = self._read("SELECT last, until FROM trackers WHERE chat=?", (chat,))
+            if not row or time.time() > row[0][1]:
+                break
+            last = row[0][0]
             sleep(TRACK_EVERY_S)
-            waited += TRACK_EVERY_S
             try:
                 st = self.orders.status()
                 fails = 0
@@ -624,15 +673,28 @@ class Assistant:
                 fails += 1
                 if fails >= 3:
                     send("I can't read the order status any more. Check Swiggy for updates.")
-                    return
+                    break
                 continue
             now = st.get("status", "")
             if now and now != last:
                 eta = f", about {st['eta_minutes']:g} min away" if isinstance(st.get("eta_minutes"), (int, float)) else ""
                 send(f"🛵 {now}{eta}")
-                last = now
+                with self.lock:
+                    self.db.execute("UPDATE trackers SET last=? WHERE chat=?", (now, chat))
+                    self.db.commit()
             if st.get("delivered"):
-                return
+                break
+        with self.lock:
+            self.db.execute("DELETE FROM trackers WHERE chat=?", (chat,))
+            self.db.commit()
+
+    def resume_trackers(self, sender) -> int:
+        """After a restart: keep tracking open orders. sender(channel, chat, text). Returns how many resumed."""
+        rows = self._read("SELECT chat, channel FROM trackers WHERE until > ?", (time.time(),))
+        for chat, channel in rows:
+            threading.Thread(target=self._track, args=(chat, lambda text, c=chat, ch=channel: sender(ch, c, text)),
+                             daemon=True).start()
+        return len(rows)
 
     def reviews(self, restaurant: str):
         area = (self.store.fact("owner:area") or {}).get("value") or "Bangalore"
@@ -658,7 +720,7 @@ class Assistant:
                     o["google"] = None
 
     def _choose(self, chat: str, offer: dict, how: str, tid: int | None) -> str:
-        self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
+        self._end(chat)
         if re.search(r"\b(order|for me|place)\b", how, re.I) and offer.get("platform") == "swiggy":
             if not ORDERING:
                 return (self._add_to_cart(chat, tid, offer) + "\n(Ordering for you is paused until I've verified the "
