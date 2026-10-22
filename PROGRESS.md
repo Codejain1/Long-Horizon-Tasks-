@@ -87,6 +87,27 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Hold-to-talk voice + more food apps (2026-10-23, deployed `/opt/bot-20261022-234242`)
+**Voice:**
+- The app has hold-to-talk (expo-audio, m4a). `POST /voice` sends it to `bot/stt.py`, a separate `owner-stt`
+  service running faster-whisper small on CPU with int8.
+- Measured on real spoken clips: exact transcripts ("find me veg biryani under 300 rupees", "Train to Chennai on 2nd
+  November, 3A, for me and mom") in **2.9 s**.
+- Install bug found: faster-whisper 1.2 + PyAV 19 fail with a TypeError, so the installer pins PyAV 18.x.
+
+**First end-to-end run with the Swiggy feed:** voice -> 3 real options with photos, ratings and Google reviews.
+- It found add-ons and grocery packs picked as the "cheapest biryani"; the relevance filter fixes that.
+- Time: about 12–15 s wall, mostly opening Swiggy plus 3 Maps tabs.
+
+**Food apps checked live from the server:**
+
+| App | Result |
+|---|---|
+| Zomato | "Access Denied" even in real Chrome (data-centre IP): needs a residential connection |
+| magicpin | **Connected**: its search page has dishes and prices at the location, read by the model with the one-card check (11 dishes in 21 s), sent as a follow-up with the saving vs Swiggy's best |
+| EatSure | loads and asks for a location; not connected yet |
+| EatClub | web has no search (app-only) |
+
 ## Location fixed, Swiggy data feed, option cards (2026-10-23, deployed `/opt/bot-20261022-233026`)
 **Found live:**
 - The phone sent its location (Jaito, Punjab), but the bot answered "near Whitefield" from old memory.
