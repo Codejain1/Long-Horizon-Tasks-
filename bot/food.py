@@ -21,7 +21,8 @@ import login
 PLATFORMS = {
     "swiggy": {"search": "https://www.swiggy.com/search?query={q}", "verified": True},
     "zomato": {"search": "https://www.zomato.com/{city}/delivery?q={q}", "verified": False},
-    "magicpin": {"search": "https://magicpin.in/{city}/search/?q={q}", "verified": False},
+    # checked live 2026-10-23: the search page carries the dishes and prices in its text, at the given location
+    "magicpin": {"search": "https://magicpin.in/{city}/search?query={q}&latitude={lat}&longitude={lng}", "verified": True},
     "eatclub": {"search": "https://www.eatclub.in/search?q={q}", "verified": False},
 }
 MAPS = "https://www.google.com/maps/search/{q}"
@@ -135,10 +136,12 @@ def read_orders(page: str, chat=brain.chat) -> list[dict]:
     return out
 
 
-def read_offers(page: str, dish: str, chat=brain.chat) -> list[dict]:
-    got = brain.extract([{"role": "system", "content": f"This is the text of a Swiggy search page for '{dish}'. List "
-                          "every dish card on it that matches what was searched. Copy names and prices exactly as "
-                          "written."}, {"role": "user", "content": page[:14000]}], OFFERS_SCHEMA, chat, max_tokens=3000)
+def read_offers(page: str, dish: str, chat=brain.chat, app: str = "Swiggy", most: int = 0) -> list[dict]:
+    limit = f" At most {most}, the ones that are clearly the dish itself." if most else ""
+    got = brain.extract([{"role": "system", "content": f"This is the text of a {app} search page for '{dish}'. List "
+                          f"every dish card on it that matches what was searched.{limit} Copy names and prices exactly "
+                          "as written."}, {"role": "user", "content": page[:14000]}], OFFERS_SCHEMA, chat,
+                        max_tokens=1500 if most else 3000)
     # one card: the dish, its restaurant and its price close together (live: prices could pair with the wrong dish)
     return [o for o in got.get("offers", [])
             if o.get("item") and o.get("restaurant") and _near(page, o["item"], o["restaurant"], o.get("price"))]
@@ -430,3 +433,29 @@ class Orders:
             return read_status(t.open(ORDERS), self.chat)
         finally:
             t.close()
+
+
+
+class MagicPin:
+    """magicpin's search page at the owner's location: no data feed seen, so the page is read (model + one-card
+    check). Slower (~15-35 s), so the assistant sends it as a follow-up after Swiggy's results."""
+
+    def __init__(self, tab=cdp.Tab, chat=brain.chat):
+        self.tab, self.chat, self.where = tab, chat, None
+
+    def search(self, dish: str) -> list[dict]:
+        if not self.where:
+            return []
+        w = self.where
+        city = re.sub(r"\s+", "-", (w.get("city") or "Bangalore").strip()).title()
+        url = PLATFORMS["magicpin"]["search"].format(city=city, q=urllib.parse.quote(dish), lat=w["lat"], lng=w["lng"])
+        t = self.tab()
+        try:
+            t.open(url)
+            t.scroll_end()  # more results load as the page scrolls
+            page = t.settle(timeout=10)
+        finally:
+            t.close()
+        if any(x in page.lower() for x in ("access denied", "captcha")):
+            raise NotReady("magicpin blocked the request from the server.")
+        return [{**o, "platform": "magicpin", "link": url} for o in read_offers(page, dish, self.chat, "magicpin", 12)]

@@ -184,6 +184,7 @@ class Assistant:
         self.think = os.environ.get("BOT_THINK", "0") == "1"  # Qwen reasoning for routing (A/B in botsmoke)
         self.login = logins or login.Login()
         self.orders = food.Orders(chat=self._traced)
+        self.magicpin = food.MagicPin(chat=self._traced)
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS log (ts REAL, channel TEXT, chat TEXT, role TEXT, text TEXT)")
@@ -678,6 +679,7 @@ class Assistant:
                          + (f" ★{o['rating']}" if o.get("rating") else "") + (f" ({o['eta']})" if o.get("eta") else "")
                          + rev)
         tail = f"\n(Couldn't read {', '.join(failed)} this time.)" if failed else ""
+        self._follow_up(dish, slots.get("max_total"), veg, top)
         cards = [{"choice": lab, "title": o["item"], "subtitle": o["restaurant"] + (f" · {o['area']}" if o.get("area") else ""),
                   "price": f"₹{o['price']:g}", "rating": o.get("rating") or "", "image": o.get("image") or "",
                   "note": (f"Google ★{o['google']['rating']:g}: " + ", ".join(o["google"]["liked"][:2])) if o.get("google") else "",
@@ -774,6 +776,29 @@ class Assistant:
             threading.Thread(target=self._track, args=(chat, lambda text, c=chat, ch=channel: sender(ch, c, text)),
                              daemon=True).start()
         return len(rows)
+
+    def _follow_up(self, dish: str, max_total, veg: bool, swiggy_top: list) -> None:
+        """magicpin is slower (page reading): its best options come as a second message, compared with Swiggy's."""
+        if not food.PLATFORMS["magicpin"]["verified"] or not self.swiggy.where:
+            return
+        send, where = self.notify, self.swiggy.where
+        best = min((float(o["price"]) for o in swiggy_top), default=None)
+
+        def run():
+            try:
+                self.magicpin.where = where
+                top = food.pick(self.magicpin.search(dish), max_total, veg, 2, dish)
+            except Exception:
+                return  # a bonus: never an error message for a follow-up
+            if not top:
+                return
+            lines = []
+            for o in top:
+                cheaper = (f" (₹{best - float(o['price']):g} less than Swiggy's best)"
+                           if best is not None and float(o["price"]) < best else "")
+                lines.append(f"• {o['item']} — {o['restaurant']} — ₹{float(o['price']):g}{cheaper}")
+            send("Also on magicpin:\n" + "\n".join(lines) + f"\n{top[0]['link']}")
+        threading.Thread(target=run, daemon=True).start()
 
     def _memory_location(self) -> dict | None:
         """The last location shared on WhatsApp (memory), when the phone hasn't sent one."""

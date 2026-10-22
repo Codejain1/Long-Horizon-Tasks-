@@ -298,3 +298,26 @@ def test_only_the_dish_itself_not_add_ons_or_grocery_packs():
     assert [o["item"] for o in F.pick(live, 400, True, dish="veg biryani")] == ["Veg Dum Biryani Bowl", "Veg Biryani"]
     assert F.relevant("Masala Dosa", "dosa") and not F.relevant("Masala Dosa", "biryani")
     assert F.relevant("Margherita Pizza", "pizzas") and F.relevant("anything", "something cheap")
+
+
+def test_magicpin_reads_its_page_at_the_owners_location():
+    page = "HSR 27th Main  Biryani Pot  Veg Biryani ₹218  25% off\nTandoor Merchant  Veg Biryani ₹289"
+    opened = []
+
+    class MpTab(FakeTab):
+        def open(self, url):
+            opened.append(url)
+            return page
+
+        def settle(self, timeout=20):
+            return page
+
+        def scroll_end(self):
+            pass
+    mp = F.MagicPin(tab=MpTab, chat=model({"offers": [{"restaurant": "Biryani Pot", "item": "Veg Biryani", "price": 218},
+                                                     {"restaurant": "Tandoor Merchant", "item": "Veg Biryani", "price": 289}]}))
+    assert mp.search("veg biryani") == []  # no location: nothing (never a default city)
+    mp.where = {"lat": 12.9116, "lng": 77.6474, "city": "Bangalore"}
+    got = mp.search("veg biryani")
+    assert [o["price"] for o in got] == [218, 289] and got[0]["platform"] == "magicpin"
+    assert opened[-1] == "https://magicpin.in/Bangalore/search?query=veg%20biryani&latitude=12.9116&longitude=77.6474"
