@@ -87,6 +87,34 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Chrome outage 2026-10-22 06:46 to 2026-10-23
+- **Cause:** the DCV watchdog recreated the desktop session, and the desktop keyring came back locked. Chrome waited
+  on it for its cookie key, so every page load hung 30 s. Found by bisecting on profile copies: headless loads,
+  headful without the session bus loads, with the bus it hangs.
+- **Fix (owner ran it):** `--password-store=basic` in the hermes-chrome drop-in; backup `cdp.conf.before-basic-store`.
+  Logins must be redone once.
+- **Added:** `main.ChromeWatch`, which alerts once on Telegram when pages stop loading and once when they're back.
+
+## Code review 2026-10-23 (owner asked): fix list, ranked
+1. **Critical:**
+   - the payment "paid" check can be fooled by a header "Track order" link;
+   - an offer's price isn't checked on the same card as its dish;
+   - Google reviews are searched without area, so another branch is possible.
+2. **High:**
+   - `notify` is shared across concurrent turns;
+   - unlocked sqlite reads on a shared connection;
+   - a leading 1-3 is taken as a pick for an hour;
+   - paying blocks the chat up to 6 min, and tracking is in memory only;
+   - navigation errors are ignored (30 s timeouts);
+   - the logged-out heuristic is weak (false "already logged in to Zomato").
+3. **Medium:**
+   - `assistant.py` keeps 4 separate state stores;
+   - regex understanding;
+   - Hermes-era dead code in `booking.py`, and no way to save travellers;
+   - `_compare` is hardcoded to Swiggy, and the city to bangalore;
+   - slowness: reviews in series, `settle` waiting 20 s, 3,000-token page reads truncated at 14k characters.
+4. **Tests:** they mostly check invented page text. Real-page tests from captures are needed, plus a daily live check.
+
 ## Food flow v2 (2026-10-22, owner's design)
 **The flow:**
 1. "What should I eat?" gives 3 dish ideas from the order pattern, taste, mood and time (forced JSON).
@@ -496,6 +524,16 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-23: Qwen reasoning stays off for routing. Measured on the real model (botsmoke, 2 reps), reasoning on vs off:
+  - test2: 35/40 vs 40/40;
+  - test3: 16/20 vs 20/20;
+  - test4: 12/16 vs 14/16;
+  - the owner's live failures (live6): 8/8 vs 8/8;
+  - reply time: median 6.4 s vs 2.2 s, max 116 s vs 5 s.
+
+  With reasoning on, the model asked questions in free text instead of starting forms, and dropped details. The
+  live failures were fixed by the capability facts, the yes-inside-a-sentence rule and the no-promise rule, not by
+  reasoning.
 - 2026-10-22: the bot may place a food order paid by a UPI request to the owner's own UPI ID (owner's decision,
   approved in /permissions). It needs the owner's YES to the exact item, total and address read from the checkout
   page. Cap ₹1,500 per order until the owner changes it.
