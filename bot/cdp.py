@@ -64,6 +64,10 @@ class Blocked(Exception):
     """A rail stopped a browser action."""
 
 
+class PageError(Exception):
+    """The page didn't load (Chrome's own error, or no answer in time): said plainly, not a 30 s silent hang."""
+
+
 def targets(devtools: str = DEVTOOLS) -> list[dict]:
     with urllib.request.urlopen(devtools + "/json/list", timeout=10) as r:
         return [t for t in json.loads(r.read()) if t.get("type") == "page"]
@@ -144,7 +148,7 @@ class Tab:
             req = urllib.request.Request(devtools + "/json/new?about:blank", method="PUT")
             with urllib.request.urlopen(req, timeout=10) as r:
                 target = json.loads(r.read())
-        self.id, self.devtools, self.n = target["id"], devtools, 0
+        self.id, self.devtools, self.n, self.events = target["id"], devtools, 0, []
         self.ws = ws_factory(target["webSocketDebuggerUrl"])
 
     def call(self, method: str, **params) -> dict:
@@ -156,6 +160,8 @@ class Tab:
                 if "error" in m:
                     raise RuntimeError(f"{method}: {m['error']}")
                 return m.get("result", {})
+            if "method" in m and hasattr(self, "events") and len(self.events) < 2000:  # kept for net_json()
+                self.events.append(m)
 
     def js(self, expr: str):
         r = self.call("Runtime.evaluate", expression=expr, returnByValue=True, awaitPromise=True)
@@ -172,11 +178,12 @@ class Tab:
         """Wait until the page's text stops changing (single-page apps keep loading after 'complete')."""
         last, same, t = "", 0, 0.0
         while t < timeout:
-            sleep(0.7)
-            t += 0.7
+            sleep(0.5)
+            t += 0.5
             now = self.text()
-            same = same + 1 if now == last and len(now) > 200 else 0
-            if same >= 2:
+            # stable twice in a row; a short page counts once it has been stable for 2 s (it won't grow past 200)
+            same = same + 1 if now == last and now else 0
+            if same >= 2 and (len(now) > 200 or t >= 2):
                 return now
             last = now
         return last
@@ -186,8 +193,34 @@ class Tab:
         host = urllib.parse.urlparse(url).netloc.lower()
         if any(g in host for g in PAY_GATEWAYS):
             raise Blocked(f"rails: the bot never opens payment pages ({host})")
-        self.call("Page.navigate", url=url)
+        try:
+            r = self.call("Page.navigate", url=url)
+        except (TimeoutError, OSError) as e:
+            raise PageError(f"{host} didn't answer ({type(e).__name__})") from e
+        if r.get("errorText"):
+            raise PageError(f"{host} didn't load: {r['errorText']}")
         return self.settle()
+
+    def net_start(self) -> None:
+        """Record the page's own data responses (call before open())."""
+        self.events = []
+        self.call("Network.enable")
+
+    def net_json(self, contains: str = "", limit: int = 20) -> list[dict]:
+        """JSON bodies the page received (URLs containing `contains`): the app's own data, already structured."""
+        out = []
+        for e in self.events:
+            p = e.get("params", {})
+            r = p.get("response", {})
+            if e.get("method") == "Network.responseReceived" and "json" in r.get("mimeType", "") and contains in r.get("url", ""):
+                try:
+                    body = self.call("Network.getResponseBody", requestId=p["requestId"])
+                    out.append({"url": r["url"], "body": json.loads(body.get("body") or "null")})
+                except Exception:
+                    continue
+                if len(out) >= limit:
+                    break
+        return out
 
     def allow_order(self, max_total: float, minutes: float = 5) -> None:
         """One click that pays / orders becomes possible on this tab: once, within `minutes`, if the page's total is at

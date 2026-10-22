@@ -238,6 +238,8 @@ class Assistant:
             parts.append("Mistakes the owner corrected before (don't repeat them):\n" + "\n".join(
                 f"- {w['error'] or w['check']}" + (f" (corrected {w['seen']}x)" if w.get("seen", 1) > 1 else "")
                 for w in r["warnings"]))
+        if (cur.get("location") or {}).get("area"):  # for reviews of the right branch
+            self.store.set_fact("owner:area", cur["location"]["area"], "memory", ttl_h=24)
         if cur.get("profile"):
             parts.append("Owner's taste (private):\n" + "\n".join(f"- {p['text']}" for p in cur["profile"]))
         if cur.get("mood"):
@@ -547,14 +549,15 @@ class Assistant:
             return self._need_login(chat, "swiggy", {"do": "compare", "slots": slots, "task": tid})
         except (food.NotReady, food.cdp.Blocked) as e:
             return str(e)
+        if not top and failed and len(failed) == len(apps):
+            return f"{', '.join(a.title() for a in failed)} didn't load just now, so I couldn't compare. Try again in a minute."
         if not top:
             if tid:
                 B.finish(self.store, tid, "failed", f"no {dish} found", "swiggy")
             budget = f" under ₹{slots['max_total']:g}" if slots.get("max_total") else ""
             return f"I couldn't find {dish}{budget} on {', '.join(apps)} right now. Want something else?"
         t0 = time.time()
-        for o in top:  # reviews: a bonus, never a blocker
-            o["google"] = self.reviews(o["restaurant"])
+        self._add_reviews(top)
         self._step("reviews", ms=int(1000 * (time.time() - t0)), n=len(top))
         self.store.set_fact(f"stage:{chat}", {"stage": "options", "options": top, "task": tid}, "bot", ttl_h=1)
         lines = []
@@ -632,7 +635,27 @@ class Assistant:
                 return
 
     def reviews(self, restaurant: str):
-        return food.google_reviews(restaurant)
+        area = (self.store.fact("owner:area") or {}).get("value") or "Bangalore"
+        key = f"review:{restaurant.lower()}|{area.lower()}"
+        cached = self.store.fact(key)
+        if cached and not cached["stale"]:
+            return cached["value"]
+        got = food.google_reviews(restaurant, area)
+        if got:
+            self.store.set_fact(key, got, "google maps", ttl_h=24)
+        return got
+
+    def _add_reviews(self, options: list) -> None:
+        """Reviews for every option at once (each opens its own tab), cached a day: a bonus, never a blocker."""
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max(1, len(options))) as pool:
+            futures = [pool.submit(contextvars.copy_context().run, self.reviews, o["restaurant"]) for o in options]
+            for o, f in zip(options, futures):
+                try:
+                    o["google"] = f.result(timeout=45)
+                except Exception:
+                    o["google"] = None
 
     def _choose(self, chat: str, offer: dict, how: str, tid: int | None) -> str:
         self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)

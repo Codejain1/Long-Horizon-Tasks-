@@ -25,7 +25,7 @@ class FakeTab:
 
     def open(self, url):
         self.url = url
-        self.page = "Your orders ₹420" if self.state["logged_in"] else LOGIN_PAGE
+        self.page = "Past Orders  Your orders ₹420  Logout" if self.state["logged_in"] else LOGIN_PAGE
         return self.page
 
     def settle(self, timeout=20):
@@ -216,3 +216,10 @@ def test_live_failures_of_2026_10_21_replayed(tmp_path):
     r = say(b, "What should I eat now?")
     assert r.startswith("1. Paneer Wrap — light") and "found" not in r.lower()
     assert "NEVER say you searched" in m.seen[-2][0][0]["content"]
+
+
+
+def test_logged_in_needs_positive_signs():
+    assert not L.looks_logged_in("Zomato  Discover the best food  Log in  Sign up")  # live: was taken as logged in
+    assert L.looks_logged_in("Past Orders  ORDER #1234  Logout")
+    assert not L.looks_logged_in("Login  Enter your phone number")

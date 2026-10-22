@@ -71,6 +71,23 @@ def _price_on_page(price, page: str) -> bool:
     return n in numbers
 
 
+def _near(page: str, *values, window: int = 400) -> bool:
+    """All values within `window` characters of one occurrence of the first: one card, not scattered over the page."""
+    low = page.lower()
+    first, rest = str(values[0]).strip().lower(), values[1:]
+    for m in re.finditer(re.escape(first), low):
+        chunk = low[max(0, m.start() - window): m.end() + window]
+        ok = True
+        for v in rest:
+            if isinstance(v, (int, float)) or re.fullmatch(r"[\d,.₹]+", str(v)):
+                ok &= _price_on_page(v, chunk)
+            else:
+                ok &= str(v).strip().lower() in chunk
+        if ok:
+            return True
+    return False
+
+
 def read_orders(page: str, chat=brain.chat) -> list[dict]:
     got = brain.extract([{"role": "system", "content": "This is the text of the owner's Swiggy order history page. "
                           "List every order on it. Copy names exactly as written."},
@@ -78,7 +95,7 @@ def read_orders(page: str, chat=brain.chat) -> list[dict]:
     out = []
     for o in got.get("orders", []):
         items = [i for i in (o.get("items") or []) if _on_page(re.sub(r"\s*x\s*\d+$", "", str(i)), page)]
-        if _on_page(o.get("restaurant"), page) and items and _price_on_page(o.get("total"), page):
+        if o.get("restaurant") and items and _near(page, o["restaurant"], o.get("total"), window=600):
             out.append({"restaurant": o["restaurant"], "items": items, "total": o["total"], "date": o.get("date", "")})
     return out
 
@@ -87,8 +104,9 @@ def read_offers(page: str, dish: str, chat=brain.chat) -> list[dict]:
     got = brain.extract([{"role": "system", "content": f"This is the text of a Swiggy search page for '{dish}'. List "
                           "every dish card on it that matches what was searched. Copy names and prices exactly as "
                           "written."}, {"role": "user", "content": page[:14000]}], OFFERS_SCHEMA, chat, max_tokens=3000)
+    # one card: the dish, its restaurant and its price close together (live: prices could pair with the wrong dish)
     return [o for o in got.get("offers", [])
-            if _on_page(o.get("restaurant"), page) and _on_page(o.get("item"), page) and _price_on_page(o.get("price"), page)]
+            if o.get("item") and o.get("restaurant") and _near(page, o["item"], o["restaurant"], o.get("price"))]
 
 
 def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3) -> list[dict]:
@@ -141,6 +159,8 @@ class Swiggy:
             t.close()
 
     def _search_page(self, t, dish: str) -> str:
+        if self.captures:
+            t.net_start()  # Swiggy's own data responses, saved below: the data-feed reader is built from these
         page = self._check(t.open(SEARCH.format(q=urllib.parse.quote(dish))))
         if t.click_text("Dishes"):
             page = t.settle()
@@ -152,6 +172,11 @@ class Swiggy:
         t = self.tab()
         try:
             page = self._search_page(t, dish)
+            if self.captures:
+                import json as _json
+                feed = t.net_json("swiggy.com", limit=12)
+                if feed:
+                    self._capture("search-feed", _json.dumps(feed)[:2_000_000])
             got = read_offers(page, dish, self.chat)
             if not got:
                 self._capture("search", page)
@@ -182,7 +207,7 @@ class Swiggy:
             t.close()
 
 
-def read_reviews(page: str, chat=brain.chat) -> dict | None:
+def read_reviews(page: str, chat=brain.chat, restaurant: str = "") -> dict | None:
     """Rating and what people say, from a Google Maps place page's text. None if the rating isn't on the page."""
     got = brain.extract([{"role": "system", "content": "This is the text of a restaurant's Google Maps page. Give its "
                           "star rating, number of reviews, and up to 3 things reviewers like and 3 they dislike, in "
@@ -191,6 +216,8 @@ def read_reviews(page: str, chat=brain.chat) -> dict | None:
     r = got.get("rating")
     if not isinstance(r, (int, float)) or not 1 <= r <= 5 or f"{r:.1f}" not in page:
         return None
+    if restaurant and restaurant.lower().split()[0] not in page[:3000].lower():
+        return None  # the page is about another place
     return {"rating": r, "reviews": got.get("reviews"), "liked": got.get("liked", []), "disliked": got.get("disliked", [])}
 
 
@@ -198,7 +225,7 @@ def google_reviews(restaurant: str, area: str = "", tab=cdp.Tab, chat=brain.chat
     t = None
     try:
         t = tab()
-        return read_reviews(t.open(MAPS.format(q=urllib.parse.quote(f"{restaurant} {area}".strip()))), chat)
+        return read_reviews(t.open(MAPS.format(q=urllib.parse.quote(f"{restaurant} {area}".strip()))), chat, restaurant)
     except Exception:
         return None  # reviews are a bonus: a failure never stops the comparison
     finally:
@@ -237,7 +264,9 @@ STATUS_SCHEMA = {"type": "object", "properties": {
     "required": ["status", "delivered"]}
 PROCEED = ["Proceed to Pay", "Proceed to pay", "Pay Now"]
 UPI_PAY = ["Verify and Pay", "Verify & Pay", "Pay Now", "Pay"]
-PAID = re.compile(r"order (placed|confirmed|received)|payment (successful|received|done)|track (your )?order", re.I)
+# paid = a confirmation, never just a "Track order" link (code review: the header has one before paying)
+PAID = re.compile(r"order (placed|confirmed|received|successful)|payment (successful|received|done|complete)", re.I)
+ORDER_ID = re.compile(r"order\s*(id|no\.?|number|#)\s*[:#]?\s*[A-Z0-9-]{6,}", re.I)
 UNPAID = re.compile(r"payment (failed|declined|cancelled|unsuccessful)|request (expired|declined)|transaction failed", re.I)
 
 
@@ -295,12 +324,13 @@ class Orders:
                     break
             else:
                 return "failed: couldn't find the pay button after the UPI ID"
-            waited = 0.0
+            waited, before = 0.0, t.js("location.href") or ""
             while waited < wait_s:  # the owner approves in their UPI app
                 self.sleep(10)
                 waited += 10
-                page = t.text()
-                if PAID.search(page):
+                page, url = t.text(), t.js("location.href") or ""
+                left = url != before and not re.search(r"checkout|payment|/pay", url, re.I)
+                if PAID.search(page) and (ORDER_ID.search(page) or left):
                     return "paid"
                 if UNPAID.search(page):
                     return "failed: " + UNPAID.search(page)[0]

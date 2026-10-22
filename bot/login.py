@@ -40,6 +40,15 @@ GOOGLE = ["Continue with Google", "Sign in with Google", "Login with Google", "G
 HOLD_S = 600  # an OTP tab waits this long for the owner's OTP
 
 
+LOGGED_IN = re.compile(r"\b(log ?out|sign ?out|my account|my profile|past orders|your orders|order #|my trips|"
+                       r"my bookings)\b", re.I)
+
+
+def looks_logged_in(page: str) -> bool:
+    """Positive signs only (a page without a login form isn't proof: live 'already logged in to Zomato')."""
+    return bool(LOGGED_IN.search(page)) and not looks_logged_out(page)
+
+
 def looks_logged_out(page: str) -> bool:
     low = page.lower()
     return (("login" in low or "log in" in low or "sign in" in low) and ("phone number" in low or "mobile number" in low)
@@ -54,7 +63,7 @@ class Login:
     def logged_in(self, site: str) -> bool:
         t = self.tab()
         try:
-            return not looks_logged_out(t.open(SITES[site]["check"]))
+            return looks_logged_in(t.open(SITES[site]["check"]))
         finally:
             t.close()
 

@@ -494,3 +494,38 @@ def test_concurrent_turns_keep_their_own_notify_and_db_reads_are_safe(tmp_path):
     [t.join() for t in threads]
     assert all(v == [f"note for {k}"] for k, v in got.items()) and len(got) == 8
     assert len(b.log_days(1)) == 16
+
+
+def test_reviews_are_parallel_cached_and_use_the_area(tmp_path, monkeypatch):
+    import food
+    import time as _t
+    calls = []
+
+    def slow(restaurant, area=""):
+        calls.append((restaurant, area))
+        _t.sleep(0.3)
+        return {"rating": 4.1, "reviews": 10, "liked": ["x"], "disliked": []}
+    monkeypatch.setattr(food, "google_reviews", slow)
+    b = bot(tmp_path, Model())
+    del b.reviews  # the real method (the test helper stubs it)
+    b.store.set_fact("owner:area", "Koramangala")
+    opts = [{"restaurant": n} for n in ("A", "B", "C")]
+    t0 = _t.time()
+    b._add_reviews(opts)
+    assert _t.time() - t0 < 0.8 and all(o["google"]["rating"] == 4.1 for o in opts)  # parallel, not 0.9 s
+    assert sorted(calls) == [("A", "Koramangala"), ("B", "Koramangala"), ("C", "Koramangala")]
+    b._add_reviews([{"restaurant": "A"}])
+    assert len(calls) == 3  # cached for a day
+
+
+def test_swiggy_not_loading_is_said_plainly(tmp_path):
+    m = Model(call("task_start", kind="food", slots={"dish": "dosa", "max_total": 300}))
+    b = bot(tmp_path, m)
+
+    class Down:
+        def search(self, dish):
+            import cdp
+            raise cdp.PageError("www.swiggy.com didn't load: net::ERR_TIMED_OUT")
+    b.swiggy = Down()
+    say(b, "order dosa under 300")
+    assert say(b, "yes").startswith("Swiggy didn't load just now")

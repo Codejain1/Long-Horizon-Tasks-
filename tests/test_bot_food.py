@@ -71,6 +71,12 @@ class FakeTab:
     def close(self):
         self.closed = True
 
+    def net_start(self):
+        pass
+
+    def net_json(self, contains="", limit=20):
+        return [{"url": "https://www.swiggy.com/dapi/search", "body": {"cards": []}}]
+
 
 def test_cart_flow_stops_at_checkout_and_closes_its_tab():
     FakeTab.pages = {F.SEARCH.split("?")[0]: SEARCH_PAGE, "after:Dishes": SEARCH_PAGE, "after:Paradise": "added",
@@ -115,8 +121,8 @@ def test_unreadable_pages_are_captured_for_replay(tmp_path):
     FakeTab.pages = {F.SEARCH.split("?")[0]: "Restaurants Dishes\nsomething new ₹99"}
     sw = F.Swiggy(tab=FakeTab, chat=model({"offers": []}), captures=tmp_path / "cap")
     assert sw.search("biryani") == []
-    (saved,) = list((tmp_path / "cap").iterdir())
-    assert saved.name.endswith("-search.txt") and "something new" in saved.read_text()
+    saved = sorted(p.name for p in (tmp_path / "cap").iterdir())
+    assert any(n.endswith("-search.txt") for n in saved) and any(n.endswith("-search-feed.txt") for n in saved)
 
 
 def test_google_reviews_need_the_rating_on_the_page():
@@ -145,8 +151,12 @@ def test_compare_across_apps_keeps_each_app_and_reports_failures():
 
 class PayTab:
     """Checkout -> payment step -> UPI ID -> pay; then the page shows the owner's approval (or not)."""
-    def __init__(self, outcome="Order placed! Track your order"):
+    def __init__(self, outcome="Order placed! Order ID: 192837465012", url_after=None):
         self.steps, self.permits, self.outcome, self.reads = [], [], outcome, 0
+        self.url_after = url_after
+
+    def js(self, expr):
+        return self.url_after if (self.reads >= 3 and self.url_after) else "https://www.swiggy.com/checkout"
 
     def open(self, url):
         self.steps.append(("open", url))
@@ -194,3 +204,24 @@ def test_pay_by_upi_request_with_a_permit_per_order_click():
     assert set(t.permits) == {284}  # every order click under a permit for exactly the approved total
     assert F.Orders(tab=lambda: PayTab("Payment failed"), sleep=lambda s: None).pay("me@okaxis", 284).startswith("failed")
     assert F.Orders(tab=lambda: PayTab("Waiting"), sleep=lambda s: None).pay("me@okaxis", 284, wait_s=30) == "timeout"
+    # a "Track your order" link on the payment page is NOT a payment (code review): no confirmation, no order id
+    fooled = PayTab("Header: Track your order  |  Pay ₹284 via UPI  Waiting for approval")
+    assert F.Orders(tab=lambda: fooled, sleep=lambda s: None).pay("me@okaxis", 284, wait_s=30) == "timeout"
+    moved = PayTab("Order placed! Arriving in 30 mins", url_after="https://www.swiggy.com/order-confirmation/abc")
+    assert F.Orders(tab=lambda: moved, sleep=lambda s: None).pay("me@okaxis", 284) == "paid"
+
+
+
+def test_offer_fields_must_sit_on_one_card():
+    page = ("By Paradise 4.3 40 MINS\nVeg Biryani ₹249 ADD\n" + "filler " * 120 +
+            "By Meghana Foods 4.4\nPaneer Biryani ₹320 ADD")
+    good = {"restaurant": "Paradise", "item": "Veg Biryani", "price": 249}
+    crossed = {"restaurant": "Paradise", "item": "Paneer Biryani", "price": 249}  # dish from one card, shop from another
+    got = F.read_offers(page, "biryani", model({"offers": [good, crossed]}))
+    assert got == [good]
+
+
+def test_reviews_must_be_about_the_restaurant():
+    page = "Truffles  4.5 ★★★★★ (9,800)  Burgers"
+    m = model({"rating": 4.5, "reviews": 9800, "liked": ["burgers"], "disliked": []})
+    assert F.read_reviews(page, m, "Paradise") is None and F.read_reviews(page, m, "Truffles")["rating"] == 4.5
