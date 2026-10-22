@@ -48,7 +48,36 @@ def build(env=os.environ):
     return chans, bot, sched
 
 
-def serve(chans, bot, sched, once: bool = False):
+def chrome_ok() -> bool:
+    """Can the bot's Chrome load a page? (2026-10-22: a locked desktop keyring made every page load hang 30 s.)"""
+    import cdp
+    t = None
+    try:
+        t = cdp.Tab(ws_factory=lambda url: cdp.WebSocket(url, timeout=15))
+        t.call("Page.navigate", url="http://example.com/")
+        return True
+    except Exception:
+        return False
+    finally:
+        if t:
+            t.close()
+
+
+class ChromeWatch:
+    """Alerts once when Chrome stops loading pages and once when it's back (not every 5 minutes in between)."""
+
+    def __init__(self, check, alert):
+        self.check, self.alert, self.ok = check, alert, True
+
+    def tick(self):
+        ok = self.check()
+        if ok != self.ok:
+            self.alert("✅ The bot's Chrome loads pages again." if ok else
+                       "⚠ The bot's Chrome isn't loading pages, so Swiggy and logins won't work until it's fixed.")
+            self.ok = ok
+
+
+def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float = 300):
     pool = ThreadPoolExecutor(4)
     busy: dict[str, threading.Lock] = {}
     owner = next((j["deliver"] for j in getattr(sched, "jobs", []) if j.get("deliver")), None)
@@ -76,7 +105,12 @@ def serve(chans, bot, sched, once: bool = False):
                 log.exception("send failed")
             log.info("turn %s %.1fs", ch.name, time.time() - t)
 
+    watch, next_check = ChromeWatch(check, alert), 0.0
+
     while True:
+        if time.time() >= next_check:
+            next_check = time.time() + every_s
+            threading.Thread(target=watch.tick, daemon=True).start()
         for ch in chans.values():
             try:
                 for m in ch.poll():

@@ -61,6 +61,10 @@ LOGIN5 = [("please sign me in to redbus", "redbus"), ("can you log into ixigo fo
           ("login on makemytrip using my google account", "makemytrip"), ("sign in to swiggy", "swiggy")]
 SUGGEST5 = ["what should I have for lunch?", "suggest something light for dinner", "I'm bored, any food ideas?",
             "what do I usually order?"]
+# test6: the owner's live messages that went wrong on 2026-10-22 (as sent), before any run on these
+LIVE6 = ["Find some cheapest good food near me to order and also order", "Why only Swiggy not Zomato and others",
+         "Have you not checked on Zomato?", "And also pull out Zomato orders history"]
+PROMISE = r"one moment|let me check|i'll check|i will check|checking now|give me a (moment|minute)"
 CHAT3 = ["what's the capital of Australia?", "good morning!", "remind me what you can do", "any good cafes near me?"]
 
 
@@ -94,14 +98,18 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-url", required=True)
     ap.add_argument("--reps", type=int, default=2)
+    ap.add_argument("--think", action="store_true", help="Qwen reasoning on for routing")
     a = ap.parse_args()
     brain.URL = a.model_url
+    import os
+    os.environ["BOT_THINK"] = "1" if a.think else "0"
     rows = []
     for rep in range(a.reps):
         cases = ([c for c in F.CASES if c[0] == "test2"] + [("chat", m, None, None, None) for m in CHAT]
                  + [("test3", m, k, r, v) for m, k, r, v in TEST3] + [("chat3", m, None, None, None) for m in CHAT3]
                  + [("test4", m, k, r, v) for m, k, r, v in TEST4]
-                 + [("login5", m, site, None, None) for m, site in LOGIN5] + [("suggest5", m, None, None, None) for m in SUGGEST5])
+                 + [("login5", m, site, None, None) for m, site in LOGIN5] + [("suggest5", m, None, None, None) for m in SUGGEST5]
+                 + [("live6", m, None, None, None) for m in LIVE6])
         for i, case in enumerate(cases):
             home = Path(tempfile.mkdtemp())
             store = F.seeded(home / "b.db")
@@ -142,6 +150,10 @@ def main() -> int:
                 ok = not task and not reply.startswith("ERROR")
             elif case[0] == "login5":
                 ok = tried == [case[2]] and not task
+            elif case[0] == "live6":
+                dishes = store._q("SELECT slots FROM tasks")
+                ok = (not re.search(PROMISE, reply, re.I) and not reply.startswith(("ERROR", "Sorry", "{"))
+                      and not any(re.search(r"cheapest|good food", d[0], re.I) for d in dishes))
             elif case[0] == "suggest5":
                 ok = not task and tried in ([], ["swiggy-orders"]) and not reply.lstrip().startswith(("ERROR", "Sorry", "{")) and not re.search(
                     r"\bI (found|searched|checked|ordered|booked)\b", reply, re.I)
@@ -152,7 +164,7 @@ def main() -> int:
                     ok = values_ok(store, case[4])
             rows.append((case[0], ok, secs))
             print(f"{'ok  ' if ok else 'FAIL'} {secs:5.1f}s {case[1]!r} -> {reply[:110]!r}", flush=True)
-    for kind in ("test2", "chat", "test3", "chat3", "test4", "login5", "suggest5"):
+    for kind in ("test2", "chat", "test3", "chat3", "test4", "login5", "suggest5", "live6"):
         rs = [r for r in rows if r[0] == kind]
         print(f"{kind}: {sum(r[1] for r in rs)}/{len(rs)} pass")
     ts = sorted(r[2] for r in rows)

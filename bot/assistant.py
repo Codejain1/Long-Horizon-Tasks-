@@ -12,6 +12,7 @@ hand parsing of free text: those were the main sources of live bugs.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -25,6 +26,9 @@ import food
 import login
 import places
 
+# a yes inside a longer answer ("Upi request and yes", live): a yes-word and no no-word
+YES_IN = re.compile(r"\b(yes|yep|yeah|haan|go ahead|confirm(ed)?|do it|sure|place it|order it)\b", re.I)
+NO_IN = re.compile(r"\b(no|not|don'?t|cancel|stop|nahi|wait)\b", re.I)
 YES = re.compile(r"^\s*(yes|y|yep|yeah|haan|ha|ok(ay)?|go ahead|confirm(ed)?|do it|sure)\b[\s.!]*$", re.I)
 NO = re.compile(r"^\s*(no|n|nope|cancel|stop it|don'?t|nahi|na)\b[\s.!]*$", re.I)
 ASK = {"date": "Which date?", "from": "From where?", "to": "To where?", "passengers": "Who's travelling (names)?",
@@ -44,6 +48,9 @@ Decide what to do with the owner's message and answer as JSON:
 - action "login": they ask to log in / sign in to a site (put the site's name in site).
 - action "suggest_food": they ask WHAT to eat and name no dish ("what should I eat?", "any food ideas?").
 - action "read_swiggy_orders": ONLY when they ask to read, check or refresh their Swiggy order history.
+- What you can really do (answer questions about yourself from this, never promise more): food apps connected:
+  {apps}; not connected yet: {not_apps}. Logins (phone + OTP, Google): {sites}. Bookings other than food are
+  saved as forms; booking them on the sites is not built yet.
 - action "reply": anything else; write the reply: brief and plain, like a person. You only get this one reply:
   never say "one moment" or "let me check"; answer now. Never invent facts about the owner. NEVER say you searched,
   found, booked, ordered or logged in to anything: only the other actions do that, a reply just talks.
@@ -160,6 +167,7 @@ class Assistant:
         self.chat = self._traced  # every model call goes through the trace
         self.swiggy = swiggy or food.Swiggy(chat=self._traced, captures=self.home / "captures")
         self.notify = lambda text: None
+        self.think = os.environ.get("BOT_THINK", "0") == "1"  # Qwen reasoning for routing (A/B in botsmoke)
         self.login = logins or login.Login()
         self.orders = food.Orders(chat=self._traced)
         self.home.mkdir(parents=True, exist_ok=True)
@@ -318,7 +326,7 @@ class Assistant:
                 return r
         tid = self._pending(chat)
         if tid:
-            if YES.match(text):
+            if YES.match(text) or (YES_IN.search(text) and not NO_IN.search(text)):
                 self._pending(chat, clear=True)
                 r = B.confirm(self.store, tid)
                 if "error" in r:
@@ -349,9 +357,13 @@ class Assistant:
                 B.finish(self.store, tid, "cancelled")
         memory, cur = self._memory(text)
         kinds = "; ".join(f"{k}: {', '.join(v)}" for k, v in B.TEMPLATES.items())
-        system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory, kinds=kinds)
+        apps = [n.title() for n, p in food.PLATFORMS.items() if p["verified"]]
+        system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory, kinds=kinds, apps=", ".join(apps),
+                                not_apps=", ".join(n.title() for n, p in food.PLATFORMS.items() if not p["verified"]),
+                                sites=", ".join(login.SITES))
         talk = [*self.recent(chat)[:-1], {"role": "user", "content": text}]
-        d = brain.extract([{"role": "system", "content": system}, *talk], DECIDE, self.chat, max_tokens=450)
+        d = brain.extract([{"role": "system", "content": system}, *talk], DECIDE, self.chat, max_tokens=450,
+                          think=self.think)
         plain = CHAT.format(today=time.strftime("%A %d %B %Y"), memory=memory)  # free text: never the JSON prompt
         action = d.get("action", "reply")
         if action == "book" and d.get("kind") in B.TEMPLATES:
@@ -477,7 +489,7 @@ class Assistant:
         route normally."""
         if st["stage"] == "confirm_order":
             self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
-            if YES.match(text):
+            if YES.match(text) or (YES_IN.search(text) and not NO_IN.search(text)):
                 return self._place(chat, st)
             if NO.match(text):
                 return "Okay, not ordering. It's still in your Swiggy cart."

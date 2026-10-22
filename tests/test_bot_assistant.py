@@ -145,11 +145,11 @@ def test_main_loop_answers_and_ticks(tmp_path, monkeypatch):
         def tick(self):
             Sched.ticks += 1
     ch = Ch()
-    M.serve({"whatsapp": ch}, bot(tmp_path, Model(reply("hey"))), Sched(), once=True)
+    M.serve({"whatsapp": ch}, bot(tmp_path, Model(reply("hey"))), Sched(), once=True, check=lambda: True)
     assert ch.out == [("c", "hey")] and Sched.ticks == 1
     broken = bot(tmp_path / "x", Model())  # the model has nothing to say: IndexError inside the turn
     ch.inbox = [{"channel": "whatsapp", "chat": "c", "text": "hi"}]
-    M.serve({"whatsapp": ch}, broken, Sched(), once=True)
+    M.serve({"whatsapp": ch}, broken, Sched(), once=True, check=lambda: True)
     assert ch.out[-1][1].startswith("Sorry, something broke")
 
 
@@ -340,7 +340,7 @@ def test_every_turn_leaves_a_trace_and_errors_alert_the_owner(tmp_path):
         def tick(self):
             pass
     ch, broken = Ch(), bot(tmp_path / "x", Model())
-    M.serve({"whatsapp": ch}, broken, Sched(), once=True)
+    M.serve({"whatsapp": ch}, broken, Sched(), once=True, check=lambda: True)
     assert any(c == "owner-chat" and t.startswith("⚠ bot error on 'hi'") for c, t in ch.out)
     (*_, steps), = broken.db.execute("SELECT * FROM traces").fetchall()
     assert json.loads(steps)[-1]["step"] == "error"
@@ -443,3 +443,22 @@ def test_tracking_sends_only_changes_until_delivered(tmp_path):
     sent = []
     A.Assistant._track(b, sent.append, sleep=lambda s: None)
     assert sent == ["🛵 Order confirmed", "🛵 Out for delivery, about 5 min away", "🛵 Delivered"]
+
+
+def test_a_yes_inside_a_longer_answer_counts(tmp_path):
+    assert A.YES_IN.search("Upi request and yes") and not A.NO_IN.search("Upi request and yes")
+    assert A.NO_IN.search("yes but not now")
+    m = Model(call("task_start", kind="cab", slots={"pickup": "home", "drop": "airport", "when": "now"}))
+    b = bot(tmp_path, m)
+    say(b, "cab home to airport now")
+    assert say(b, "Upi request and yes").startswith("Confirmed ✅")
+
+
+def test_chrome_health_alerts_once_when_it_breaks_and_once_when_back():
+    import main as M
+    sent, states = [], iter([True, False, False, False, True, True])
+    w = M.ChromeWatch(lambda: next(states), sent.append)
+    for _ in range(6):
+        w.tick()
+    assert sent == ["⚠ The bot's Chrome isn't loading pages, so Swiggy and logins won't work until it's fixed.",
+                    "✅ The bot's Chrome loads pages again."]

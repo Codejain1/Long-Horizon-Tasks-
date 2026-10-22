@@ -15,17 +15,21 @@ MODEL = os.environ.get("BOT_MODEL", "local")
 
 
 def chat(messages: list, url: str = "", model: str = "", key_env: str = "",
-         max_tokens: int = 1500, timeout: float = 120, temperature: float = 0.2, schema: dict | None = None) -> dict:
+         max_tokens: int = 1500, timeout: float = 120, temperature: float = 0.2, schema: dict | None = None,
+         think: bool = False) -> dict:
     """One completion -> the assistant message ({"content"}). Retries busy servers twice."""
     url, model = url or URL, model or MODEL
     body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    if url == URL:
-        body["chat_template_kwargs"] = {"enable_thinking": False}
+    if url == URL:  # Qwen's reasoning: off by default (1-2 s a step); on where measured to help (assistant routing)
+        body["chat_template_kwargs"] = {"enable_thinking": think}
+        if think:
+            body["max_tokens"] = max_tokens + 2500  # the reasoning comes out of the same budget
     if schema:  # vLLM 0.31 constrains decoding to the schema: only valid JSON of that shape can come out
         body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}}
         # measured live: ~30 % of answers stall in endless whitespace (tabs/newlines) until max_tokens, 13 s; these
         # stop it at once (the grammar allows whitespace anywhere, the server rejects disabling it per request)
-        body["stop"] = ["\n\n\n", "\t\t\t", "    \n"]
+        if not think:  # (reasoning text has blank lines: the stall stop would cut it)
+            body["stop"] = ["\n\n\n", "\t\t\t", "    \n"]
     headers = {"Content-Type": "application/json"}
     if key_env and os.environ.get(key_env):
         headers["Authorization"] = f"Bearer {os.environ[key_env]}"
