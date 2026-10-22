@@ -336,64 +336,6 @@ def _site(s: str) -> str:
     return next((d for name, d in PLATFORMS.items() if name in s or d in s), s.split("/")[2] if "://" in s else s)
 
 
-def compare(store: Store, tid: int, offers: list[dict], pages: dict[str, str]) -> dict:
-    """Rank offers by what the owner pays (price + fees - discount). An offer counts only if its quote is on a page
-    Hermes saw from that platform and the quote holds the price; over the task's cap it is dropped. pages: url -> text."""
-    t = store.task(tid)
-    cap = t["slots"].get(PRICE.get(t["kind"], ""))
-    ok, dropped = [], []
-    for o in offers:
-        dom = _site(o.get("platform", "") or o.get("url", ""))
-        price, fees, disc = _money(o.get("price")), _money(o.get("fees")) or 0, _money(o.get("discount")) or 0
-        quote = " ".join(str(o.get("quote", "")).split())
-        seen = [u for u, text in pages.items() if dom and dom in u.lower() and quote and quote in " ".join(text.split())]
-        if price is None:
-            dropped.append({**o, "why": "no price"})
-        elif not seen:
-            dropped.append({**o, "why": f"quote not found on any {dom or 'platform'} page you opened: open it, copy "
-                                        "the exact text"})
-        elif _money(quote) is None or price not in [_money(m) for m in re.findall(r"\d[\d,]*(?:\.\d+)?", quote)]:
-            dropped.append({**o, "why": "the quote doesn't show the price"})
-        else:
-            pay = round(price + fees - disc, 2)
-            if cap is not None and pay > cap:
-                dropped.append({**o, "pay": pay, "why": f"over the cap {cap:g}"})
-            else:
-                ok.append({**o, "platform": dom, "pay": pay, "seen_on": seen[0]})
-                store.set_fact(f"price:{dom}:{o.get('item', '')}".lower(), pay, seen[0], ttl_h=6)
-    ok.sort(key=lambda o: (o["pay"], -(_money(o.get("rating")) or 0)))
-    out = {"task_id": tid, "ranked": ok, "dropped": dropped}
-    if len(ok) > 1:
-        a, b = ok[0], ok[1]
-        out["summary"] = (f"Cheapest: {a.get('item', '')} on {a['platform']} ₹{a['pay']:g}"
-                          f" (₹{b['pay'] - a['pay']:g} less than {b['platform']})")
-    return out
-
-
-def plan_trip(store: Store, tid: int, today: date | None = None) -> dict:
-    """From a confirmed trip or travel ticket: the hotel, the cab from arrival, and one food task per day, as drafts
-    that each go through the same YES. Activities and restaurants come from searches, not from here."""
-    today = today or date.today()
-    t = store.task(tid)
-    s = t["slots"]
-    city = s.get("to")
-    arrive = s.get("arrive") or s.get("date")
-    leave = s.get("leave")
-    if t["status"] not in ("confirmed", "done") or not city or not arrive:
-        return {"error": f"task #{tid} needs to be a confirmed trip or ticket with a destination and a date"}
-    kids = [start(store, "hotel", {"city": city, "checkin": arrive, "checkout": leave}, parent=tid, today=today),
-            start(store, "cab", {"pickup": f"{city} arrival point", "when": arrive}, parent=tid, today=today)]
-    days = []
-    if leave:
-        d = date.fromisoformat(arrive)
-        while d <= date.fromisoformat(leave):
-            days.append(d.isoformat())
-            d += timedelta(days=1)
-    return {"trip": tid, "city": city, "days": days or [arrive], "drafts": kids,
-            "next": "Fill each draft (ask only what's missing), search activities and restaurants per day, then send "
-                    "the owner one plan with a summary line per draft."}
-
-
 def save_orders(store: Store, platform: str, orders: list[dict]) -> dict:
     """Past orders the owner made, read from the app's order history page: kept as done food tasks (each once)."""
     dom, new = _site(platform), 0
@@ -444,6 +386,7 @@ def taste(store: Store) -> dict:
             "typical_spend": median(spend) if spend else None}
 
 
+# the task_start schema (bench/forms.py uses it; the bot's own router is assistant.DECIDE)
 TOOLS = [
     {"name": "task_start",
      "description": "Start a booking or order as a form. Pass ONLY the details the owner actually said; memory fills "
@@ -455,65 +398,4 @@ TOOLS = [
              f"{k}: {', '.join(v)}" for k, v in TEMPLATES.items())},
          "site": {"type": "string", "description": "the site or app, if the owner named one"}},
          "required": ["kind", "slots"]}},
-    {"name": "task_update", "description": "Add or change details of a draft task (the owner answered a question).",
-     "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}, "slots": {"type": "object"},
-                                                     "site": {"type": "string"}}, "required": ["task_id", "slots"]}},
-    {"name": "task_confirm", "description": "The owner said YES to the task's summary.",
-     "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
-    {"name": "task_finish",
-     "description": "Record how a task ended: done, failed or cancelled. On failure, note what went wrong on the site "
-                    "in one line (it is shown the next time on that site).",
-     "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"},
-                                                     "outcome": {"type": "string", "enum": ["done", "failed", "cancelled"]},
-                                                     "note": {"type": "string"}, "site": {"type": "string"}},
-                    "required": ["task_id", "outcome"]}},
-    {"name": "compare_offers",
-     "description": "Compare the same item across platforms after opening each platform's page. For each offer give "
-                    "platform, item, price, fees, discount, rating, url and quote: the exact text from that page that "
-                    "shows the price. Offers whose quote isn't on a page you opened are dropped.",
-     "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"},
-                                                     "offers": {"type": "array", "items": {"type": "object"}}},
-                    "required": ["task_id", "offers"]}},
-    {"name": "plan_trip", "description": "After a trip or ticket is confirmed: draft the hotel, the arrival cab and the "
-                                         "days of the plan.",
-     "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
-    {"name": "save_orders",
-     "description": "Save the owner's past food orders read from the app's order history page (Swiggy: "
-                    "https://www.swiggy.com/my-account/orders), so recommendations follow what they actually order. "
-                    "Copy each order as shown: id if shown, restaurant, items, total, date.",
-     "parameters": {"type": "object", "properties": {
-         "platform": {"type": "string"},
-         "orders": {"type": "array", "items": {"type": "object", "properties": {
-             "id": {"type": "string"}, "restaurant": {"type": "string"}, "items": {"type": "array", "items": {"type": "string"}},
-             "total": {"type": "string"}, "date": {"type": "string"}}}}},
-         "required": ["platform", "orders"]}},
-    {"name": "save_traveller",
-     "description": "Save a traveller's details the owner gave (name, age, gender, berth or seat preference). "
-                    "who='self' for the owner.",
-     "parameters": {"type": "object", "properties": {"who": {"type": "string"}, "name": {"type": "string"},
-                                                     "age": {"type": "integer"}, "gender": {"type": "string"},
-                                                     "seat": {"type": "string"}}, "required": ["who", "name"]}},
 ]
-NAMES = {t["name"] for t in TOOLS}
-
-
-def handle(store: Store, name: str, args: dict, pages: dict[str, str]) -> dict:
-    if name == "task_start":
-        return start(store, args["kind"], args.get("slots") or {}, args.get("site", ""))
-    if name == "task_update":
-        return update(store, args["task_id"], args.get("slots") or {}, args.get("site", ""))
-    if name == "task_confirm":
-        return confirm(store, args["task_id"])
-    if name == "task_finish":
-        return finish(store, args["task_id"], args["outcome"], args.get("note", ""), args.get("site", ""))
-    if name == "compare_offers":
-        return compare(store, args["task_id"], args.get("offers") or [], pages)
-    if name == "plan_trip":
-        return plan_trip(store, args["task_id"])
-    if name == "save_orders":
-        return save_orders(store, args.get("platform", ""), args.get("orders") or [])
-    if name == "save_traveller":
-        who = re.sub(r"\W+", "_", args["who"].lower()).strip("_") or "self"
-        store.set_fact(f"traveller:{who}", {k: args[k] for k in ("name", "age", "gender", "seat") if k in args})
-        return {"saved": f"traveller:{who}"}
-    return {"error": f"unknown tool {name}"}

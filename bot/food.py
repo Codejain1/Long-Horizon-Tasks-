@@ -191,8 +191,15 @@ class Swiggy:
     def add(self, offer: dict) -> dict:
         t = self.tab()
         try:
-            self._search_page(t, offer["item"])
-            if not t.click_text(offer["restaurant"], offer["item"], button="ADD"):
+            clicked = False
+            link = offer.get("link") or ""
+            if "/restaurants/" in link or "/menu/" in link:  # the restaurant's own page: no second search
+                self._check(t.open(link))
+                clicked = t.click_text(offer["item"], button="ADD")
+            if not clicked:
+                self._search_page(t, offer["item"])
+                clicked = t.click_text(offer["restaurant"], offer["item"], button="ADD")
+            if not clicked:
                 raise NotReady(f"Couldn't find the ADD button for {offer['item']} from {offer['restaurant']} any more.")
             page = t.settle(timeout=8)
             if re.search(r"items already in cart|start afresh|replace cart", page, re.I):

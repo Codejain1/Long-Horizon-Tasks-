@@ -572,3 +572,11 @@ def test_swiggy_not_loading_is_said_plainly(tmp_path):
     b.swiggy = Down()
     say(b, "order dosa under 300")
     assert say(b, "yes").startswith("Swiggy didn't load just now")
+
+
+def test_travellers_can_be_saved_again(tmp_path):
+    b = bot(tmp_path, Model())
+    assert say(b, "save traveller mom Sunita 55") == "Saved: mom = Sunita, 55."
+    assert say(b, "my name is kartik jain") == "Saved: you = Kartik Jain."
+    assert b.store.fact("traveller:mom")["value"] == {"name": "Sunita", "age": 55}
+    assert b.store.fact("traveller:self")["value"]["name"] == "Kartik Jain"

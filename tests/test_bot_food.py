@@ -225,3 +225,21 @@ def test_reviews_must_be_about_the_restaurant():
     page = "Truffles  4.5 ★★★★★ (9,800)  Burgers"
     m = model({"rating": 4.5, "reviews": 9800, "liked": ["burgers"], "disliked": []})
     assert F.read_reviews(page, m, "Paradise") is None and F.read_reviews(page, m, "Truffles")["rating"] == 4.5
+
+
+def test_add_to_cart_uses_the_restaurant_link_before_searching():
+    FakeTab.pages = {"https://www.swiggy.com/restaurants/paradise-123": "Veg Biryani ₹249 ADD",
+                     "after:Veg Biryani": "added", F.CHECKOUT: "Veg Biryani x 1  TO PAY ₹ 284"}
+    opened = []
+
+    class LinkTab(FakeTab):
+        def open(self, url):
+            opened.append(url)
+            return super().open(url)
+
+        def click_text(self, *needles, button=None):
+            self.clicks.append((needles[0], needles, button))
+            return needles[0] == "Veg Biryani"
+    r = F.Swiggy(tab=LinkTab).add({"restaurant": "Paradise", "item": "Veg Biryani", "price": 249,
+                                   "link": "https://www.swiggy.com/restaurants/paradise-123"})
+    assert opened == ["https://www.swiggy.com/restaurants/paradise-123", F.CHECKOUT] and r["total"] == "284"

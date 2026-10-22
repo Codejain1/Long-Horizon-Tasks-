@@ -88,6 +88,8 @@ SET_CAP = re.compile(r"^\s*(set\s+)?(my\s+)?order\s+cap\s*(is|to|:|=)?\s*₹?\s*
 ORDERING = os.environ.get("BOT_ORDERING", "0") == "1"
 CAP = 1500  # ₹ per order unless the owner sets another (owner, 2026-10-22: "you decide, I'll tell you if it changes")
 TRACK_EVERY_S, TRACK_FOR_S = 120, 2 * 3600
+SET_TRAVELLER = re.compile(r"^\s*(save|add)\s+traveller\s+(\w+)\s+([A-Za-z][A-Za-z ]{0,40}?)(\s+(\d{1,3}))?\s*$", re.I)
+MY_NAME = re.compile(r"^\s*my name is\s+([A-Za-z][A-Za-z ]{0,40}?)\s*[.!]?\s*$", re.I)
 OTP = re.compile(r"^\s*(\d[\s-]?){4,8}\s*$")
 # a message that is clearly not an answer to the open form's questions (live: "i am just asking to sign in" was
 # taken as flight details): the form is dropped and the message routed afresh
@@ -353,6 +355,13 @@ class Assistant:
             digits = re.sub(r"\D", "", m[5])[-10:]
             self.store.set_fact("owner:phone", digits, "owner")
             return f"Saved: I'll use your number ending {digits[-4:]} for logins. You'll get the OTPs; send them here."
+        m = SET_TRAVELLER.match(text) or MY_NAME.match(text)
+        if m:  # lost in the Hermes switch (code review): bookings know "me" and "mom" again
+            who, name, age = (("self", m[1], None) if m.re is MY_NAME else
+                              ("self" if m[2].lower() in ("me", "self", "myself") else m[2].lower(), m[3], m[5]))
+            data = {"name": name.strip().title(), **({"age": int(age)} if age else {})}
+            self.store.set_fact(f"traveller:{who}", data, "owner")
+            return f"Saved: {who if who != 'self' else 'you'} = {data['name']}" + (f", {age}" if age else "") + "."
         m = SET_UPI.match(text)
         if m:
             self.store.set_fact("owner:upi", m[5].lower(), "owner")
