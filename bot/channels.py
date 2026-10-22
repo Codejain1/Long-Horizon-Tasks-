@@ -45,6 +45,8 @@ class WhatsApp:
         out = []
         for m in self.http(self.url + "/messages") or []:
             text = (m.get("body") or "").strip()
+            if m.get("mediaType") == "poll_update" and text.startswith("[Poll update"):
+                continue  # a vote taken back: nothing chosen
             if text and self._owner(m):
                 out.append({"channel": self.name, "chat": m["chatId"], "text": text, "sender": m.get("senderName", "")})
         return out
@@ -53,9 +55,15 @@ class WhatsApp:
         self.http(self.url + "/send", {"chatId": chat, "message": text})
 
     def send_choice(self, chat: str, text: str, choices: list[str]) -> None:
-        """WhatsApp: the text already lists the choices numbered (a reply with the number or the text works).
-        Polls via the bridge's /send-poll come once their votes are checked to arrive back as messages."""
+        """The details, then a one-choice poll: a tap comes back as a message whose text is the option (checked in
+        bridge.js: votes on the bot's own polls are queued with body = the chosen option). The text also lists
+        the choices numbered, so replying with a number still works if the poll fails."""
         self.send(chat, text)
+        try:
+            self.http(self.url + "/send-poll", {"chatId": chat, "question": "Choose one",
+                                                "options": [c[:100] for c in choices[:12]], "selectableCount": 1})
+        except Exception:
+            pass  # the numbered text is enough
 
     def healthy(self) -> bool:
         try:

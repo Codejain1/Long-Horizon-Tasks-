@@ -70,7 +70,17 @@ def test_telegram_choices_are_buttons_and_whatsapp_gets_the_numbered_text():
     assert body["reply_markup"]["one_time_keyboard"] is True
     wa_http = FakeHTTP([])
     C.WhatsApp(http=wa_http).send_choice("x@lid", "Best options:\n1. Veg Biryani ₹249", ["1. Veg Biryani ₹249"])
-    assert wa_http.calls[-1][1]["message"].endswith("1. Veg Biryani ₹249")
+    (url1, text), (url2, poll) = wa_http.calls[-2:]
+    assert url1.endswith("/send") and text["message"].endswith("1. Veg Biryani ₹249")
+    assert url2.endswith("/send-poll") and poll == {"chatId": "x@lid", "question": "Choose one",
+                                                    "options": ["1. Veg Biryani ₹249"], "selectableCount": 1}
+
+
+def test_whatsapp_poll_votes_arrive_as_the_chosen_text_and_unvotes_are_dropped():
+    inbox = [{"chatId": "x@lid", "body": "1. Veg Biryani ₹249", "mediaType": "poll_update"},
+             {"chatId": "x@lid", "body": "[Poll update: ABC123]", "mediaType": "poll_update"}]
+    wa = C.WhatsApp(http=FakeHTTP([inbox]), policy="open")
+    assert [m["text"] for m in wa.poll()] == ["1. Veg Biryani ₹249"]
 
 
 def test_main_sends_choices_as_buttons():
