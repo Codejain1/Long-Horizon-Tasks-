@@ -205,6 +205,13 @@ class Assistant:
 
     # memory ----------------------------------------------------------------------------------------------------
     def _memory(self, text: str) -> tuple[str, dict]:
+        t0 = time.time()
+        try:
+            return self._memory_inner(text)
+        finally:
+            self._step("memory", ms=int(1000 * (time.time() - t0)))
+
+    def _memory_inner(self, text: str) -> tuple[str, dict]:
         try:
             r = self.post(self.mem + "/search", {"query": text, "budget": 500, "skip": ["Hermes", "bot"],
                                                   "skip_chats": ["cron_"], "scope": "hermes"})
@@ -263,7 +270,8 @@ class Assistant:
         trace (each model call: schema, time, output; errors) in bot.db: read it with deploy/bot/trace.sh."""
         self.notify = notify or (lambda text: None)
         chat, text, t = msg["chat"], msg["text"], time.time()
-        self.local.steps = []
+        self.local.steps = steps = []
+        food.cdp.TIMER.set(steps.append)  # browser actions (also in the parallel app searches) time themselves
         secret = bool(self.login.waiting_for(chat) and OTP.match(text))  # a login OTP: used, never stored
         shown = "[login OTP]" if secret else text
         self.local.secret = secret
@@ -387,7 +395,9 @@ class Assistant:
             return self._say(plain + "\n\nAnswer the owner's message using what they order on Swiggy (above), their "
                              "taste and mood. Suggest concrete dishes, briefly.", talk)
         if action == "places":
+            t0 = time.time()
             found = self.nearby(cur.get("location"), 3000, d.get("cuisine", ""), limit=8)
+            self._step("nearby_places", ms=int(1000 * (time.time() - t0)))
             if "error" in found:
                 return "Share your location on WhatsApp (attach → Location) and I'll look around you."
             return self._say(plain + "\n\nPick the 3 best for the owner from ONLY these real places (name, km, one "
@@ -528,8 +538,10 @@ class Assistant:
                 B.finish(self.store, tid, "failed", f"no {dish} found", "swiggy")
             budget = f" under ₹{slots['max_total']:g}" if slots.get("max_total") else ""
             return f"I couldn't find {dish}{budget} on {', '.join(apps)} right now. Want something else?"
+        t0 = time.time()
         for o in top:  # reviews: a bonus, never a blocker
             o["google"] = self.reviews(o["restaurant"])
+        self._step("reviews", ms=int(1000 * (time.time() - t0)), n=len(top))
         self.store.set_fact(f"stage:{chat}", {"stage": "options", "options": top, "task": tid}, "bot", ttl_h=1)
         lines = []
         for n, o in enumerate(top, 1):

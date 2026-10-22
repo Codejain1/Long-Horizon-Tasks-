@@ -164,3 +164,30 @@ def test_payment_step_amount_counts_as_the_total():
     tab.allow_order(250)
     with pytest.raises(cdp.Blocked, match="over what the owner approved"):
         tab.click_label("Verify and Pay")
+
+
+def test_browser_actions_time_themselves_also_in_parallel_searches():
+    import sys as _s
+    from pathlib import Path as _P
+    _s.path.insert(0, str(_P(__file__).parent.parent / "bot"))
+    import food
+    steps = []
+    cdp.TIMER.set(steps.append)
+    tab = cdp.Tab.__new__(cdp.Tab)
+    tab.call = lambda method, **p: {}
+    tab.js = lambda expr: "x" * 300
+    tab.settle = cdp.Tab.settle.__get__(tab)
+    tab.open("https://www.swiggy.com/search?query=dosa")
+    assert [s["action"] for s in steps][-1] == "open" and steps[-1]["arg"].startswith("https://www.swiggy.com")
+    assert "settle" in [s["action"] for s in steps]
+
+    class App:
+        def search(self, dish):
+            t = cdp.Tab.__new__(cdp.Tab)
+            t.call = lambda method, **p: {}
+            t.js = lambda expr: True
+            t.click_label("Dishes")
+            return []
+    food.compare("dosa", {"swiggy": App(), "zomato": App()})
+    assert sum(s["action"] == "click_label" for s in steps) == 2  # recorded from both worker threads
+    cdp.TIMER.set(None)

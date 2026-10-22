@@ -209,10 +209,11 @@ def google_reviews(restaurant: str, area: str = "", tab=cdp.Tab, chat=brain.chat
 def compare(dish: str, apps: dict, max_total=None, veg: bool = False, n: int = 3) -> tuple[list[dict], list[str]]:
     """The dish on every verified app, in parallel -> (best n by price within budget, apps that failed).
     apps: name -> object with .search(dish)."""
+    import contextvars
     from concurrent.futures import ThreadPoolExecutor
     found, failed = [], []
-    with ThreadPoolExecutor(len(apps) or 1) as pool:
-        futures = {name: pool.submit(app.search, dish) for name, app in apps.items()}
+    with ThreadPoolExecutor(len(apps) or 1) as pool:  # each search runs in the turn's context: its steps get timed
+        futures = {name: pool.submit(contextvars.copy_context().run, app.search, dish) for name, app in apps.items()}
         for name, f in futures.items():
             try:
                 for o in f.result(timeout=90):

@@ -19,6 +19,23 @@ import urllib.request
 
 DEVTOOLS = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
 
+# per-step timing: the assistant sets this to record each browser action (ms) in the turn's trace
+import contextvars  # noqa: E402
+TIMER: contextvars.ContextVar = contextvars.ContextVar("cdp_timer", default=None)
+
+
+def _timed(fn):
+    def wrap(self, *a, **kw):
+        t0 = time.time()
+        try:
+            return fn(self, *a, **kw)
+        finally:
+            rec = TIMER.get()
+            if rec:
+                arg = str(a[0])[:60] if a else ""
+                rec({"step": "browser", "action": fn.__name__, "arg": arg, "ms": int(1000 * (time.time() - t0))})
+    return wrap
+
 # The owner's rails (Hermes enforced them in its rails plugin; here every browser action passes this layer):
 # - never open a payment gateway by URL;
 # - never click anything that pays, orders or books, except once with a permit (`allow_order`) that the order step
@@ -146,9 +163,11 @@ class Tab:
             raise RuntimeError(f"page script failed: {r['exceptionDetails'].get('text')}")
         return r.get("result", {}).get("value")
 
+    @_timed
     def text(self) -> str:
         return self.js("document.body ? document.body.innerText : ''") or ""
 
+    @_timed
     def settle(self, timeout: float = 20, sleep=time.sleep) -> str:
         """Wait until the page's text stops changing (single-page apps keep loading after 'complete')."""
         last, same, t = "", 0, 0.0
@@ -162,6 +181,7 @@ class Tab:
             last = now
         return last
 
+    @_timed
     def open(self, url: str) -> str:
         host = urllib.parse.urlparse(url).netloc.lower()
         if any(g in host for g in PAY_GATEWAYS):
@@ -190,6 +210,7 @@ class Tab:
         self.permit = None
         return True
 
+    @_timed
     def click_text(self, *needles: str, button: str | None = None) -> bool:
         """Click the smallest element whose text contains every needle (case-insensitive); with `button`, click the
         button/link with that exact text inside it instead. True if something was clicked. Rails: never a click on
@@ -222,6 +243,7 @@ class Tab:
             raise Blocked(f"rails: refused to click '{r[8:]}' (pays / orders / books)")
         return bool(r)
 
+    @_timed
     def click_label(self, *labels: str) -> str | None:
         """Click the first visible button/link whose own text is exactly one of `labels` (case-insensitive), e.g.
         "Sign In", "Get OTP", "Verify OTP". Returns the label clicked, or None. Same rails as click_text."""
@@ -242,6 +264,7 @@ class Tab:
     def type_login(self, kind: str, value: str, owner_phone: str) -> bool:
         return self.type_field(kind, value, {"phone": owner_phone})
 
+    @_timed
     def type_field(self, kind: str, value: str, owner: dict) -> bool:
         """The only typing the bot can do (see the rails at the top). kind: "phone" (exactly owner["phone"]), "otp"
         (4-8 digits, sign-in page), "search" (words, a search box, never on payment pages), "upi_id" (exactly

@@ -316,8 +316,9 @@ def test_every_turn_leaves_a_trace_and_errors_alert_the_owner(tmp_path):
     (ts, chat, text, reply, ms, steps), = b.db.execute("SELECT * FROM traces").fetchall()
     steps = json.loads(steps)
     assert text.startswith("train") and reply == "Which class (SL, 3A, 2A, 1A)?"
-    assert steps[0]["step"] == "model" and steps[0]["schema"] == ["action", "kind", "details", "cuisine", "site", "reply"]
-    assert '"action": "book"' in steps[0]["out"]
+    assert steps[0]["step"] == "memory" and isinstance(steps[0]["ms"], int)
+    model = [x for x in steps if x["step"] == "model"][0]
+    assert model["schema"] == ["action", "kind", "details", "cuisine", "site", "reply"] and '"action": "book"' in model["out"]
 
     import main as M
 

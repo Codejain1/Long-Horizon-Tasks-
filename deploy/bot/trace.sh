@@ -7,6 +7,12 @@ import json, sqlite3, sys, time
 c = sqlite3.connect('/home/hermes/.bot/bot.db')
 for ts, chat, text, reply, ms, steps in c.execute("SELECT * FROM traces ORDER BY ts DESC LIMIT ?", (int(sys.argv[1]),)).fetchall()[::-1]:
     print(f"\n{time.strftime('%m-%d %H:%M:%S', time.gmtime(ts))}  {ms / 1000:.1f}s  {text!r}\n  -> {str(reply)[:300]!r}")
+    parts = {}
+    for s in json.loads(steps):
+        key = s["step"] + (":" + s["action"] if s.get("action") else "")
+        parts[key] = parts.get(key, 0) + s.get("ms", 0)
+    if parts:  # where the time went (parallel searches can add up to more than the turn)
+        print("   time:", ", ".join(f"{k} {v / 1000:.1f}s" for k, v in sorted(parts.items(), key=lambda kv: -kv[1])))
     for s in json.loads(steps):
         print("   ", json.dumps(s, ensure_ascii=False)[:400])
 P
