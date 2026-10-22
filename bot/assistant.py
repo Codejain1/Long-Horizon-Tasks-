@@ -332,6 +332,8 @@ class Assistant:
         shown = "[login OTP]" if secret else text
         self.local.secret = secret
         self._log(msg["channel"], chat, "owner", shown)
+        if msg.get("location"):  # the app sends the phone's location with each message (owner allowed it once)
+            self.store.set_fact("owner:location", msg["location"], msg["channel"], ttl_h=2)
         reply = None
         try:
             reply = self._turn(chat, text)
@@ -459,10 +461,13 @@ class Assistant:
                              "taste and mood. Suggest concrete dishes, briefly.", talk)
         if action == "places":
             t0 = time.time()
-            found = self.nearby(cur.get("location"), 3000, d.get("cuisine", ""), limit=8)
+            here = self.store.fact("owner:location")
+            loc = here["value"] if here and not here["stale"] else cur.get("location")  # the app's is the freshest
+            found = self.nearby(loc, 3000, d.get("cuisine", ""), limit=8)
             self._step("nearby_places", ms=int(1000 * (time.time() - t0)))
             if "error" in found:
-                return "Share your location on WhatsApp (attach → Location) and I'll look around you."
+                return ("I don't know where you are: allow location in the app, or share it on WhatsApp "
+                        "(attach → Location).")
             return self._say(plain + "\n\nPick the 3 best for the owner from ONLY these real places (name, km, one "
                              f"line why, maps link):\n{json.dumps(found['places'])}", talk)
         reply = str(d.get("reply") or "").strip()

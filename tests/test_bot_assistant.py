@@ -108,7 +108,7 @@ def test_places_use_real_results_and_need_location(tmp_path):
     assert "Sattvam" in m.seen[1][0][0]["content"]
     m2 = Model(call("nearby_places"))
     b2 = bot(tmp_path / "2", m2, nearby=lambda *a, **k: {"error": "no location"})
-    assert "Share your location" in say(b2, "places near me")
+    assert "allow location in the app" in say(b2, "places near me")
 
 
 def test_memory_down_still_answers_and_history_is_logged(tmp_path):
@@ -590,3 +590,16 @@ def test_a_new_request_during_a_choice_is_not_taken_as_the_choice(tmp_path):
     assert r.startswith("Best options:") and "Masala Dosa" in r and b.swiggy.added == []
     assert say(b, "1").choices[0] == "Send me the link"
     assert say(b, "link").startswith("Here's Masala Dosa")
+
+
+
+def test_the_apps_location_is_used_for_places(tmp_path):
+    got = {}
+
+    def nearby(loc, radius, cuisine, limit=8):
+        got["loc"] = loc
+        return {"places": [{"name": "Sattvam", "km": 0.3, "maps": "x"}]}
+    m = Model(call("nearby_places"), {"content": "Sattvam, 0.3 km"})
+    b = bot(tmp_path, m, nearby=nearby)
+    b.handle({"channel": "app", "chat": "owner", "text": "cafes near me", "location": {"lat": 12.97, "lng": 77.59}})
+    assert got["loc"] == {"lat": 12.97, "lng": 77.59}  # the phone's, not the older WhatsApp one

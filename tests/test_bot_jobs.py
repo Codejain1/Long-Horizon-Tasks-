@@ -102,7 +102,9 @@ def test_build_converts_hermes_jobs_and_seeds_state(tmp_path, monkeypatch):
     (tmp_path / "hermes" / "cron").mkdir(parents=True)
     h = {"jobs": [dict(HERMES["jobs"][0], last_run_at="2026-10-21T02:30:03+00:00")]}
     (tmp_path / "hermes" / "cron" / "jobs.json").write_text(json.dumps(h))
-    chans, bot, sched = M.build({"BOT_HOME": str(tmp_path / "bot"), "HERMES_HOME": str(tmp_path / "hermes")})
+    chans, bot, sched = M.build({"BOT_HOME": str(tmp_path / "bot"), "HERMES_HOME": str(tmp_path / "hermes"),
+                                 "BOT_APP_PORT": "0"})
+    chans["app"].close()
     assert (tmp_path / "bot" / "jobs.json").exists() and [j["name"] for j in sched.jobs] == ["daily-infra-digest"]
     assert sched.state["daily-infra-digest"]["sent"][0]["at"] == "2026-10-21T02:30"
-    assert set(chans) == {"whatsapp", "telegram"} and sched.think is not None
+    assert set(chans) == {"whatsapp", "telegram", "app"} and sched.think is not None

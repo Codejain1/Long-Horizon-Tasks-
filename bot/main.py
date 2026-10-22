@@ -33,6 +33,9 @@ def build(env=os.environ):
     hermes = Path(env.get("HERMES_HOME", Path.home() / ".hermes"))
     home.mkdir(parents=True, exist_ok=True)
     chans = {"whatsapp": C.WhatsApp(env.get("BRIDGE_URL", "http://127.0.0.1:3000")), "telegram": C.Telegram()}
+    if env.get("BOT_APP", "1") == "1":  # the iPhone app (Expo), through a tunnel; 127.0.0.1 only
+        import appapi
+        chans["app"] = appapi.App(appapi.load_token(home), port=int(env.get("BOT_APP_PORT", "8770")))
     bot = A.Assistant(home, B.Store(home / "booking.db"), env.get("MEMORY_URL", "http://127.0.0.1:8765"))
     jobs_file = home / "jobs.json"
     if not jobs_file.exists() and (hermes / "cron" / "jobs.json").exists():
