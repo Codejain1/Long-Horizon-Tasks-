@@ -87,6 +87,28 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## iPhone app, first version (2026-10-23, owner chose Expo Go)
+**Why an app:** WhatsApp can't ask for location, voice is clumsy, and choices are polls only. The owner uses an
+iPhone; a native app is the goal, starting in Expo Go (no Xcode, no 7-day reinstalls, instant updates while
+building).
+
+**Bot side:**
+- `bot/appapi.py`: a private API on the server at 127.0.0.1:8770 with a secret key (`~/.bot/app.token`, 600).
+  Messages carry the phone's location; replies, progress and choices come back by long-poll.
+- The app's location is used for places.
+- Deployed as `/opt/bot-20261022-225529`.
+
+**App side (`app/`, Expo SDK 58, docs checked for location and speech):**
+- chat, choices as buttons, tappable links, location (allowed once), replies read aloud (en-IN), keyboard mic for
+  voice;
+- `app/dev/start.sh` starts the SSM tunnel, the Wi-Fi relay (`dev/relay.py`) and Expo;
+- the key is in `app/.env.local` (git-ignored).
+
+**Verified from the Mac over the Wi-Fi path:** a wrong key gets 401; "hi" -> bot reply in 4 s.
+
+**Not yet:** server-side speech-to-text (hold-to-talk), notifications (need the paid Apple account), the
+automatic-OTP Shortcut (needs a public HTTPS address: the owner's call).
+
 ## Taps instead of typing (2026-10-23, owner's UX call; deployed 22:16 UTC as `/opt/bot-20261022-221639`)
 - **No "Go ahead? (YES / no)" before searching:** a complete request is acted on at once. Food goes straight to
   options. Other kinds are saved, and the bot says plainly that searching them isn't built.
