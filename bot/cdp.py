@@ -39,7 +39,8 @@ LOGIN_PAGE = re.compile(r"\botp\b|one.?time|verification code|log ?in|sign ?in|m
                         r"enter (your )?(mobile|phone)", re.I)
 
 
-TOTAL = re.compile(r"(to pay|grand total|total payable|amount payable|bill total|total)\D{0,20}?([\d,]+(?:\.\d+)?)", re.I)
+TOTAL = re.compile(r"(to pay|grand total|total payable|amount payable|bill total|total|amount|\bpay)\D{0,20}?"
+                   r"([\d,]+(?:\.\d+)?)", re.I)  # "Pay ₹284" on payment steps too
 
 
 class Blocked(Exception):

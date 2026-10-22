@@ -75,6 +75,10 @@ FRESH_H = 12  # order history read this recently is reused, not re-read from Swi
 SET_PHONE = re.compile(r"^\s*(set\s+)?(my\s+)?log ?in\s+phone(\s+number)?\s*(is|to|:|=)?\s*(\+?[\d][\d\s-]{8,15}\d)\s*$", re.I)
 SET_GOOGLE = re.compile(r"^\s*(use\s+)?google\s+(for\s+)?log ?ins?\s*(with|:|=)?\s*([\w.+-]+@[\w-]+\.[\w.]+)\s*$", re.I)
 LOGIN_TO = re.compile(r"^\s*(log ?in|sign ?in)\s+(to|on|into)?\s*(%s)\b" % "|".join(login.SITES), re.I)
+SET_UPI = re.compile(r"^\s*(set\s+)?(my\s+)?upi(\s+id)?\s*(is|to|:|=)?\s*([\w.\-]{2,256}@[a-z][a-z0-9]{1,63})\s*$", re.I)
+SET_CAP = re.compile(r"^\s*(set\s+)?(my\s+)?order\s+cap\s*(is|to|:|=)?\s*₹?\s*([\d,]{2,7})\s*$", re.I)
+CAP = 1500  # ₹ per order unless the owner sets another (owner, 2026-10-22: "you decide, I'll tell you if it changes")
+TRACK_EVERY_S, TRACK_FOR_S = 120, 2 * 3600
 OTP = re.compile(r"^\s*(\d[\s-]?){4,8}\s*$")
 # a message that is clearly not an answer to the open form's questions (live: "i am just asking to sign in" was
 # taken as flight details): the form is dropped and the message routed afresh
@@ -157,6 +161,7 @@ class Assistant:
         self.swiggy = swiggy or food.Swiggy(chat=self._traced, captures=self.home / "captures")
         self.notify = lambda text: None
         self.login = logins or login.Login()
+        self.orders = food.Orders(chat=self._traced)
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS log (ts REAL, channel TEXT, chat TEXT, role TEXT, text TEXT)")
@@ -287,6 +292,16 @@ class Assistant:
             digits = re.sub(r"\D", "", m[5])[-10:]
             self.store.set_fact("owner:phone", digits, "owner")
             return f"Saved: I'll use your number ending {digits[-4:]} for logins. You'll get the OTPs; send them here."
+        m = SET_UPI.match(text)
+        if m:
+            self.store.set_fact("owner:upi", m[5].lower(), "owner")
+            return (f"Saved your UPI ID {m[5].lower()}. When you say 'order' on an option, I'll check the total with you, "
+                    "then send the payment request there for you to approve.")
+        m = SET_CAP.match(text)
+        if m:
+            cap = int(m[4].replace(",", ""))
+            self.store.set_fact("owner:cap", cap, "owner")
+            return f"Order cap set to ₹{cap}: I won't place an order above that."
         m = SET_GOOGLE.match(text)
         if m:
             self.store.set_fact("owner:google", m[4].lower(), "owner")
@@ -458,7 +473,15 @@ class Assistant:
                 + "\nReply 1, 2 or 3 and I'll compare it across the food apps near you, with reviews.")
 
     def _stage(self, chat: str, text: str, st: dict) -> str | None:
-        """The owner answering a list the bot sent (ideas or options); None = not an answer, route normally."""
+        """The owner answering a list the bot sent (ideas or options) or an order to confirm; None = not an answer,
+        route normally."""
+        if st["stage"] == "confirm_order":
+            self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
+            if YES.match(text):
+                return self._place(chat, st)
+            if NO.match(text):
+                return "Okay, not ordering. It's still in your Swiggy cart."
+            return None
         m = PICK.match(text)
         if not m:
             self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
@@ -506,14 +529,77 @@ class Assistant:
                          + rev)
         tail = f"\n(Couldn't read {', '.join(failed)} this time.)" if failed else ""
         return (note + "Best options:\n" + "\n".join(lines) + tail
-                + "\nReply with a number, plus 'link' (you order) or 'cart' (I add it to your cart), e.g. '1 link'.")
+                + "\nReply with a number plus 'order' (I order it, you approve the UPI request), 'cart' (I fill your "
+                "cart) or 'link' (you order), e.g. '1 order'.")
+
+    def _prepare_order(self, chat: str, offer: dict, tid) -> str:
+        """Cart, then the checkout page read back (items, total, address) for the owner's YES: nothing is paid yet."""
+        upi = (self.store.fact("owner:upi") or {}).get("value")
+        if not upi:
+            return "Send 'upi id you@bank' once, then reply the option again with 'order'. I'll send the payment there."
+        added = self._add_to_cart(chat, tid, offer)
+        if "To pay" not in added:
+            return added
+        self.notify("Reading the checkout page…")
+        summary = self.orders.summary()
+        if not summary:
+            return added + "\nI couldn't read the checkout page clearly, so I won't order. You can pay in Swiggy."
+        cap = (self.store.fact("owner:cap") or {}).get("value", CAP)
+        if summary["total"] > cap:
+            return (f"The total is ₹{summary['total']:g}, over your order cap of ₹{cap}. It's in your Swiggy cart; pay "
+                    "there, or send 'order cap <amount>' to raise the cap.")
+        self.store.set_fact(f"stage:{chat}", {"stage": "confirm_order", "summary": summary, "upi": upi, "task": tid},
+                            "bot", ttl_h=0.25)
+        return (f"Order {', '.join(summary['items']) or offer['item']} from {offer['restaurant']}, delivered to "
+                f"{summary['address']}, total ₹{summary['total']:g}, paid by a UPI request to {upi}? (YES / no)")
+
+    def _place(self, chat: str, st: dict) -> str:
+        total, upi = st["summary"]["total"], st["upi"]
+        self.notify(f"Placing it: approve the UPI request for ₹{total:g} on your phone ({upi}).")
+        try:
+            r = self.orders.pay(upi, total)
+        except food.cdp.Blocked as e:
+            return f"Stopped by the safety rules: {e}. Nothing was paid. It's still in your Swiggy cart."
+        if r != "paid":
+            why = "you didn't approve the request in time" if r == "timeout" else r.replace("failed: ", "")
+            return f"Not ordered: {why}. It's still in your Swiggy cart."
+        if st.get("task"):
+            B.finish(self.store, st["task"], "done", f"ordered ₹{total:g} by UPI", "swiggy")
+        send = self.notify
+        threading.Thread(target=self._track, args=(send,), daemon=True).start()
+        return f"Paid and ordered ✅ ₹{total:g}. I'll send you updates until it arrives."
+
+    def _track(self, send, sleep=time.sleep) -> None:
+        """Order updates until delivered: only when the status changes; stops after 3 failed reads in a row."""
+        last, fails, waited = None, 0, 0
+        while waited < TRACK_FOR_S:
+            sleep(TRACK_EVERY_S)
+            waited += TRACK_EVERY_S
+            try:
+                st = self.orders.status()
+                fails = 0
+            except Exception:
+                fails += 1
+                if fails >= 3:
+                    send("I can't read the order status any more. Check Swiggy for updates.")
+                    return
+                continue
+            now = st.get("status", "")
+            if now and now != last:
+                eta = f", about {st['eta_minutes']:g} min away" if isinstance(st.get("eta_minutes"), (int, float)) else ""
+                send(f"🛵 {now}{eta}")
+                last = now
+            if st.get("delivered"):
+                return
 
     def reviews(self, restaurant: str):
         return food.google_reviews(restaurant)
 
     def _choose(self, chat: str, offer: dict, how: str, tid: int | None) -> str:
         self.store.set_fact(f"stage:{chat}", None, "bot", ttl_h=0)
-        if re.search(r"\b(cart|order|you order|for me)\b", how, re.I) and offer.get("platform") == "swiggy":
+        if re.search(r"\b(order|for me|place)\b", how, re.I) and offer.get("platform") == "swiggy":
+            return self._prepare_order(chat, offer, tid)
+        if re.search(r"\bcart\b", how, re.I) and offer.get("platform") == "swiggy":
             return self._add_to_cart(chat, tid, offer)
         return f"Here's {offer['item']} from {offer['restaurant']} on {offer['platform'].title()}: {offer.get('link')}"
 

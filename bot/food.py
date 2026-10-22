@@ -223,3 +223,93 @@ def compare(dish: str, apps: dict, max_total=None, veg: bool = False, n: int = 3
             except Exception:
                 failed.append(name)
     return pick(found, max_total, veg, n), failed
+
+
+# ordering on the owner's behalf (rails v2: one-time permits checked against the page total; the owner approves the
+# payment in their own UPI app) --------------------------------------------------------------------------------
+CHECKOUT_SCHEMA = {"type": "object", "properties": {
+    "items": {"type": "array", "items": {"type": "string", "maxLength": 80}, "maxItems": 10},
+    "total": {"type": "number"}, "address": {"type": "string", "maxLength": 160}},
+    "required": ["items", "total", "address"]}
+STATUS_SCHEMA = {"type": "object", "properties": {
+    "status": {"type": "string", "maxLength": 80}, "eta_minutes": {"type": "number"}, "delivered": {"type": "boolean"}},
+    "required": ["status", "delivered"]}
+PROCEED = ["Proceed to Pay", "Proceed to pay", "Pay Now"]
+UPI_PAY = ["Verify and Pay", "Verify & Pay", "Pay Now", "Pay"]
+PAID = re.compile(r"order (placed|confirmed|received)|payment (successful|received|done)|track (your )?order", re.I)
+UNPAID = re.compile(r"payment (failed|declined|cancelled|unsuccessful)|request (expired|declined)|transaction failed", re.I)
+
+
+def read_checkout(page: str, chat=brain.chat) -> dict | None:
+    """Items, total and delivery address from the checkout page; None unless the total is on the page."""
+    got = brain.extract([{"role": "system", "content": "This is the text of a food app's checkout page. Give the items "
+                          "in the cart, the total to pay, and the delivery address, exactly as written."},
+                         {"role": "user", "content": page[:10000]}], CHECKOUT_SCHEMA, chat, max_tokens=300)
+    total = got.get("total")
+    if not isinstance(total, (int, float)) or not _price_on_page(total, page) or not got.get("address"):
+        return None
+    return {"items": got.get("items", []), "total": float(total), "address": got["address"]}
+
+
+def read_status(page: str, chat=brain.chat) -> dict:
+    return brain.extract([{"role": "system", "content": "This is a food app's order page. For the most recent order give "
+                           "its status in a few words (as the page says it), minutes to delivery if shown, and whether "
+                           "it is delivered."}, {"role": "user", "content": page[:8000]}], STATUS_SCHEMA, chat,
+                         max_tokens=120)
+
+
+class Orders:
+    """Swiggy checkout and tracking for an order the owner approved (item, total, address read from the page)."""
+
+    def __init__(self, tab=cdp.Tab, chat=brain.chat, sleep=None, clock=None):
+        import time as _t
+        self.tab, self.chat, self.sleep, self.clock = tab, chat, sleep or _t.sleep, clock or _t.time
+
+    def summary(self) -> dict | None:
+        t = self.tab()
+        try:
+            return read_checkout(t.open(CHECKOUT), self.chat)
+        finally:
+            t.close()
+
+    def pay(self, upi: str, total: float, wait_s: float = 360) -> str:
+        """Checkout -> UPI -> the owner's UPI ID -> pay, each order click under a fresh permit for `total`.
+        'paid', 'failed: ...' or 'timeout' (the owner didn't approve in time)."""
+        t = self.tab()
+        try:
+            t.open(CHECKOUT)
+            for label in PROCEED:  # into the payment step (an order click: permit, total checked on the page)
+                t.allow_order(total)
+                if t.click_label(label):
+                    break
+            t.settle(timeout=10)
+            t.click_text("UPI")
+            t.click_label("Add new UPI ID", "Add UPI ID", "Pay via UPI ID", "UPI ID")
+            t.settle(timeout=6)
+            if not t.type_field("upi_id", upi, {"upi": upi}):
+                return "failed: couldn't find where to enter the UPI ID"
+            for label in UPI_PAY:
+                t.allow_order(total)
+                if t.click_label(label):
+                    break
+            else:
+                return "failed: couldn't find the pay button after the UPI ID"
+            waited = 0.0
+            while waited < wait_s:  # the owner approves in their UPI app
+                self.sleep(10)
+                waited += 10
+                page = t.text()
+                if PAID.search(page):
+                    return "paid"
+                if UNPAID.search(page):
+                    return "failed: " + UNPAID.search(page)[0]
+            return "timeout"
+        finally:
+            t.close()
+
+    def status(self) -> dict:
+        t = self.tab()
+        try:
+            return read_status(t.open(ORDERS), self.chat)
+        finally:
+            t.close()

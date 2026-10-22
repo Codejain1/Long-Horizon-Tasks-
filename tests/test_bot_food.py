@@ -141,3 +141,56 @@ def test_compare_across_apps_keeps_each_app_and_reports_failures():
                                             "magicpin": App(boom=True)})
     assert [(o["platform"], o["price"]) for o in top] == [("zomato", 239), ("swiggy", 249)]
     assert failed == ["magicpin"] and top[0]["link"].startswith("https://www.zomato.com/bangalore/")
+
+
+class PayTab:
+    """Checkout -> payment step -> UPI ID -> pay; then the page shows the owner's approval (or not)."""
+    def __init__(self, outcome="Order placed! Track your order"):
+        self.steps, self.permits, self.outcome, self.reads = [], [], outcome, 0
+
+    def open(self, url):
+        self.steps.append(("open", url))
+        return "Veg Biryani x 1  Deliver to: Home, 7th Block Koramangala  TO PAY ₹284"
+
+    def settle(self, timeout=20):
+        return ""
+
+    def allow_order(self, total, minutes=5):
+        self.permits.append(total)
+
+    def click_label(self, *labels):
+        self.steps.append(("click", labels[0]))
+        return labels[0] if labels[0] in ("Proceed to Pay", "Add new UPI ID", "Verify and Pay") else None
+
+    def click_text(self, *needles, button=None):
+        self.steps.append(("click", needles[0]))
+        return True
+
+    def type_field(self, kind, value, owner):
+        self.steps.append(("type", kind, value))
+        return True
+
+    def text(self):
+        self.reads += 1
+        return "Waiting for payment" if self.reads < 3 else self.outcome
+
+    def close(self):
+        self.steps.append(("close",))
+
+
+def test_checkout_read_back_needs_the_total_on_the_page():
+    page = "Veg Biryani x 1  Deliver to: Home, 7th Block Koramangala  Item total ₹249  TO PAY ₹284"
+    got = F.read_checkout(page, model({"items": ["Veg Biryani x 1"], "total": 284, "address": "Home, 7th Block Koramangala"}))
+    assert got == {"items": ["Veg Biryani x 1"], "total": 284.0, "address": "Home, 7th Block Koramangala"}
+    assert F.read_checkout(page, model({"items": [], "total": 199, "address": "Home"})) is None  # not on the page
+
+
+def test_pay_by_upi_request_with_a_permit_per_order_click():
+    t = PayTab()
+    r = F.Orders(tab=lambda: t, sleep=lambda s: None).pay("me@okaxis", 284)
+    assert r == "paid"
+    assert ("type", "upi_id", "me@okaxis") in t.steps and t.steps[-1] == ("close",)
+    assert ("click", "Proceed to Pay") in t.steps and ("click", "Verify and Pay") in t.steps
+    assert set(t.permits) == {284}  # every order click under a permit for exactly the approved total
+    assert F.Orders(tab=lambda: PayTab("Payment failed"), sleep=lambda s: None).pay("me@okaxis", 284).startswith("failed")
+    assert F.Orders(tab=lambda: PayTab("Waiting"), sleep=lambda s: None).pay("me@okaxis", 284, wait_s=30) == "timeout"

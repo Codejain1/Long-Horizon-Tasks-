@@ -380,3 +380,66 @@ def test_a_named_app_that_is_not_connected_is_said_not_silently_swapped(tmp_path
     r = say(b, "yes")
     assert r.startswith("Zomato isn't connected to me yet") and "Chole bhature — Guru Kirpa — ₹50 on Swiggy" in r
     assert "one moment" in A.CHAT.lower()  # banned in plain-text replies too
+
+
+class FakeOrders:
+    def __init__(self, total=284.0, result="paid"):
+        self.total, self.result, self.paid = total, result, []
+
+    def summary(self):
+        return {"items": ["Veg Biryani x 1"], "total": self.total, "address": "Home, Koramangala"}
+
+    def pay(self, upi, total):
+        self.paid.append((upi, total))
+        return self.result
+
+
+def order_bot(tmp_path, orders):
+    m = Model(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
+    b = bot(tmp_path, m)
+    b.swiggy, b.orders = FakeSwiggy(OFFERS), orders
+    tracked = []
+    b._track = lambda send: tracked.append(send)
+    say(b, "order veg biryani under 400"), say(b, "yes")
+    return b, tracked
+
+
+def test_order_for_me_needs_upi_then_yes_on_the_exact_total(tmp_path):
+    orders = FakeOrders()
+    b, tracked = order_bot(tmp_path, orders)
+    assert "upi id" in say(b, "1 order").lower()  # no UPI ID yet: asks for it once
+    assert say(b, "upi id Me@OkAxis").startswith("Saved your UPI ID me@okaxis")
+    b.model.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
+    say(b, "order veg biryani under 400"), say(b, "yes")
+    r = say(b, "1 order")
+    assert r == ("Order Veg Biryani x 1 from Paradise, delivered to Home, Koramangala, total ₹284, paid by a UPI "
+                 "request to me@okaxis? (YES / no)")
+    assert orders.paid == []  # nothing paid before YES
+    r = say(b, "yes")
+    assert orders.paid == [("me@okaxis", 284.0)] and r.startswith("Paid and ordered ✅ ₹284") and len(tracked) == 1
+
+
+def test_cap_no_and_timeout(tmp_path):
+    b, _ = order_bot(tmp_path, FakeOrders(total=1800))
+    b.store.set_fact("owner:upi", "me@okaxis")
+    assert "over your order cap of ₹1500" in say(b, "1 order") and b.orders.paid == []
+    b2, _ = order_bot(tmp_path / "2", FakeOrders())
+    b2.store.set_fact("owner:upi", "me@okaxis")
+    say(b2, "1 order")
+    assert say(b2, "no").startswith("Okay, not ordering") and b2.orders.paid == []
+    b3, _ = order_bot(tmp_path / "3", FakeOrders(result="timeout"))
+    b3.store.set_fact("owner:upi", "me@okaxis")
+    assert say(b3, "order cap 2000").startswith("Order cap set to ₹2000")
+    say(b3, "1 order")
+    assert "didn't approve the request in time" in say(b3, "yes")
+
+
+def test_tracking_sends_only_changes_until_delivered(tmp_path):
+    b = bot(tmp_path, Model())
+    seq = iter([{"status": "Order confirmed", "delivered": False}, {"status": "Order confirmed", "delivered": False},
+                {"status": "Out for delivery", "eta_minutes": 5, "delivered": False},
+                {"status": "Delivered", "delivered": True}])
+    b.orders = type("O", (), {"status": lambda self: next(seq)})()
+    sent = []
+    A.Assistant._track(b, sent.append, sleep=lambda s: None)
+    assert sent == ["🛵 Order confirmed", "🛵 Out for delivery, about 5 min away", "🛵 Delivered"]

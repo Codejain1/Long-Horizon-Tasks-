@@ -152,3 +152,15 @@ def test_search_and_upi_typing_rails():
         gw.type_field("search", "biryani", me)
     with pytest.raises(cdp.Blocked):
         pay.type_field("upi_pin", "1234", me)               # no such kind: PINs can't be typed
+
+
+def test_payment_step_amount_counts_as_the_total():
+    import pytest
+    tab = cdp.Tab.__new__(cdp.Tab)
+    tab.text = lambda: "UPI  me@okaxis  Verify and Pay ₹284"
+    tab.js = lambda expr: True
+    tab.allow_order(284)
+    assert tab.click_label("Verify and Pay") is True
+    tab.allow_order(250)
+    with pytest.raises(cdp.Blocked, match="over what the owner approved"):
+        tab.click_label("Verify and Pay")
