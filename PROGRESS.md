@@ -87,6 +87,31 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Food flow v2 (2026-10-22, owner's design)
+**The flow:**
+1. "What should I eat?" gives 3 dish ideas from the order pattern, taste, mood and time (forced JSON).
+2. The owner picks a number, or names a dish and says YES.
+3. The dish is compared across verified apps in parallel: price, rating, delivery time, a link.
+4. Google reviews for each option: rating, count, liked and disliked; the rating must be on the page.
+5. The owner replies "1 link" (they order) or "1 cart" (the bot fills the Swiggy cart).
+
+**Deployed 2026-10-22 10:00 (`/opt/bot-20261022-100025`).**
+
+**Botsmoke:** test2 40/40, test3 20/20, test4 14/16, login 8/8, suggest 8/8, chat 16/16, p90 3.1 s.
+
+**Apps from the server:**
+- Zomato: 403 (blocks the server).
+- magicpin: guessed search URL 404.
+- EatClub and EatSure: home page only (search needs typing).
+- Only Swiggy is verified.
+
+**Rails v2 (owner approved in /permissions 2026-10-22):**
+- A one-time order permit: one pay/order click, within 5 minutes, only if the page total is at most the approved
+  amount.
+- Search typing: words, at most 4 digits in total. A test caught "4111 1111 1111 1111" passing the first version.
+- The owner's exact UPI ID, into a UPI/VPA field, only on a UPI step.
+- Cards, CVV, PINs and payment OTPs: still impossible.
+
 ## Live chat broke on 2026-10-21 23:00-23:10: diagnosis and fixes (2026-10-22)
 **What went wrong (from the traces):**
 - "What should I eat now?" got an invented "I found a vegetarian biriyani option".
@@ -471,6 +496,9 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-22: the bot may place a food order paid by a UPI request to the owner's own UPI ID (owner's decision,
+  approved in /permissions). It needs the owner's YES to the exact item, total and address read from the checkout
+  page. Cap ₹1,500 per order until the owner changes it.
 - 2026-10-22: the bot may type the owner's phone and a login OTP the owner sends (owner's request). Payment OTPs,
   cards, CVV and UPI PIN stay impossible, enforced in `bot/cdp.py`.
 - 2026-10-22: Hermes is replaced by our bot (owner's call). The bot keeps Hermes's WhatsApp session, env file,

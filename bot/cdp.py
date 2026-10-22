@@ -20,9 +20,13 @@ import urllib.request
 DEVTOOLS = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
 
 # The owner's rails (Hermes enforced them in its rails plugin; here every browser action passes this layer):
-# never open a payment gateway, never click anything that pays, orders or books. The only typing is `type_login`:
-# the owner's own phone number or a 4-8 digit login OTP the owner sent, only on a sign-in page, never into a card,
-# CVV, expiry or UPI PIN field (owner's rule change 2026-10-22: login OTPs yes, payment OTPs never).
+# - never open a payment gateway by URL;
+# - never click anything that pays, orders or books, except once with a permit (`allow_order`) that the order step
+#   creates after the owner chose "order for me", and only if the total on the page is within it;
+# - typing (`type_field`) only: the owner's phone or a 4-8 digit login OTP on a sign-in page; a search (words, no
+#   long digit runs) in a search box; the owner's exact UPI ID in a UPI/VPA field. Never into a card, CVV, expiry or
+#   UPI PIN field. (Owner's rule changes 2026-10-22: login OTPs yes; orders paid by a UPI request the owner approves
+#   in their own UPI app. Payment OTPs, cards and PINs: never.)
 PAY_GATEWAYS = ("razorpay", "paytm", "payu", "juspay", "stripe.com", "billdesk", "ccavenue", "cashfree", "phonepe",
                 "paypal", "pay.google", "checkout.com", "easebuzz", "instamojo")
 COMMIT = (r"place (your )?order|pay now|pay\s*(₹|rs|inr)|make payment|proceed to pay|continue to pay|"
@@ -33,6 +37,9 @@ COMMIT = (r"place (your )?order|pay now|pay\s*(₹|rs|inr)|make payment|proceed 
 PAY_FIELD = r"card|cvv|cvc|expiry|upi ?pin|mpin|net ?banking|ifsc"
 LOGIN_PAGE = re.compile(r"\botp\b|one.?time|verification code|log ?in|sign ?in|mobile number|phone number|"
                         r"enter (your )?(mobile|phone)", re.I)
+
+
+TOTAL = re.compile(r"(to pay|grand total|total payable|amount payable|bill total|total)\D{0,20}?([\d,]+(?:\.\d+)?)", re.I)
 
 
 class Blocked(Exception):
@@ -161,12 +168,32 @@ class Tab:
         self.call("Page.navigate", url=url)
         return self.settle()
 
+    def allow_order(self, max_total: float, minutes: float = 5) -> None:
+        """One click that pays / orders becomes possible on this tab: once, within `minutes`, if the page's total is at
+        most `max_total`. Only the order step calls this, after the owner chose "order for me"."""
+        self.permit = {"max_total": float(max_total), "until": time.time() + 60 * minutes}
+
+    def _commit(self, labels) -> bool:
+        """True if this click pays/orders/books and a valid permit covers it (the permit is then used up); raises
+        if it pays/orders/books without one; False for an ordinary click."""
+        if not any(re.search(COMMIT, x, re.I) for x in labels if x):
+            return False
+        p = getattr(self, "permit", None)
+        if not p or time.time() > p["until"]:
+            raise Blocked(f"rails: the bot never clicks pay / order / book without the owner's go ({labels})")
+        totals = [float(m[2].replace(",", "")) for m in TOTAL.finditer(self.text())]
+        if not totals:
+            raise Blocked("rails: no total visible on the page, so no order click")
+        if max(totals) > p["max_total"]:
+            raise Blocked(f"rails: total ₹{max(totals):g} is over what the owner approved (₹{p['max_total']:g})")
+        self.permit = None
+        return True
+
     def click_text(self, *needles: str, button: str | None = None) -> bool:
         """Click the smallest element whose text contains every needle (case-insensitive); with `button`, click the
         button/link with that exact text inside it instead. True if something was clicked. Rails: never a click on
         an element whose own text pays, orders or books (checked in the page, on the element about to be clicked)."""
-        if any(re.search(COMMIT, x, re.I) for x in (*needles, button or "")):
-            raise Blocked(f"rails: the bot never clicks pay / order / book ({needles}, {button})")
+        permitted = self._commit((*needles, button or ""))
         js = """((needles, button, forbidden) => {
           const has = el => needles.every(n => (el.innerText || '').toLowerCase().includes(n.toLowerCase()));
           let best = null;
@@ -188,7 +215,7 @@ class Tab:
           const own = (target.innerText || target.value || target.getAttribute('aria-label') || '').trim();
           if (new RegExp(forbidden, 'i').test(own)) return 'blocked:' + own.slice(0, 80);
           target.scrollIntoView({block: 'center'}); target.click(); return true;
-        })(%s, %s, %s)""" % (json.dumps(list(needles)), json.dumps(button), json.dumps(COMMIT))
+        })(%s, %s, %s)""" % (json.dumps(list(needles)), json.dumps(button), json.dumps("(?!)" if permitted else COMMIT))
         r = self.js(js)
         if isinstance(r, str) and r.startswith("blocked:"):
             raise Blocked(f"rails: refused to click '{r[8:]}' (pays / orders / books)")
@@ -197,9 +224,8 @@ class Tab:
     def click_label(self, *labels: str) -> str | None:
         """Click the first visible button/link whose own text is exactly one of `labels` (case-insensitive), e.g.
         "Sign In", "Get OTP", "Verify OTP". Returns the label clicked, or None. Same rails as click_text."""
-        for label in labels:
-            if re.search(COMMIT, label, re.I):
-                raise Blocked(f"rails: the bot never clicks pay / order / book ({label})")
+        if self._commit(labels) and len(labels) != 1:
+            raise Blocked("rails: an order click names exactly one button")
         js = """((labels) => {
           const want = labels.map(l => l.toLowerCase());
           const els = [...document.querySelectorAll('button, a, [role=button], input[type=submit], div, span')]
@@ -213,22 +239,44 @@ class Tab:
         return self.js(js)
 
     def type_login(self, kind: str, value: str, owner_phone: str) -> bool:
-        """The only typing the bot can do. kind "phone": exactly the owner's phone; kind "otp": 4-8 digits. Only on a
-        sign-in page (its text says OTP / log in / mobile number...), never into a payment field. True if typed."""
+        return self.type_field(kind, value, {"phone": owner_phone})
+
+    def type_field(self, kind: str, value: str, owner: dict) -> bool:
+        """The only typing the bot can do (see the rails at the top). kind: "phone" (exactly owner["phone"]), "otp"
+        (4-8 digits, sign-in page), "search" (words, a search box, never on payment pages), "upi_id" (exactly
+        owner["upi"], a UPI/VPA field, the page must be about UPI). True if typed."""
         digits = re.sub(r"\D", "", value)
-        mine = re.sub(r"\D", "", owner_phone or "")[-10:]
-        if kind == "phone" and not (mine and digits[-10:] == mine):
-            raise Blocked("rails: only the owner's own phone number can be typed")
-        if kind == "otp" and not re.fullmatch(r"\d{4,8}", digits):
-            raise Blocked("rails: a login OTP is 4-8 digits")
-        if kind not in ("phone", "otp"):
-            raise Blocked(f"rails: the bot types nothing but a login phone or OTP ({kind})")
         url = self.js("location.href") or ""
-        if any(g in urllib.parse.urlparse(url).netloc.lower() for g in PAY_GATEWAYS):
-            raise Blocked("rails: no typing on payment pages")
-        if not LOGIN_PAGE.search(self.text()):
-            raise Blocked("rails: typing only on a sign-in page")
-        text = digits[-10:] if kind == "phone" else digits
+        gateway = any(g in urllib.parse.urlparse(url).netloc.lower() for g in PAY_GATEWAYS)
+        page = self.text()
+        if kind == "phone":
+            mine = re.sub(r"\D", "", owner.get("phone") or "")[-10:]
+            if not (mine and digits[-10:] == mine):
+                raise Blocked("rails: only the owner's own phone number can be typed")
+            text = digits[-10:]
+        elif kind == "otp":
+            if not re.fullmatch(r"\d{4,8}", digits):
+                raise Blocked("rails: a login OTP is 4-8 digits")
+            text = digits
+        elif kind == "search":
+            if not re.fullmatch(r"[\w\s&'.,()-]{2,60}", value) or len(digits) > 4:  # "4111 1111 ..." too (test)
+                raise Blocked("rails: a search is a few words, at most 4 digits")
+            if gateway:
+                raise Blocked("rails: no typing on payment pages")
+            text = value.strip()
+        elif kind == "upi_id":
+            if not owner.get("upi") or value.strip().lower() != owner["upi"].lower():
+                raise Blocked("rails: only the owner's own UPI ID can be typed")
+            if not re.search(r"\bupi\b|\bvpa\b", page, re.I):
+                raise Blocked("rails: the UPI ID goes only on a UPI payment step")
+            text = value.strip()
+        else:
+            raise Blocked(f"rails: the bot types nothing but a login phone, OTP, a search or the UPI ID ({kind})")
+        if kind in ("phone", "otp"):
+            if gateway:
+                raise Blocked("rails: no typing on payment pages")
+            if not LOGIN_PAGE.search(page):
+                raise Blocked("rails: typing only on a sign-in page")
         js = """((kind, forbidden) => {
           const vis = [...document.querySelectorAll('input')].filter(i => i.offsetParent !== null && !i.disabled
             && !['hidden', 'password', 'checkbox', 'radio', 'submit'].includes(i.type));
@@ -238,6 +286,10 @@ class Tab:
           let fields;
           if (kind === 'phone') {
             fields = vis.filter(i => i.type === 'tel' || /phone|mobile/.test(label(i))).slice(0, 1);
+          } else if (kind === 'search') {
+            fields = vis.filter(i => i.type === 'search' || /search|dish|restaurant|food/.test(label(i))).slice(0, 1);
+          } else if (kind === 'upi_id') {
+            fields = vis.filter(i => /upi|vpa/.test(label(i)) && !/pin/.test(label(i))).slice(0, 1);
           } else {
             const one = vis.filter(i => i.autocomplete === 'one-time-code' || /otp|code|verification/.test(label(i)));
             const boxes = vis.filter(i => i.maxLength === 1);
@@ -258,6 +310,10 @@ class Tab:
             self.js(f"window.__botFields[{i}].focus(); window.__botFields[{i}].select && window.__botFields[{i}].select()")
             self.call("Input.insertText", text=chunk)
         return True
+
+    def press_enter(self) -> None:
+        for t in ("keyDown", "keyUp"):
+            self.call("Input.dispatchKeyEvent", type=t, key="Enter", code="Enter", windowsVirtualKeyCode=13)
 
     def scroll_end(self) -> None:
         self.js("window.scrollTo(0, document.body.scrollHeight)")

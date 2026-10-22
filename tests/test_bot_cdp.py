@@ -94,3 +94,61 @@ def test_rails_block_payment_pages_and_paying_clicks():
     tab.js = lambda expr: True
     assert tab.click_text("Paradise", "Veg Biryani", button="ADD") is True
     assert not hasattr(tab, "type") and not hasattr(tab, "fill")  # no way to type card numbers or OTPs
+
+
+def test_order_permit_is_one_click_within_the_approved_total():
+    import time as _t
+    import pytest
+    tab = cdp.Tab.__new__(cdp.Tab)
+    page = {"text": "Veg Biryani x 1  Item total ₹249  Delivery ₹35  TO PAY ₹284  Place Order"}
+    tab.text = lambda: page["text"]
+    tab.js = lambda expr: True
+    with pytest.raises(cdp.Blocked, match="without the owner's go"):
+        tab.click_label("Place Order")                       # no permit: never
+    tab.allow_order(300)
+    assert tab.click_label("Place Order") is True             # within ₹300: once
+    with pytest.raises(cdp.Blocked):
+        tab.click_label("Place Order")                       # used up
+    tab.allow_order(250)
+    with pytest.raises(cdp.Blocked, match="over what the owner approved"):
+        tab.click_label("Place Order")                       # page says ₹284 > ₹250
+    tab.allow_order(300)
+    page["text"] = "Place Order"
+    with pytest.raises(cdp.Blocked, match="no total visible"):
+        tab.click_label("Place Order")
+    page["text"] = "TO PAY ₹284"
+    tab.allow_order(300, minutes=-1)
+    with pytest.raises(cdp.Blocked):
+        tab.click_label("Place Order")                       # expired
+    tab.allow_order(300)
+    with pytest.raises(cdp.Blocked, match="exactly one button"):
+        tab.click_label("Place Order", "Pay Now")
+
+
+def test_search_and_upi_typing_rails():
+    import pytest
+    def tab_on(page, url):
+        t = cdp.Tab.__new__(cdp.Tab)
+        sent = []
+        t.text = lambda: page
+        t.js = lambda expr: url if expr == "location.href" else ({"n": 1} if "__botFields" in expr else None)
+        t.call = lambda method, **p: sent.append((method, p)) or {}
+        return t, sent
+    me = {"phone": "9800000001", "upi": "me@okaxis"}
+    t, sent = tab_on("Search for restaurants and food", "https://www.eatclub.in/")
+    assert t.type_field("search", "chole bhature", me) and sent[-1] == ("Input.insertText", {"text": "chole bhature"})
+    for bad in ("4111 1111 1111 1111", "x" * 70, "<script>"):
+        with pytest.raises(cdp.Blocked):
+            t.type_field("search", bad, me)
+    pay, sent = tab_on("Pay using UPI  Enter UPI ID  Verify and Pay ₹284", "https://www.swiggy.com/checkout")
+    assert pay.type_field("upi_id", "ME@okaxis", me) and sent[-1] == ("Input.insertText", {"text": "ME@okaxis"})
+    with pytest.raises(cdp.Blocked, match="own UPI ID"):
+        pay.type_field("upi_id", "someone@ybl", me)
+    cart, _ = tab_on("Your cart  To pay ₹284", "https://www.swiggy.com/checkout")
+    with pytest.raises(cdp.Blocked, match="UPI payment step"):
+        cart.type_field("upi_id", "me@okaxis", me)
+    gw, _ = tab_on("Search", "https://api.razorpay.com/x")
+    with pytest.raises(cdp.Blocked):
+        gw.type_field("search", "biryani", me)
+    with pytest.raises(cdp.Blocked):
+        pay.type_field("upi_pin", "1234", me)               # no such kind: PINs can't be typed
