@@ -477,3 +477,20 @@ def test_ordering_is_paused_by_default_and_fills_the_cart(tmp_path, monkeypatch)
     assert "'cart'" in say(b, "yes") and "'order'" not in b._said("c1")[0]
     r = say(b, "1 order")
     assert "To pay: ₹284" in r and "Ordering for you is paused" in r and b.orders.paid == []
+
+
+def test_concurrent_turns_keep_their_own_notify_and_db_reads_are_safe(tmp_path):
+    import threading as th
+    b = bot(tmp_path, Model(*[reply(f"r{i}") for i in range(40)]))
+    got = {}
+
+    def turn(chat):
+        notes = []
+        b.handle({"channel": "whatsapp", "chat": chat, "text": "hi"}, notify=notes.append)
+        b.notify(f"note for {chat}")
+        got[chat] = notes
+    threads = [th.Thread(target=turn, args=(f"c{i}",)) for i in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert all(v == [f"note for {k}"] for k, v in got.items()) and len(got) == 8
+    assert len(b.log_days(1)) == 16

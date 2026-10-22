@@ -168,7 +168,6 @@ class Assistant:
         self.model, self.local = chat, threading.local()
         self.chat = self._traced  # every model call goes through the trace
         self.swiggy = swiggy or food.Swiggy(chat=self._traced, captures=self.home / "captures")
-        self.notify = lambda text: None
         self.think = os.environ.get("BOT_THINK", "0") == "1"  # Qwen reasoning for routing (A/B in botsmoke)
         self.login = logins or login.Login()
         self.orders = food.Orders(chat=self._traced)
@@ -180,6 +179,19 @@ class Assistant:
                         "steps TEXT)")
         self.lock = threading.Lock()
 
+    @property
+    def notify(self):
+        """This turn's interim-message sender (per thread: concurrent turns never get each other's)."""
+        return getattr(self.local, "notify", None) or (lambda text: None)
+
+    @notify.setter
+    def notify(self, fn):
+        self.local.notify = fn
+
+    def _read(self, sql: str, args=()) -> list:
+        with self.lock:  # one sqlite connection shared by threads: reads under the lock too
+            return self.db.execute(sql, args).fetchall()
+
     # log -------------------------------------------------------------------------------------------------------
     def _log(self, channel, chat, role, text):
         with self.lock:
@@ -187,12 +199,12 @@ class Assistant:
             self.db.commit()
 
     def recent(self, chat: str, n: int = 6) -> list[dict]:
-        rows = self.db.execute("SELECT role, text FROM log WHERE chat=? ORDER BY ts DESC LIMIT ?", (chat, n)).fetchall()
+        rows = self._read("SELECT role, text FROM log WHERE chat=? ORDER BY ts DESC LIMIT ?", (chat, n))
         return [{"role": "user" if r == "owner" else "assistant", "content": t} for r, t in reversed(rows)]
 
     def log_days(self, days: int) -> list[tuple]:
         """For weekly-reflect: (utc time, owner|bot, text) over the last `days` days, all chats."""
-        rows = self.db.execute("SELECT ts, role, text FROM log WHERE ts > ? ORDER BY ts", (time.time() - days * 86400,))
+        rows = self._read("SELECT ts, role, text FROM log WHERE ts > ? ORDER BY ts", (time.time() - days * 86400,))
         return [(time.strftime("%Y-%m-%dT%H:%M", time.gmtime(ts)), role, text) for ts, role, text in rows]
 
     def _pending(self, chat, task=None, clear=False):
@@ -415,8 +427,8 @@ class Assistant:
         return (msg.get("content") or "").strip()
 
     def _said(self, chat: str, n: int = 5) -> list[str]:
-        return [t for (t,) in self.db.execute("SELECT text FROM log WHERE chat=? AND role='bot' ORDER BY ts DESC LIMIT ?",
-                                              (chat, n))]
+        return [t for (t,) in self._read("SELECT text FROM log WHERE chat=? AND role='bot' ORDER BY ts DESC LIMIT ?",
+                                         (chat, n))]
 
     # Swiggy ----------------------------------------------------------------------------------------------------
     # logins ----------------------------------------------------------------------------------------------------
