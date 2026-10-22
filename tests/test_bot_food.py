@@ -287,3 +287,14 @@ def test_search_uses_the_feed_at_the_owners_location_and_says_when_nothing_is_th
         raise AssertionError("should have raised")
     except F.NothingHere as e:
         assert "nothing for veg biryani" in str(e)
+
+
+def test_only_the_dish_itself_not_add_ons_or_grocery_packs():
+    live = [{"restaurant": "Narmada", "item": "Extra Biryani Masala Veg", "price": 100, "veg": True},
+            {"restaurant": "Biryani Blues", "item": "Veg Dum Biryani Bowl", "price": 129, "veg": True},
+            {"restaurant": "Bikkgane", "item": "Basmati Biryani Rice (400 Grams)", "price": 199, "veg": True},
+            {"restaurant": "Paradise", "item": "Veg Biryani", "price": 249, "veg": True},
+            {"restaurant": "X", "item": "Paneer Butter Masala", "price": 180, "veg": True}]
+    assert [o["item"] for o in F.pick(live, 400, True, dish="veg biryani")] == ["Veg Dum Biryani Bowl", "Veg Biryani"]
+    assert F.relevant("Masala Dosa", "dosa") and not F.relevant("Masala Dosa", "biryani")
+    assert F.relevant("Margherita Pizza", "pizzas") and F.relevant("anything", "something cheap")

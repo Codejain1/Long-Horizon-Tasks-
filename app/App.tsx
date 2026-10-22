@@ -9,6 +9,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import * as Location from 'expo-location';
 import * as Speech from 'expo-speech';
+import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder } from 'expo-audio';
 
 const URL = process.env.EXPO_PUBLIC_BOT_URL ?? '';
 const KEY = process.env.EXPO_PUBLIC_BOT_KEY ?? '';
@@ -50,6 +51,44 @@ export default function App() {
   const speakRef = useRef(speak);
   speakRef.current = speak;
   const list = useRef<FlatList<Msg>>(null);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [listening, setListening] = useState(false);
+
+  // hold to talk: record while pressed, then the server turns it into text (Whisper) and handles it like typing
+  const startTalk = async () => {
+    try {
+      const perm = await AudioModule.requestRecordingPermissionsAsync();
+      if (!perm.granted) return;
+      Speech.stop();
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      setListening(true);
+    } catch {
+      setListening(false);
+    }
+  };
+
+  const stopTalk = async () => {
+    if (!listening) return;
+    setListening(false);
+    try {
+      await recorder.stop();
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }); // replies play on the speaker
+      const uri = recorder.uri;
+      if (!uri) return;
+      const audio = await (await fetch(uri)).blob();
+      const loc = await locate();
+      const q = loc ? `?lat=${loc.lat}&lng=${loc.lng}` : '';
+      const r = await fetch(`${URL}/voice${q}`, {
+        method: 'POST', headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'audio/mp4' }, body: audio,
+      });
+      const { text } = await r.json();
+      setMsgs((m) => [...m, { id: `v${Date.now()}`, from: 'me', text: text ? `🎤 ${text}` : "🎤 (didn't catch that, try again)" }]);
+    } catch {
+      setMsgs((m) => [...m, { id: `e${Date.now()}`, from: 'bot', text: "Couldn't send the voice note. Is the tunnel running?" }]);
+    }
+  };
 
   // location: asked once; refreshed before each message
   const locate = async (): Promise<Coords> => {
@@ -177,13 +216,19 @@ export default function App() {
           style={styles.input}
           value={draft}
           onChangeText={setDraft}
-          placeholder="Ask anything… (tap the mic on the keyboard to talk)"
+          placeholder="Ask anything, or hold 🎤 to talk"
           onSubmitEditing={() => send(draft)}
           returnKeyType="send"
         />
-        <Pressable style={styles.send} onPress={() => send(draft)}>
-          <Text style={styles.sendText}>Send</Text>
-        </Pressable>
+        {draft.trim() ? (
+          <Pressable style={styles.send} onPress={() => send(draft)}>
+            <Text style={styles.sendText}>Send</Text>
+          </Pressable>
+        ) : (
+          <Pressable style={[styles.send, listening && styles.listening]} onPressIn={startTalk} onPressOut={stopTalk}>
+            <Text style={styles.sendText}>{listening ? 'Listening…' : '🎤 Hold'}</Text>
+          </Pressable>
+        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -222,4 +267,5 @@ const styles = StyleSheet.create({
   input: { flex: 1, borderWidth: 1, borderColor: '#ddd', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15 },
   send: { backgroundColor: '#1F6FEB', borderRadius: 20, paddingHorizontal: 16, justifyContent: 'center' },
   sendText: { color: '#fff', fontWeight: '700' },
+  listening: { backgroundColor: '#D93025' },
 });

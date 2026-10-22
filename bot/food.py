@@ -144,9 +144,28 @@ def read_offers(page: str, dish: str, chat=brain.chat) -> list[dict]:
             if o.get("item") and o.get("restaurant") and _near(page, o["item"], o["restaurant"], o.get("price"))]
 
 
-def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3) -> list[dict]:
-    """Code, not the model: drop non-veg for a veg owner and anything over budget, cheapest first."""
+# not the dish itself (live 2026-10-23: "Extra Biryani Masala Veg" and "Basmati Biryani Rice (400 Grams)" were the
+# "cheapest biryani"): add-ons, extras, sides and packaged/grocery items
+NOT_A_MEAL = re.compile(r"\b(extra|add[- ]?on|only (gravy|masala|rice)|gravy only|raita|salan|"
+                        r"\d+\s*(g|gm|gms|grams?|kg|ml|ltr|litre)\b)", re.I)
+GENERIC = {"veg", "vegetarian", "nonveg", "non", "food", "something", "cheap", "cheapest", "good", "best", "some", "a",
+           "the", "near", "me", "order", "spicy", "hot"}
+
+
+def relevant(item: str, dish: str) -> bool:
+    """The item is the dish asked for: its main words are in the name, and it isn't an add-on or a grocery pack."""
+    if NOT_A_MEAL.search(item):
+        return False
+    words = [w for w in re.findall(r"[a-z]+", dish.lower()) if w not in GENERIC and len(w) > 2]
+    low = item.lower()
+    return all(w in low or w.rstrip("s") in low for w in words) if words else True
+
+
+def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3, dish: str = "") -> list[dict]:
+    """Code, not the model: only the dish itself (no add-ons, no grocery packs), drop non-veg for a veg owner and
+    anything over budget, cheapest first."""
     ok = [o for o in offers if not (veg and (o.get("veg") is False or NONVEG.search(str(o.get("item")))))
+          and (not dish or relevant(str(o.get("item")), dish))
           and (max_total is None or float(str(o["price"]).replace(",", "")) <= float(max_total))]
     seen, out = set(), []
     for o in sorted(ok, key=lambda o: float(str(o["price"]).replace(",", ""))):
@@ -317,7 +336,7 @@ def compare(dish: str, apps: dict, max_total=None, veg: bool = False, n: int = 3
                 raise
             except Exception:
                 failed.append(name)
-    return pick(found, max_total, veg, n), failed
+    return pick(found, max_total, veg, n, dish), failed
 
 
 # ordering on the owner's behalf (rails v2: one-time permits checked against the page total; the owner approves the

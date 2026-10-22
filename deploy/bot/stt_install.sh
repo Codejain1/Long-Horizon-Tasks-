@@ -3,7 +3,7 @@
 set -euo pipefail
 [ -x /opt/stt-venv/bin/python ] || python3 -m venv /opt/stt-venv
 /opt/stt-venv/bin/pip install -q --upgrade pip
-/opt/stt-venv/bin/pip install -q "faster-whisper==1.*"
+/opt/stt-venv/bin/pip install -q "faster-whisper==1.*" "av<19" --only-binary=av  # PyAV 19 dropped metadata_errors, which faster-whisper 1.2 still passes; 18.x has wheels (found on the server)
 chown -R hermes:hermes /opt/stt-venv
 # download the model once (as the service user, into its cache)
 sudo -u hermes HF_HOME=/home/hermes/.cache/huggingface /opt/stt-venv/bin/python -c \

@@ -27,7 +27,8 @@
         {
           "locationWhenInUsePermission": "Your assistant uses your location for nearby food, cabs and places."
         }
-      ]
+      ],
+      "expo-audio"
     ]
   }
 }
