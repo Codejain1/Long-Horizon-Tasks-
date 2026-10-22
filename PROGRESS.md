@@ -87,6 +87,19 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Taps instead of typing (2026-10-23, owner's UX call; deployed 22:16 UTC as `/opt/bot-20261022-221639`)
+- **No "Go ahead? (YES / no)" before searching:** a complete request is acted on at once. Food goes straight to
+  options. Other kinds are saved, and the bot says plainly that searching them isn't built.
+- **Choices are taps:**
+  - dish ideas, options, then link / cart / order;
+  - the only YES left is "Yes, pay ₹X" before paying;
+  - Telegram: buttons;
+  - WhatsApp: one-choice polls (bridge checked: a vote comes back as a message with the option's text), with the
+    numbered text as fallback.
+- **Bug found while testing:** "order dosa…" during a choice was taken as "Order it". The action step now accepts
+  only the button text or a short answer.
+- **Botsmoke after:** unchanged (40/40, 20/20, 14/16, 8/8 x3, chat 16/16), p90 4.1 s.
+
 ## Review fixes done (2026-10-23, owner: "solve every part")
 - **B, concurrency:**
   - interim messages per turn (thread-local);
