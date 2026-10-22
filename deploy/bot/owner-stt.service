@@ -1,0 +1,15 @@
+[Unit]
+Description=Speech to text for the owner's app (faster-whisper on CPU, 127.0.0.1:8790)
+After=network-online.target
+
+[Service]
+User=hermes
+WorkingDirectory=/home/hermes
+Environment=HF_HOME=/home/hermes/.cache/huggingface OMP_NUM_THREADS=3
+ExecStart=/opt/stt-venv/bin/python /opt/bot/bot/stt.py --model small --port 8790
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

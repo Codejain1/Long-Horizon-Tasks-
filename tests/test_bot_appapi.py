@@ -58,3 +58,39 @@ def test_cards_reach_the_app():
         assert ev["cards"][0]["image"] == "https://img/x" and ev["choices"] == ["1. Veg Biryani ₹249"]
     finally:
         app.close()
+
+
+def test_voice_is_transcribed_then_handled_like_text():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class FakeSTT(BaseHTTPRequestHandler):
+        def do_POST(self):
+            audio = self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps({"text": "veg biryani under 300" if audio == b"AUDIO" else ""}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    stt = ThreadingHTTPServer(("127.0.0.1", 0), FakeSTT)
+    threading.Thread(target=stt.serve_forever, daemon=True).start()
+    app = appapi.App("k", port=0, stt_url=f"http://127.0.0.1:{stt.server_address[1]}")
+    try:
+        def voice(data, key="k"):
+            req = urllib.request.Request(f"http://127.0.0.1:{app.port}/voice?lat=30.44&lng=74.88", data,
+                                         {"Authorization": f"Bearer {key}", "Content-Type": "audio/mp4"})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+        assert voice(b"AUDIO", key="wrong")[0] == 401
+        assert voice(b"AUDIO") == (200, {"ok": True, "text": "veg biryani under 300"})
+        assert app.poll() == [{"channel": "app", "chat": "owner", "text": "veg biryani under 300",
+                               "location": {"lat": 30.44, "lng": 74.88}}]
+        assert voice(b"SILENCE") == (200, {"ok": True, "text": ""}) and app.poll() == []
+    finally:
+        app.close()
+        stt.shutdown()
