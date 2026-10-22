@@ -37,7 +37,7 @@ TEMPLATES = {
     "cab": {"pickup": True, "drop": True, "when": True, "cab_type": False, "pay": True},
     "hotel": {"city": True, "checkin": True, "checkout": True, "guests": True, "area": False,
               "max_price_per_night": True},
-    "food": {"dish": True, "restaurant": False, "diet": False, "max_total": True, "pay": True},
+    "food": {"dish": True, "restaurant": False, "diet": False, "max_total": True, "near": False, "pay": True},
     "trip": {"to": True, "arrive": True, "leave": True, "interests": False, "budget": False},
 }
 FIXED = {"cab": {"pay": "cash"}, "food": {"pay": "cash on delivery or UPI request to the owner"}}

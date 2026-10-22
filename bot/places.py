@@ -96,3 +96,19 @@ def reverse(lat: float, lng: float, fetch=None) -> dict:
     area = a.get("suburb") or a.get("neighbourhood") or a.get("village") or a.get("town") or a.get("city_district") or ""
     city = a.get("city") or a.get("town") or a.get("county") or a.get("state_district") or ""
     return {k: v for k, v in (("area", area), ("city", city)) if v}
+
+
+def forward(place: str, fetch=None) -> dict:
+    """Coordinates for a place name ("Koramangala, Bangalore"): {"lat", "lng", "area", "city"}; {} if not found."""
+    fetch = fetch or _http_json
+    try:
+        r = fetch("https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+            {"q": place, "format": "jsonv2", "limit": 1, "countrycodes": "in", "addressdetails": 1}))
+    except Exception:
+        return {}
+    if not isinstance(r, list) or not r:
+        return {}
+    a = r[0].get("address") or {}
+    return {"lat": float(r[0]["lat"]), "lng": float(r[0]["lon"]),
+            "area": a.get("suburb") or a.get("neighbourhood") or place.split(",")[0].strip(),
+            "city": a.get("city") or a.get("town") or a.get("state_district") or ""}

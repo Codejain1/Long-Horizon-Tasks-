@@ -50,6 +50,7 @@ def bot(tmp_path, model, post=memory_ok, nearby=None):
     b = A.Assistant(tmp_path / "home", s, chat=model, post=post, nearby=nearby or (lambda *a, **k: {}))
     b.reviews = lambda restaurant: REVIEW if restaurant == "Paradise" else None  # never a real browser in tests
     b.geocode = lambda lat, lng: {"area": "Kotkapura", "city": "Faridkot"}  # nor a real map service
+    b.geoplace = lambda name: {"lat": 12.935, "lng": 77.624, "area": "Koramangala", "city": "Bengaluru"}
     b._memory_location = lambda: None
     return b
 
@@ -651,3 +652,39 @@ def test_magicpin_follows_up_after_swiggy_with_the_saving(tmp_path):
         _t.sleep(0.02)
     follow = [n for n in notes if n.startswith("Also on magicpin")][0]
     assert "Veg Biryani — Biryani Pot — ₹218 (₹31 less than Swiggy's best)" in follow and "https://magicpin.in/x" in follow
+
+
+
+def test_replay_of_the_live_chat_of_2026_10_23_keeps_the_thread(tmp_path):
+    """The owner's real messages: follow-ups keep the request; a place they name is searched; where-am-I is code."""
+    seen = []
+
+    class Sw(FakeSwiggy):
+        def search(self, dish):
+            seen.append((dish, dict(self.where or {})))
+            return OFFERS
+    m = Model(call("task_start", kind="food", slots={"dish": "biryani"}),                       # "Find good biryani near me"
+              call("task_update", slots={"max_total": 300}),                                   # "300"
+              # "Can you find for Koramangala bangalore": the model carries the request (shown to it) and adds the place
+              call("task_start", kind="food", slots={"dish": "biryani", "max_total": 300, "near": "Koramangala, Bangalore"}),
+              {"content": json.dumps({"action": "where_am_i", "kind": "none", "details": {}, "reply": "Whitefield"})})
+    b = bot(tmp_path, m)
+    b.swiggy = Sw()
+    jaito = {"lat": 30.44, "lng": 74.88}
+    def app(text):
+        return b.handle({"channel": "app", "chat": "owner", "text": text, "location": jaito})
+    assert app("Find good biryani near me") == "What's your budget?"
+    assert app("300").startswith("Best options:") and seen[-1][0] == "biryani"
+    r = app("Can you find for Koramangala bangalore")  # live: "What would you like to eat? What's your budget?"
+    assert r.startswith("Best options:") and seen[-1] == ("biryani", {"lat": 12.935, "lng": 77.624, "area": "Koramangala",
+                                                                       "city": "Bengaluru"})
+    assert "current food request" in m.seen[2][0][0]["content"] and '"max_total": 300' in m.seen[2][0][0]["content"]
+    assert app("Where am i") == "You're in Kotkapura, Faridkot (from your phone, just now)."  # not the model's "Whitefield"
+
+
+def test_an_old_option_is_not_copied_as_the_new_dish(tmp_path):
+    s = B.Store(tmp_path / "g.db")
+    assert A.ground(s, "food", "Find good biryani near me", {"dish": "Extra Biryani Masala Veg"}) == {}
+    assert A.ground(s, "food", "Find good biryani near me", {"dish": "biryani"}) == {"dish": "biryani"}
+    assert A.ground(s, "food", "for Koramangala", {"dish": "biryani", "max_total": 300, "near": "Koramangala"},
+                    earlier="biryani 300") == {"dish": "biryani", "max_total": 300, "near": "Koramangala"}

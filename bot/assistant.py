@@ -43,8 +43,11 @@ Decide what to do with the owner's message and answer as JSON:
 - action "book": any booking or order (flight, train, bus, cab, hotel, food delivery, trip). Set kind, and in
   details ONLY what the owner said in this message (dates and people exactly as said, e.g. "friday", "me and mom").
   Detail names per kind: {kinds}. A named dish ("want to eat chole bhature", "craving pizza", "order biryani")
-  is an order: book, kind food, even without the word order.
+  is an order: book, kind food, even without the word order. A place they name for it ("near Koramangala") goes
+  in near.
+{current}
 - action "places": places to go out to eat or visit near them (cuisine if they said one).
+- action "where_am_i": they ask where they are / their location (answered from their phone, not from this chat).
 - action "login": they ask to log in / sign in to a site (put the site's name in site).
 - action "suggest_food": they ask WHAT to eat and name no dish ("what should I eat?", "any food ideas?").
 - action "read_swiggy_orders": ONLY when they ask to read, check or refresh their Swiggy order history.
@@ -61,7 +64,8 @@ VALUE = {"anyOf": [{"type": "string", "maxLength": 120}, {"type": "number"},
 DETAILS = {"type": "object", "properties": {k: VALUE for k in dict.fromkeys(x for t in B.TEMPLATES.values() for x in t)},
            "additionalProperties": False}
 DECIDE = {"type": "object", "properties": {
-    "action": {"type": "string", "enum": ["reply", "book", "places", "login", "suggest_food", "read_swiggy_orders"]},
+    "action": {"type": "string", "enum": ["reply", "book", "places", "login", "suggest_food", "read_swiggy_orders",
+                                          "where_am_i"]},
     "kind": {"type": "string", "enum": [*B.TEMPLATES, "none"]},
     "details": DETAILS,
     "cuisine": {"type": "string"},
@@ -123,13 +127,15 @@ HAS_DATE = re.compile(rf"\b\d{{1,2}}(st|nd|rd|th)?\s*({MONTHS})|\b({MONTHS})[a-z
                       r"\d{4}-\d{2}-\d{2}", re.I)
 
 
-def ground(store: B.Store, kind: str, text: str, slots: dict) -> dict:
+def ground(store: B.Store, kind: str, text: str, slots: dict, earlier: str = "") -> dict:
     """Keep only what the message supports. The model invents (a 'trip to Rishikesh' came back with dates, a
     budget and interests) and converts weekdays wrongly ('Friday' -> a Sunday), so, measured live 2026-10-22:
     - a value stays only if the message has evidence for it (its words or digits; for dates, a date expression);
     - one weekday/relative day in the message ('friday', 'tomorrow') is turned into the date by code;
     - travellers the message names ('mom', 'me', a saved name) become the passengers when the model gave none."""
-    low, out = text.lower(), {}
+    # evidence: this message, plus what the owner already asked for in this request (earlier): live, "can you find
+    # for Koramangala" lost "biryani, 300" because only the current message counted. Never the bot's own words.
+    low, out = f"{text} {earlier}".lower(), {}
     slots = {k: v for k, v in slots.items()
              if not (k in PLACE_SLOTS and str(v).strip().lower() in NOT_PLACES)}  # "from goibibo to login" (live)
     digits = re.sub(r"[,\s]", "", low)
@@ -147,6 +153,10 @@ def ground(store: B.Store, kind: str, text: str, slots: dict) -> dict:
         elif isinstance(v, (int, float)) or re.fullmatch(r"[\d,.\s₹rsk]+", str(v), re.I):
             n = B._money(v)
             if n is not None and (str(int(n)) in digits or f"{n / 1000:g}k" in digits):
+                out[k] = v
+        elif k in ("dish", "restaurant"):  # every word from the owner (live: an old option was copied as the dish)
+            need = [w for w in re.findall(r"[a-z]+", str(v).lower()) if len(w) > 2]
+            if need and all(w in words or w.rstrip("s") in words for w in need):
                 out[k] = v
         elif set(re.findall(r"[a-z]+", str(v).lower())) & words or str(v).lower() in low:
             out[k] = v
@@ -269,11 +279,30 @@ class Assistant:
             self.store.set_fact(key, name, "openstreetmap", ttl_h=24 * 7)
         self.store.set_fact("owner:location", {**loc, **(name or {})}, source, ttl_h=2)
         if (name or {}).get("area") or (name or {}).get("city"):
-            self.store.set_fact("owner:area", ", ".join(x for x in (name.get("area"), name.get("city")) if x), source,
+            self.store.set_fact("owner:area", ", ".join(x for x in dict.fromkeys((name.get("area"), name.get("city"))) if x), source,
                                 ttl_h=24)
 
     def geocode(self, lat, lng) -> dict:
         return places.reverse(lat, lng)
+
+    def geoplace(self, name: str) -> dict | None:
+        key = f"place:{name.lower().strip()}"
+        hit = self.store.fact(key)
+        if hit:
+            return hit["value"] or None
+        got = places.forward(name)
+        self.store.set_fact(key, got, "openstreetmap", ttl_h=24 * 30)
+        return got or None
+
+    def _where_reply(self) -> str:
+        v = self._where()
+        if v:
+            name = ", ".join(x for x in dict.fromkeys((v.get("area"), v.get("city"))) if x) or f"{v['lat']:.4f}, {v['lng']:.4f}"
+            return f"You're in {name} (from your phone, just now)."
+        m = self._memory_location()
+        if m:
+            return f"Your phone hasn't sent a location recently; the last one you shared was {m.get('area') or 'saved'}."
+        return "I don't know where you are: allow location in the app, or share it on WhatsApp."
 
     def _where(self) -> dict | None:
         here = self.store.fact("owner:location")
@@ -290,7 +319,7 @@ class Assistant:
         here, parts0 = self.store.fact("owner:location"), []
         if here and not here["stale"]:  # first, above any older memory (live: "near Whitefield" while in Punjab)
             v = here["value"]
-            name = ", ".join(x for x in (v.get("area"), v.get("city")) if x) or f"{v['lat']:.4f},{v['lng']:.4f}"
+            name = ", ".join(x for x in dict.fromkeys((v.get("area"), v.get("city"))) if x) or f"{v['lat']:.4f},{v['lng']:.4f}"
             parts0.append(f"Where the owner is right now (from their phone, {here['age_h'] * 60:.0f} min ago): {name}. "
                           "This overrides any older location in memory.")
         try:
@@ -458,8 +487,14 @@ class Assistant:
                 B.finish(self.store, tid, "cancelled")
         memory, cur = self._memory(text)
         kinds = "; ".join(f"{k}: {', '.join(v)}" for k, v in B.TEMPLATES.items())
+        req = self.store.fact(f"request:{chat}")
+        req = req["value"] if req and not req["stale"] else None
+        current = (f"- The owner's current food request (keep it; a follow-up changes only what they mention, e.g. "
+                   f"place, budget or dish, and you output the full updated request): {json.dumps(req)}"
+                   if req else "")
         apps = [n.title() for n, p in food.PLATFORMS.items() if p["verified"]]
-        system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory, kinds=kinds, apps=", ".join(apps),
+        system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory, kinds=kinds, current=current,
+                                apps=", ".join(apps),
                                 not_apps=", ".join(n.title() for n, p in food.PLATFORMS.items() if not p["verified"]),
                                 sites=", ".join(login.SITES))
         talk = [*self.recent(chat)[:-1], {"role": "user", "content": text}]
@@ -467,8 +502,11 @@ class Assistant:
                           think=self.think)
         plain = CHAT.format(today=time.strftime("%A %d %B %Y"), memory=memory)  # free text: never the JSON prompt
         action = d.get("action", "reply")
+        if action == "where_am_i":  # code, not the model: live, it repeated its own old answer ("Whitefield") 4 times
+            return self._where_reply()
         if action == "book" and d.get("kind") in B.TEMPLATES:
-            slots = ground(self.store, d["kind"], text, d.get("details") or {})
+            earlier = " ".join(str(v) for v in (req or {}).values()) if d["kind"] == "food" else ""
+            slots = ground(self.store, d["kind"], text, d.get("details") or {}, earlier)
             return self._booking_reply(chat, B.start(self.store, d["kind"], slots, str(d.get("site") or "")))
         if action == "login":
             site = re.sub(r"[^a-z]", "", str(d.get("site") or "").lower())
@@ -643,7 +681,12 @@ class Assistant:
         if asked and asked not in apps:  # live: "on Zomato" was searched on Swiggy without a word
             note = (f"{asked.title()} isn't connected to me yet (it blocks the server or I haven't checked its pages), "
                     f"so here's {', '.join(a.title() for a in apps)}.\n")
-        self.swiggy.where = self._where() or self._memory_location()
+        near = slots.get("near")
+        place = self.geoplace(near) if near else None
+        self.swiggy.where = place or self._where() or self._memory_location()
+        self.store.set_fact(f"request:{chat}", {k: v for k, v in {"dish": dish, "max_total": slots.get("max_total"),
+                                                                  "near": near, "diet": slots.get("diet")}.items() if v},
+                            "owner", ttl_h=2)
         self.notify(f"Comparing {dish} on {', '.join(apps)}, with reviews…")
         said = f"{slots.get('diet', '')} {dish}".lower()
         veg = bool(re.search(r"\bveg(etarian)?\b", said)) and not re.search(r"non[- ]?veg", said)
@@ -651,7 +694,7 @@ class Assistant:
             top, failed = food.compare(dish, apps, slots.get("max_total"), veg)
         except food.NothingHere as e:
             v = self.swiggy.where or {}
-            near = ", ".join(x for x in (v.get("area"), v.get("city")) if x)
+            near = ", ".join(x for x in dict.fromkeys((v.get("area"), v.get("city"))) if x)  # not "Jaito, Jaito"
             return str(e).replace("where you are now", f"near {near}" if near else "where you are now")
         except food.LoggedOut:
             return self._need_login(chat, "swiggy", {"do": "compare", "slots": slots, "task": tid})
