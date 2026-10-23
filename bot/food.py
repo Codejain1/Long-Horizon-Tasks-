@@ -74,7 +74,7 @@ def read_feed(body: dict) -> list[dict]:
             paise = i.get("price") or i.get("defaultPrice")
             if not i.get("name") or not paise or i.get("inStock") == 0:
                 continue
-            out.append({"restaurant": r.get("name", ""), "item": i["name"], "price": round(paise / 100, 2),
+            out.append({"restaurant": r.get("name", "").strip(), "item": i["name"].strip(), "price": round(paise / 100, 2),
                         "rating": str(r["avgRating"]) if r.get("avgRating") else "", "area": r.get("areaName", ""),
                         "veg": bool(i.get("isVeg")), "link": link,
                         "image": IMAGE.format(i["imageId"]) if i.get("imageId") else "", "platform": "swiggy"})

@@ -87,23 +87,38 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
-## Every food app in one comparison (2026-10-23, owner: "why is the whole process still around Swiggy")
-Built locally and tested. **Not deployed yet**: AWS login expired.
+## Every food app in one comparison (2026-10-23, owner: "why is the whole process still around Swiggy"; deployed `/opt/bot-20261023-135416`)
 - **One shape for every app.** `food.PLATFORMS` says what the bot can do on each app (`can`: search / link / cart /
-  order) and whether it answers in seconds (`fast`: a data feed) or not (page read by the model).
-  - Connected now: Swiggy (search, link, cart, order) and magicpin (search, link).
-  - Zomato is still blocked from the server; EatClub has no web search.
+  order), how fast it answers (`fast`), and, for apps not connected, why (`why`).
+  - **Connected:** Swiggy (data feed; cart; ordering paused), magicpin (page read by the model, about 8-21 s) and
+    **EatSure**, new.
+  - **EatSure** uses its own data calls over plain HTTP, about 1 s, no browser:
+    1. `get_store_details_by_lat_lng` finds the store that delivers there;
+    2. `get_all_brands` gives the brand names;
+    3. `search_product` finds the dishes (the store goes in a cookie);
+    4. `get_products_status` gives real stock. `search_product` marks every dish unavailable, so its own stock flag
+       can't be used.
+  - Links are `/{brand}/{city}/{store}`. Google reviews are skipped for EatSure, because its delivery kitchens
+    matched a namesake dine-in place.
+  - **Not connected:** Zomato (blocks the server's connection) and EatClub (its website has no search).
 - **One list.** `food.compare` searches every connected app at once, at the owner's location.
-  - Fast apps are waited for. Slow apps get 5 s more (`BOT_EXTRA_WAIT`) to join the list.
-  - Anything later arrives as its own "Also on <app>" message, sent only if it's cheaper than what was shown.
-  - One app failing, logged out or empty no longer stops the others.
-- **Buttons per app.** Options show which app they're on. The action buttons offer only what that app supports:
-  "Add to my Swiggy cart" appears on Swiggy options; a magicpin option gets "Send me the link".
-- **Tests:** 275 pass. New tests cover one list across apps, a slow app following up only when cheaper, and one app
-  failing without stopping the others.
-- **Still to do:**
-  - EatSure: probe its pages on the server, then add it (`/v1/api/get_restaurants` seen).
-  - Real-model botsmoke and deploy, after `aws login`.
+  - Each app's best option is in the list, so the result is a comparison and not just Swiggy's three cheapest.
+  - Slow apps get 5 s (`BOT_EXTRA_WAIT`). After that they follow up with "Also on <app>", but only when cheaper.
+  - One app failing, logged out or empty never stops the others.
+- **Buttons per app.** "Add to my Swiggy cart" only where the app supports it; a magicpin or EatSure option gets the
+  link.
+- **Questions about the apps are answered by code.** The model kept saying "Swiggy is the only app". A request for
+  Zomato order history no longer gets Swiggy's.
+- **Checks:**
+  - **Tests:** 279 pass.
+  - **Botsmoke** (real model, 2 reps, same as before): test2 40/40, test3 20/20, test4 14/16 (the old "order
+    something for dinner" miss), live6 8/8; p90 4.2 s.
+    - A prompt phrase "cheapest of each shown" made live6 drop to 6/8: it asked for a budget. The phrase was
+      removed.
+  - **Live scratch chat on the server:** veg biryani gave 2 Swiggy options plus 1 EatSure option, then magicpin
+    ₹56 as a follow-up after 8 s; paneer wrap gave 2 Swiggy plus Faasos on EatSure, then magicpin ₹90 after 5 s.
+- **First reply time:** about 15-18 s, made of Swiggy about 4 s, waiting for magicpin 5 s, and Google reviews about
+  6 s.
 
 ## Conversation keeps its thread; the food path is code (2026-10-23)
 **Owner: "it is not remembering anything, taking every request as new."** The live chat showed:
