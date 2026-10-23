@@ -355,8 +355,17 @@ def compare(dish: str, apps: dict, max_total=None, veg: bool = False, n: int = 3
             continue
         got = collect(name, f, dish, out)
         out["found"] += got
-    out["top"] = pick(out["found"], max_total, veg, n, dish)
+    out["top"] = best_each(out["found"], max_total, veg, n, dish)
     return out
+
+
+def best_each(offers: list[dict], max_total=None, veg: bool = False, n: int = 3, dish: str = "") -> list[dict]:
+    """A comparison, not just the cheapest: each app's best option is in the list, the rest filled cheapest first
+    (live: Swiggy's three cheapest hid EatSure's)."""
+    ok = pick(offers, max_total, veg, len(offers), dish)
+    firsts = list({o["platform"]: o for o in reversed(ok)}.values())  # each app's cheapest
+    rest = [o for o in ok if o not in firsts]
+    return sorted(firsts + rest[:max(0, n - len(firsts))], key=lambda o: float(str(o["price"]).replace(",", "")))
 
 
 def collect(name: str, future, dish: str, out: dict | None = None) -> list[dict]:

@@ -372,3 +372,12 @@ def test_eatsure_reads_its_data_api_and_keeps_only_dishes_on_now():
         raise AssertionError("expected NothingHere")
     except F.NothingHere as e:
         assert "EatSure doesn't deliver" in str(e)
+
+
+def test_each_app_keeps_its_best_option_in_the_comparison():
+    sw = [{"restaurant": f"R{i}", "item": "Veg Biryani", "price": 100 + i, "platform": "swiggy"} for i in range(4)]
+    es = [{"restaurant": "Behrouz", "item": "Veg Biryani", "price": 205, "platform": "eatsure"},
+          {"restaurant": "Behrouz", "item": "Veg Biryani Large", "price": 305, "platform": "eatsure"}]
+    top = F.best_each(sw + es, 400, True, 3, "veg biryani")
+    assert [(o["platform"], o["price"]) for o in top] == [("swiggy", 100), ("swiggy", 101), ("eatsure", 205)]
+    assert [o["price"] for o in F.best_each(sw, 400, True, 3, "veg biryani")] == [100, 101, 102]
