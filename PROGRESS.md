@@ -87,6 +87,30 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Conversation keeps its thread; the food path is code (2026-10-23)
+**Owner: "it is not remembering anything, taking every request as new."** The live chat showed:
+- "where am I" answered "Whitefield" 4x: the model repeated its own old answer;
+- an old option was copied as the new dish;
+- "for Koramangala" lost "biryani, 300": grounding accepted only the current message;
+- named places weren't supported.
+
+My own voice test ran through the owner's app chat, set a Bangalore test location for a few minutes, and its results
+appeared in the app. Disclosed to the owner. Live tests no longer go through the owner's chat.
+
+**Replaying the chat on the real model after the first fix was worse:** invented restaurants, empty promises, and no
+search in 6 messages. So **the core food path is now code:**
+- dish words + intent start a search;
+- follow-ups change the budget / place / dish of the current request (kept for 2 h);
+- a budget answer is code;
+- "where am I" is code;
+- named places are geocoded;
+- invented place lists are blocked;
+- going-out questions and questions about the bot still go to the model.
+
+**Real-model replay after:** every food message searched, details were kept across follow-ups ("for Koramangala",
+"under 200", "dosa instead"). Botsmoke unchanged (40/40, 20/20, 14/16, 8/8 x4). The food path makes no model call
+at all.
+
 ## Hold-to-talk voice + more food apps (2026-10-23, deployed `/opt/bot-20261022-234242`)
 **Voice:**
 - The app has hold-to-talk (expo-audio, m4a). `POST /voice` sends it to `bot/stt.py`, a separate `owner-stt`
