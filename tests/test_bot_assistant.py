@@ -657,6 +657,10 @@ def test_every_app_in_one_list_when_it_answers_in_time(tmp_path):
     assert r.startswith("Best options:\n1. Veg Biryani — Biryani Pot — ₹218 on magicpin")  # cheapest first, any app
     assert "on Swiggy" in r and b.magicpin.where["lat"] == 12.91  # every app searched at the owner's location
     assert [c["subtitle"].split(" · ")[-1] for c in r.cards][:1] == ["magicpin"]
+    looked = []
+    b.reviews = lambda restaurant: looked.append(restaurant)
+    b._add_reviews([{"restaurant": "Makhani Darbar", "platform": "eatsure"}, {"restaurant": "Paradise", "platform": "swiggy"}])
+    assert looked == ["Paradise"]  # an EatSure kitchen isn't looked up on Google (a namesake place was found)
     r = b.handle({"channel": "app", "chat": "owner", "text": "1"})
     assert r.choices == ["Send me the link"]  # magicpin: no cart or ordering through the bot
     assert b.handle({"channel": "app", "chat": "owner", "text": "Send me the link"}) == \

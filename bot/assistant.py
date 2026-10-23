@@ -993,10 +993,12 @@ class Assistant:
         import contextvars
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max(1, len(options))) as pool:
-            futures = [pool.submit(contextvars.copy_context().run, self.reviews, o["restaurant"]) for o in options]
+            # EatSure's brands are delivery kitchens: Google finds a namesake dine-in place (live: Makhani Darbar)
+            futures = [pool.submit(contextvars.copy_context().run, self.reviews, o["restaurant"])
+                       if o.get("platform") != "eatsure" else None for o in options]
             for o, f in zip(options, futures):
                 try:
-                    o["google"] = f.result(timeout=45)
+                    o["google"] = f.result(timeout=45) if f else None
                 except Exception:
                     o["google"] = None
 
