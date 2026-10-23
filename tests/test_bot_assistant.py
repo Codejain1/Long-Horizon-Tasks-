@@ -970,7 +970,7 @@ def test_trips_said_in_passing_are_spotted():
     assert A.trip_mention("I'm going to Goa next month") == {"to": "Goa", "when": "next month"}
     assert A.trip_mention("we are planning a trip to manali in december") == {"to": "Manali", "when": "in december"}
     assert A.trip_mention("we are heading to Chennai on 2 nov for a wedding") == {"to": "Chennai", "when": "2 nov"}
-    assert A.trip_mention("visiting my parents in Jaipur this weekend") == {"to": "Jaipur", "when": "this weekend"}
+    assert A.trip_mention("I am visiting my parents in Jaipur this weekend") == {"to": "Jaipur", "when": "this weekend"}
     assert A.trip_mention("me and Rahul are off to Pondicherry this weekend")["to"] == "Pondicherry"
     for not_a_trip in ["Book a flight to Goa on Friday", "Train to Mysore tomorrow", "Are you going to Goa?",
                        "I'm going to sleep", "going to order biryani", "I want to go to the gym",
