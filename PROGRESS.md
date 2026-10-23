@@ -87,6 +87,37 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Owner's goals (2026-10-23, in their words, condensed): what the system is for
+1. **Never lose a fare.** They forget to book, or wait for a cheaper fare and lose it. They want a watcher that
+   remembers the trip, tracks the price and books at the right moment.
+2. **Itinerary guide.** When to check in, when to go where.
+3. **Hotels.**
+   - Read past stays across platforms and learn the pattern (areas, kind of place).
+   - For a trip, offer "book one of these?", then find the cheapest rate after discounts on every platform and
+     book it.
+   - Sign up where they never have, with their email or phone, and pay by UPI request.
+4. **Food.**
+   - Order history from every app becomes a taste profile.
+   - "Order food for me" goes: time and place, budget, meal type (heavy / full meal / snack / drink), a guessed
+     mood confirmed with Yes/No, then 2-3 ready carts (place, dish, cost, time). They pick one.
+   - Payment: cash on delivery if offered, else a UPI request they approve. Then live delivery updates.
+5. **Multi-leg trips.** When there's no direct route, offer 2-3 combinations (flight+bus, flight+train,
+   train+bus) with price and timing. One pick books every leg, each paid by UPI request.
+
+**Limits stated to the owner:**
+- Only platforms that let the server in, with no getting round a block. Zomato stays out; each travel and hotel
+  site is to be checked.
+- Signing up on a new platform needs an OTP the owner gives.
+- Indian airfares mostly rise as the date nears, and most train fares are fixed (the risk there is seats running
+  out). So the watcher tracks real prices and seats per route rather than assuming "3 days before is cheaper".
+
+**Proposed order:**
+1. Fare watch with search: trains, buses, flights.
+2. Cash-on-delivery food ordering, rehearsed with the owner.
+3. The full food flow above.
+4. Multi-leg trips and the itinerary.
+5. Hotels.
+
 ## Failures handled plainly; no home connection for Zomato (2026-10-23, deployed `/opt/bot-20261023-141441`)
 - **Home connection: built, then removed.** The owner asked to send Zomato (and any other blocked site) through
   their home internet.
