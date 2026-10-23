@@ -74,6 +74,90 @@ DECIDE = {"type": "object", "properties": {
 IDEAS = {"type": "object", "properties": {"ideas": {"type": "array", "minItems": 3, "maxItems": 3, "items": {
     "type": "object", "properties": {"dish": {"type": "string", "maxLength": 50}, "why": {"type": "string", "maxLength": 90}},
     "required": ["dish", "why"]}}}, "required": ["ideas"]}
+# The core food path in code (live 2026-10-23 on the real model: "Find good biryani near me" got invented restaurants,
+# "300" and "make it under 200" got empty promises, "for Koramangala" got "I can't switch locations": no search in
+# six messages). Dish words start a search; follow-ups change one part of the current request.
+DISHES = (r"biryani|biriyani|dosa|idli|vada|uttapam|pizza|burger|paneer|thali|chole|bhature|momos?|noodles|rolls?|"
+          r"sandwich|pasta|fried rice|pulao|dal|roti|naan|paratha|kebab|tikka|shawarma|wrap|salad|cake|ice ?cream|"
+          r"dessert|samosa|pav bhaji|poha|upma|khichdi|curry|manchurian|maggi|chaat|pani ?puri|dhokla|appam|pongal|"
+          r"halwa|gulab jamun|chicken|mutton|fish|meals?|combo|subway|kfc|mcdonald'?s|domino'?s|coffee|shake|lassi|"
+          r"juice|tea|chai|mandi|haleem|kulcha|pao|bhaji")
+DISH_PHRASE = re.compile(rf"((?:(?:veg|non[- ]?veg|paneer|chicken|mutton|egg|masala|cheese|butter|hyderabadi|dum|"
+                         rf"chole|aloo|plain|spicy|special|mysore|rava|onion|punjabi|south indian|north indian)\s+)*"
+                         rf"(?:{DISHES}))\b", re.I)
+FOOD_INTENT = re.compile(r"\b(find|order|get|want|craving|crave|eat|hungry|search|show|looking|cheap|cheapest|best|"
+                         r"good|under|near|deliver|send|bring|can i have|i'?d like|having|feel like|budget)\b", re.I)
+FILLER = {"a", "an", "the", "some", "eat", "want", "wanna", "order", "craving", "crave", "find", "get", "me", "good",
+          "cheap", "cheapest", "best", "having", "like", "for", "i", "to", "feel", "nice", "tasty", "please", "any",
+          "my", "can", "you", "and", "of", "is", "it", "under", "near", "from", "on", "in", "with", "something", "few",
+          "great", "hot", "fresh", "lovely", "awesome", "yummy", "delicious"}
+FROM = re.compile(r"\bfrom\s+([A-Z][\w&'.]*(?:\s+[A-Z][\w&'.]*){0,3})")
+GO_OUT = re.compile(r"\b(where can i|places? (to|near|for)|go out|going out|dine|dining|visit|outing|cafes? near|"
+                    r"restaurants? near|spots?)\b", re.I)
+APPS = re.compile(r"\b(swiggy|zomato|magicpin|eatsure|eatclub)\b", re.I)
+ABOUT_BOT = re.compile(r"^\s*(why|how come|how does|have you|did you|can you explain)\b", re.I)
+BUDGET = re.compile(r"(?:under|below|within|max|maximum|upto|up to|budget|less than|around|₹|rs\.?|inr)?\s*₹?\s*"
+                    r"(\d{2,5})\s*(?:rs|rupees|₹|/-)?", re.I)
+PLACE = re.compile(r"\b(?:for|in|near|at|around)\s+([A-Za-z][A-Za-z .,'-]{2,45}?)\s*[.?!]?\s*$", re.I)
+SWITCH = re.compile(r"\b(?:what about|how about|instead|try|make it|switch to|change (?:it )?to)\s+(.+?)"
+                    r"(?:\s+instead)?\s*[.?!]?\s*$", re.I)
+MADE_UP_LIST = re.compile(r"(^|\n)\s*1[.)]\s+\S.*(\n\s*2[.)]\s+\S)", re.S)
+
+
+def food_followup(text: str, req: dict | None) -> dict | None:
+    """A follow-up that changes one part of the current food request, or None. Code, not the model. A message that
+    names a dish is a new request (food_request), unless it switches ("what about dosa")."""
+    if not req:
+        return None
+    t = text.strip()
+    if DISH_PHRASE.search(t) and not SWITCH.search(t):
+        return None
+    if re.fullmatch(r"(?:under|below|within|max|upto|up to|budget|around|less than)?\s*₹?\s*\d{2,5}\s*(?:rs|rupees|₹)?"
+                    r"(?:\s*(?:max|only))?[.!]?", t, re.I) or re.search(r"\b(make it|under|below|budget)\b.*\d", t, re.I):
+        m = BUDGET.search(t)
+        if m:
+            return {**req, "max_total": float(m[1])}
+    m = SWITCH.search(t)
+    if m and DISH_PHRASE.search(m[1]):
+        return {**req, "dish": DISH_PHRASE.search(m[1])[1].lower()}
+    m = PLACE.search(t)
+    if m and not DISH_PHRASE.search(m[1]) and not BUDGET.fullmatch(m[1].strip()):
+        place = re.sub(r"^(?:the\s+)?", "", m[1]).strip(" ,.")
+        if place.lower() not in ("me", "here", "you", "now", "today", "tonight", "dinner", "lunch"):
+            return {**req, "near": place}
+    return None
+
+
+def food_request(text: str) -> dict | None:
+    """A new food request named in the message (dish + intent), or None: the model handles everything else."""
+    if ABOUT_BOT.search(text) or GO_OUT.search(text):
+        return None
+    m = DISH_PHRASE.search(text)
+    if not m or not (FOOD_INTENT.search(text) or len(text.split()) <= 4):
+        return None
+    before = re.findall(r"[A-Za-z]+", text[:m.start()])
+    lead = []
+    for w in reversed(before[-3:]):  # "margherita pizza", "paneer tikka": the words just before the dish, no filler
+        if w.lower() in FILLER:
+            break
+        lead.insert(0, w.lower())
+    out = {"dish": " ".join(lead + [m[1].lower()])}
+    f = FROM.search(text)
+    if f and not DISH_PHRASE.fullmatch(f[1]):
+        out["restaurant"] = f[1]
+    b = re.search(r"(?:under|below|within|max|upto|up to|budget|less than|₹|rs\.?)\s*₹?\s*(\d{2,5})", text, re.I)
+    if b:
+        out["max_total"] = float(b[1])
+    p = PLACE.search(text)
+    if p and not DISH_PHRASE.search(p[1]) and p[1].strip().lower() not in ("me", "here"):
+        out["near"] = p[1].strip(" ,.")
+    if re.search(r"\bveg\b", text, re.I) and not re.search(r"non[- ]?veg", text, re.I):
+        out["diet"] = "veg"
+    if APPS.search(text):
+        out["site"] = APPS.search(text)[1].lower()
+    return out
+
+
 PICK = re.compile(r"^\s*#?([1-3])\b\s*(.*)$", re.I)
 CHAT = """You are the owner's personal assistant on WhatsApp/Telegram. Today is {today}. Reply in plain text, briefly,
 like a person. Never invent facts about the owner; never say you searched, found, booked or ordered anything. You
@@ -470,6 +554,10 @@ class Assistant:
                 B.finish(self.store, tid, "cancelled")
                 return "Cancelled."
             t = self.store.task(tid)
+            m = re.fullmatch(r"\s*(?:under|below|within|max|upto|up to|around)?\s*₹?\s*(\d{2,5})\s*(?:rs|rupees|₹)?\s*[.!]?\s*",
+                             text, re.I)
+            if t["kind"] == "food" and m:  # "300" to "What's your budget?": code, not the model
+                return self._booking_reply(chat, B.update(self.store, tid, {"max_total": float(m[1])}))
             if LEAVE_FORM.search(text):
                 self._pending(chat, clear=True)
                 B.finish(self.store, tid, "cancelled")
@@ -485,10 +573,19 @@ class Assistant:
             if tid:
                 self._pending(chat, clear=True)
                 B.finish(self.store, tid, "cancelled")
-        memory, cur = self._memory(text)
-        kinds = "; ".join(f"{k}: {', '.join(v)}" for k, v in B.TEMPLATES.items())
         req = self.store.fact(f"request:{chat}")
         req = req["value"] if req and not req["stale"] else None
+        slots = food_followup(text, req) or food_request(text)
+        if slots:  # the core food path decided by code; the model only ever sees the rest
+            self._step("food_path", slots=slots, followup=bool(req and slots.get("dish") == req.get("dish")))
+            site = slots.pop("site", "")
+            if not slots.get("max_total"):
+                tid = B.start(self.store, "food", slots, site)["task_id"]
+                self._pending(chat, tid)
+                return ASK["max_total"]
+            return self._booking_reply(chat, B.start(self.store, "food", slots, site))
+        memory, cur = self._memory(text)
+        kinds = "; ".join(f"{k}: {', '.join(v)}" for k, v in B.TEMPLATES.items())
         current = (f"- The owner's current food request (keep it; a follow-up changes only what they mention, e.g. "
                    f"place, budget or dish, and you output the full updated request): {json.dumps(req)}"
                    if req else "")
@@ -537,6 +634,11 @@ class Assistant:
             return self._say(plain + "\n\nPick the 3 best for the owner from ONLY these real places (name, km, one "
                              f"line why, maps link):\n{json.dumps(found['places'])}", talk)
         reply = str(d.get("reply") or "").strip()
+        if MADE_UP_LIST.search(reply) and re.search(r"\bkm\b|₹|\brs\b|restaurant|cafe|hotel", reply, re.I):
+            # a list of places or prices the model wrote itself: never real (live: "Biryani House Jaito, 1.2 km")
+            self._step("blocked_made_up_list", reply=reply[:200])
+            return ("Tell me the dish (and a budget) and I'll search Swiggy and magicpin for real options, "
+                    "or ask for places near you to go out.")
         if reply and reply in self._said(chat):  # low temperature repeats itself ("same joke 3x")
             reply = self._say(plain + "\n\nYou already gave this exact answer; give a different one.", talk, 0.9) or reply
         return reply or "Sorry, I didn't get that. Could you say it another way?"

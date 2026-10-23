@@ -227,7 +227,7 @@ def test_food_order_goes_straight_to_options_then_taps(tmp_path):
     b.swiggy = sw
     notes = []
     r = b.handle({"channel": "whatsapp", "chat": "c1", "text": "order veg biryani under 400"}, notify=notes.append)
-    assert notes == ["Comparing biryani on swiggy, with reviews…"]  # no "go ahead?": searching is harmless
+    assert notes == ["Comparing veg biryani on swiggy, with reviews…"]  # no "go ahead?"; the dish read by code
     lines = r.splitlines()
     assert lines[1] == ("1. Veg Biryani — Paradise — ₹249 on Swiggy ★4.3 (40 MINS) · Google ★4.4 (1200): "
                         "+great taste, big portions; −slow delivery")
@@ -236,12 +236,12 @@ def test_food_order_goes_straight_to_options_then_taps(tmp_path):
     assert "Chicken" not in r and "Royal" not in r  # veg owner, budget 400: filtered by code
     act = say(b, "2. Paneer Biryani ₹320")  # a tap arrives as the button's text
     assert act.choices == ["Send me the link", "Add to my Swiggy cart"]  # ordering paused: no "Order it for me"
-    assert say(b, "Send me the link") == "Here's Paneer Biryani from Meghana Foods on Swiggy: https://www.swiggy.com/search?query=biryani"
+    assert say(b, "Send me the link") == "Here's Paneer Biryani from Meghana Foods on Swiggy: https://www.swiggy.com/search?query=veg%20biryani"
     m.replies.append(call("task_start", kind="food", slots={"dish": "biryani", "max_total": 400, "diet": "veg"}))
     say(b, "order veg biryani under 400")
     r = say(b, "1 cart")  # typing still works
     assert sw.added[-1]["item"] == "Veg Biryani" and "To pay: ₹284" in r and "stopped before ordering" in r
-    assert len(m.seen) == 2  # one routing call per request; options, taps and the cart are all code
+    assert len(m.seen) == 0  # the food path is code end to end: no model call at all
 
 
 def test_ideas_from_history_then_compare(tmp_path):
@@ -656,30 +656,30 @@ def test_magicpin_follows_up_after_swiggy_with_the_saving(tmp_path):
 
 
 def test_replay_of_the_live_chat_of_2026_10_23_keeps_the_thread(tmp_path):
-    """The owner's real messages: follow-ups keep the request; a place they name is searched; where-am-I is code."""
+    """The owner's real messages: the food path and its follow-ups run in code; where-am-I is code."""
     seen = []
 
     class Sw(FakeSwiggy):
         def search(self, dish):
-            seen.append((dish, dict(self.where or {})))
-            return OFFERS
-    m = Model(call("task_start", kind="food", slots={"dish": "biryani"}),                       # "Find good biryani near me"
-              call("task_update", slots={"max_total": 300}),                                   # "300"
-              # "Can you find for Koramangala bangalore": the model carries the request (shown to it) and adds the place
-              call("task_start", kind="food", slots={"dish": "biryani", "max_total": 300, "near": "Koramangala, Bangalore"}),
-              {"content": json.dumps({"action": "where_am_i", "kind": "none", "details": {}, "reply": "Whitefield"})})
+            seen.append((dish, (self.where or {}).get("area")))
+            return OFFERS + [{"restaurant": "MTR", "item": "Masala Dosa", "price": 120}]
+    m = Model({"content": json.dumps({"action": "where_am_i", "kind": "none", "details": {}, "reply": "Whitefield"})})
     b = bot(tmp_path, m)
     b.swiggy = Sw()
     jaito = {"lat": 30.44, "lng": 74.88}
+
     def app(text):
         return b.handle({"channel": "app", "chat": "owner", "text": text, "location": jaito})
-    assert app("Find good biryani near me") == "What's your budget?"
-    assert app("300").startswith("Best options:") and seen[-1][0] == "biryani"
-    r = app("Can you find for Koramangala bangalore")  # live: "What would you like to eat? What's your budget?"
-    assert r.startswith("Best options:") and seen[-1] == ("biryani", {"lat": 12.935, "lng": 77.624, "area": "Koramangala",
-                                                                       "city": "Bengaluru"})
-    assert "current food request" in m.seen[2][0][0]["content"] and '"max_total": 300' in m.seen[2][0][0]["content"]
-    assert app("Where am i") == "You're in Kotkapura, Faridkot (from your phone, just now)."  # not the model's "Whitefield"
+    assert app("Find good biryani near me") == "What's your budget?"          # live: invented restaurants
+    assert app("300").startswith("Best options:")                               # live: an empty promise
+    r = app("Can you find for Koramangala bangalore")                            # live: "I can't switch locations"
+    assert r.startswith("Best options:")
+    assert app("Where am i") == "You're in Kotkapura, Faridkot (from your phone, just now)."  # live: "Whitefield" 4x
+    assert app("actually make it under 200").startswith("Best options:")
+    assert "Masala Dosa" in app("what about dosa instead")
+    assert seen == [("biryani", "Kotkapura"), ("biryani", "Koramangala"), ("biryani", "Koramangala"),
+                    ("dosa", "Koramangala")]
+    assert len(m.seen) == 1  # only "where am i" needed the model (to recognise the question)
 
 
 def test_an_old_option_is_not_copied_as_the_new_dish(tmp_path):
@@ -688,3 +688,34 @@ def test_an_old_option_is_not_copied_as_the_new_dish(tmp_path):
     assert A.ground(s, "food", "Find good biryani near me", {"dish": "biryani"}) == {"dish": "biryani"}
     assert A.ground(s, "food", "for Koramangala", {"dish": "biryani", "max_total": 300, "near": "Koramangala"},
                     earlier="biryani 300") == {"dish": "biryani", "max_total": 300, "near": "Koramangala"}
+
+
+def test_food_path_rules():
+    assert A.food_request("Find good biryani near me") == {"dish": "biryani"}
+    assert A.food_request("order veg biryani under 400 on swiggy") == {"dish": "veg biryani", "max_total": 400.0,
+                                                                       "diet": "veg", "site": "swiggy"}
+    assert A.food_request("where can I eat dosa nearby") is None          # going out: places
+    assert A.food_request("why only swiggy for biryani?") is None          # about the bot
+    assert A.food_request("what should I eat?") is None                    # ideas, not a dish
+    req = {"dish": "biryani", "max_total": 300.0}
+    assert A.food_followup("make it under 200", req) == {"dish": "biryani", "max_total": 200.0}
+    assert A.food_followup("for Koramangala bangalore", req)["near"] == "Koramangala bangalore"
+    assert A.food_followup("what about dosa instead", req)["dish"] == "dosa"
+    assert A.food_followup("order dosa under 300", req) is None            # a new request, not a budget change
+    assert A.food_followup("thanks!", req) is None
+
+
+def test_invented_place_lists_are_blocked(tmp_path):
+    made_up = "Here are 3 good biryani places near you in Jaito:\n\n1. **Biryani House Jaito** (1.2 km)\n2. **Spice Hub** (2 km)"
+    m = Model(reply(made_up))
+    b = bot(tmp_path, m)
+    r = say(b, "any good spots?")
+    assert "Biryani House" not in r and "search Swiggy" in r
+
+
+def test_dish_names_keep_their_own_words_and_the_restaurant():
+    assert A.food_request("I'm craving a margherita pizza, budget 450")["dish"] == "margherita pizza"
+    assert A.food_request("Masala dosa from MTR, budget 250") == {"dish": "masala dosa", "restaurant": "MTR",
+                                                                  "max_total": 250.0}
+    assert A.food_request("Order paneer tikka from Barbeque Nation under 600")["restaurant"] == "Barbeque Nation"
+    assert A.food_request("I feel like having pav bhaji, keep it under 250")["dish"] == "pav bhaji"
