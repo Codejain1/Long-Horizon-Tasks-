@@ -52,7 +52,7 @@ Decide what to do with the owner's message and answer as JSON:
 - action "suggest_food": they ask WHAT to eat and name no dish ("what should I eat?", "any food ideas?").
 - action "read_swiggy_orders": ONLY when they ask to read, check or refresh their Swiggy order history.
 - What you can really do (answer questions about yourself from this, never promise more): food apps connected:
-  {apps} (searched together, cheapest of each shown); not connected (you can't check them, never offer to):
+  {apps}; not connected (you can't check them, never offer to):
   {not_apps}. Only the Swiggy order history can be read. Logins (phone + OTP, Google): {sites}. Bookings other than food are
   saved as forms; booking them on the sites is not built yet.
 - action "reply": anything else; write the reply: brief and plain, like a person. You only get this one reply:
