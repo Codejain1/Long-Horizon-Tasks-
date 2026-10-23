@@ -87,7 +87,7 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
-## Phase 1 "never lose a fare": live (2026-10-23, deployed `/opt/bot-20261023-161813`)
+## Phase 1 "never lose a fare": live (2026-10-23, deployed `/opt/bot-20261023-161622`)
 - **Search uses each site's own data, checked live.** Sites that block the server or show a captcha are left out,
   never worked around.
   - **Trains:** ConfirmTkt over plain HTTP, about 0.5 s. Each class comes with fare, seats, chance to confirm and
