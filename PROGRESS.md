@@ -87,7 +87,7 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
-## Every food app in one comparison (2026-10-23, owner: "why is the whole process still around Swiggy"; deployed `/opt/bot-20261023-135416`)
+## Every food app in one comparison (2026-10-23, owner: "why is the whole process still around Swiggy"; deployed `/opt/bot-20261023-135554`)
 - **One shape for every app.** `food.PLATFORMS` says what the bot can do on each app (`can`: search / link / cart /
   order), how fast it answers (`fast`), and, for apps not connected, why (`why`).
   - **Connected:** Swiggy (data feed; cart; ordering paused), magicpin (page read by the model, about 8-21 s) and
