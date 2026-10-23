@@ -1,0 +1,12 @@
+[Unit]
+Description=The bot's home connection: proxy 127.0.0.1:8773 through the owner's home helper (agents on 127.0.0.1:8772)
+After=network-online.target
+
+[Service]
+User=hermes
+ExecStart=/usr/bin/python3 /opt/bot/bot/homeproxy.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
