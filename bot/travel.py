@@ -50,7 +50,10 @@ def station(name: str, get=_get) -> dict | None:
     if not stations:
         return None
     s = stations[0]
-    return {"code": s["stationCode"], "name": s["stationName"], "city": s.get("city") or ""}
+    name = s["stationName"]
+    if "all stations" in name.lower():  # a city's group of stations (live: "Bengaluru - All stations")
+        name = s.get("city") or name.split(" - ")[0]
+    return {"code": s["stationCode"], "name": name, "city": s.get("city") or ""}
 
 
 def trains(frm: str, to: str, day: date, get=_get) -> list[dict]:

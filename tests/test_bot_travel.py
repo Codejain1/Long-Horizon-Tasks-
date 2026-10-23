@@ -52,5 +52,7 @@ def test_station_and_class_names():
     assert T.station("Mysore", lambda url: sugg) == {"code": "MYS", "name": "Mysuru Jn", "city": "Mysuru"}
     assert T.station("Nowhere", lambda url: {"data": {"stationList": []}}) is None
     assert T.station("SBC")["code"] == "SBC"
+    group = {"data": {"stationList": [{"stationCode": "SBC", "stationName": "Bengaluru - All stations", "city": "Bengaluru"}]}}
+    assert T.station("Bangalore", lambda url: group)["name"] == "Bengaluru"  # seen live
     assert [T.train_class(x) for x in ("sleeper", "3A", "third AC", "chair car", "window", None)] == \
         ["SL", "3A", "3A", "CC", None, None]
