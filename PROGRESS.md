@@ -87,6 +87,40 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Phase 1 "never lose a fare": live (2026-10-23, deployed `/opt/bot-20261023-161813`)
+- **Search uses each site's own data, checked live.** Sites that block the server or show a captcha are left out,
+  never worked around.
+  - **Trains:** ConfirmTkt over plain HTTP, about 0.5 s. Each class comes with fare, seats, chance to confirm and
+    when the seats were last seen. IRCTC blocks the server.
+  - **Buses:** abhibus over plain HTTP, about 0.2 s. redbus blocks the server.
+  - **Flights:** EaseMyTrip, whose results page is read in the bot's Chrome, about 10-13 s. ixigo needs a captcha
+    token and Skyscanner shows a captcha; Yatra, Goibibo and MakeMyTrip didn't load.
+- **How results are picked (code):**
+  - **Trains:** a confirmed seat first, then chance to confirm, then quickest, then cheapest.
+  - **Buses:** enough seats for everyone, the seat kind and time of day asked, no bus rated under 3.5, then
+    cheapest.
+  - **Flights:** within budget for everyone, the time of day asked, airlines to avoid; a stop only when it's
+    cheaper than flying direct.
+  - "From" is the phone's city.
+- **Watch (1.4):** "👀 Watch prices for me" on any result, or "Watch this one" after a pick.
+  - The trip is searched again every 3 h, hourly in the last 2 days.
+  - Messages come only on a drop, a rise, seats running low or gone, and reminders 7, 3 and 1 day before if it's
+    still not booked.
+  - "stop watching" or "booked it" ends it; "my watches" lists them.
+- **Trips said in passing (1.5):** "I'm going to Chennai on 2 Nov" gets Train / Bus / Flight / Not now. "Not now"
+  sets a reminder in 2 days. It reacts only to statements about the owner's own plans; requests go to the forms
+  (botsmoke caught "Plan a trip to Coorg" being taken as a mention).
+- **Book now or wait (1.6, first part):** a 💡 tip under every result, from what's visible today and said as a rule
+  of thumb.
+  - Every price seen is now logged by route and days left (the `fares` table).
+  - **Not done yet:** advice from each route's own history. It needs that log to fill, then a check against the
+    stored history before it's trusted.
+- **Booking itself isn't built:** a pick gives the site's link.
+- **Checks:**
+  - 298 tests pass.
+  - Real-model botsmoke, 2 reps: test2 40/40, test3 20/20, test4 14/16 (the old dinner miss), live6 8/8; p90 4.4 s.
+  - Live scratch chats: real trains, buses and flights; a watch re-searched in the background in 7.8 s.
+
 ## Owner's goals (2026-10-23, in their words, condensed): what the system is for
 1. **Never lose a fare.** They forget to book, or wait for a cheaper fare and lose it. They want a watcher that
    remembers the trip, tracks the price and books at the right moment.
@@ -767,6 +801,10 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-23: travel sources are ConfirmTkt (trains), abhibus (buses) and EaseMyTrip (flights): each one's own data,
+  and each loads for the server without a block or a captcha.
+- 2026-10-23: flights don't ask for a budget (the search shows prices); the forms bench gold was updated to match.
+- 2026-10-23: "book now or wait" stays a stated rule of thumb until route history exists and has been checked.
 - 2026-10-23: no home or residential connection to get past a site's block on the server (Zomato). It
   evades the site's bot detection, so it isn't done even on request. Zomato stays unconnected.
 - 2026-10-23: slow food apps (magicpin takes about 21 s) get 5 s to join the first list, then follow up. The
