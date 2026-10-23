@@ -964,3 +964,34 @@ def test_watching_the_best_fare_and_a_site_that_fails(tmp_path):
     assert sent == [] or not sent[0].startswith("⏰")
     b.check_watches(lambda ch, chat, text: sent.append(text), now=dt.datetime(2099, 10, 23, 12).timestamp())
     assert sent[-1].startswith("⏰ bus Bangalore → Pondicherry, Sat 24 Oct is in 1 day and not booked yet. Best now: Orange")
+
+
+def test_trips_said_in_passing_are_spotted():
+    assert A.trip_mention("I'm going to Goa next month") == {"to": "Goa", "when": "next month"}
+    assert A.trip_mention("planning a trip to manali in december") == {"to": "Manali", "when": "in december"}
+    assert A.trip_mention("we are heading to Chennai on 2 nov for a wedding") == {"to": "Chennai", "when": "2 nov"}
+    assert A.trip_mention("visiting my parents in Jaipur this weekend") == {"to": "Jaipur", "when": "this weekend"}
+    for not_a_trip in ["Book a flight to Goa on Friday", "Train to Mysore tomorrow", "Are you going to Goa?",
+                       "I'm going to sleep", "going to order biryani", "I want to go to the gym"]:
+        assert A.trip_mention(not_a_trip) is None, not_a_trip
+
+
+def test_a_trip_said_in_passing_becomes_a_search_or_a_reminder(tmp_path):
+    import datetime as dt
+    b = bot(tmp_path, Model())  # no model call: all code
+    r = say(b, "I'm going to Chennai on 2 nov 2099 for a wedding")
+    assert r.startswith("A trip to Chennai on 2 nov 2099!") and r.choices == ["🚆 Train", "🚌 Bus", "✈️ Flight", "Not now"]
+    b.store.set_fact("habit:train:from", "Bangalore")
+    r = say(b, "🚆 Train")  # the form starts with what was said; it asks for what's missing
+    assert "Which class" in r or r.startswith("Trains") or "From where" in r, r
+    t0 = dt.datetime(2099, 10, 1, 9).timestamp()
+    b.now = lambda: t0
+    say(b, "I'm off to Goa next month")
+    assert say(b, "Not now") == "Okay. I'll remind you about Goa in 2 days so the fares don't get away."
+    sent = []
+    assert b.check_watches(lambda ch, chat, text: sent.append(text), now=t0 + 86400) == 0
+    b.check_watches(lambda ch, chat, text: sent.append(text), now=t0 + 2 * 86400 + 1)
+    assert sent == ["⏰ You mentioned a trip to Goa next month. Fares usually rise as the date nears: want me to find "
+                    "tickets? Say e.g. 'train to Goa on <date>'."]
+    b.check_watches(lambda ch, chat, text: sent.append(text), now=t0 + 5 * 86400)
+    assert len(sent) == 1  # once

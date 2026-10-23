@@ -284,6 +284,39 @@ def ground(store: B.Store, kind: str, text: str, slots: dict, earlier: str = "")
     return out
 
 
+# trips said in passing ("going to Goa next month"): the bot offers to find tickets and watch the fares (owner's
+# first goal: they forget to book). ponytail: a fixed list of places; the model can spot the rest later if needed.
+TRIP_PLACES = set(travel.AIRPORTS) | {"manali", "shimla", "ooty", "coorg", "munnar", "rishikesh", "pondicherry",
+                                     "puducherry", "hampi", "kodaikanal", "darjeeling", "gangtok", "alleppey", "gokarna",
+                                     "varkala", "lonavala", "mahabaleshwar", "nainital", "mussoorie", "kasol", "wayanad",
+                                     "chikmagalur", "kerala", "rajasthan", "ladakh", "sikkim", "meghalaya", "kashmir",
+                                     "haridwar", "agra", "mathura", "vrindavan", "ajmer", "pushkar", "jaisalmer"}
+TRIP_TALK = re.compile(r"\b(going|go|travell?(ing)?|trip|visit(ing)?|heading|flying|fly|planning|plan|off|holiday|"
+                       r"vacation|leaving)\b", re.I)
+ASKING_TO_BOOK = re.compile(r"\b(book|ticket|tickets|find|search|get me|train|bus|flight|cab|hotel|stay)\b", re.I)
+WHEN = re.compile(r"\b(today|tonight|tomorrow|day after tomorrow|this weekend|next weekend|next week|next month|"
+                  r"(this |next |coming )?(mon|tues|wednes|thurs|fri|satur|sun)day|in (january|february|march|april|"
+                  r"may|june|july|august|september|october|november|december)|on \d{1,2}(st|nd|rd|th)?\s*[a-z]{3,9}|"
+                  r"on [a-z]{3,9}\s*\d{1,2})(\s+\d{4})?\b", re.I)
+
+
+def trip_mention(text: str) -> dict | None:
+    """'I'm going to Goa next month' -> {"to": "Goa", "when": "next month"}; None for a booking request (the form
+    handles those), a question, or no known place."""
+    if not TRIP_TALK.search(text) or ASKING_TO_BOOK.search(text) or text.strip().endswith("?"):
+        return None
+    m = re.search(r"\b(?:to|in|at|for)\s+([a-z]+(?:\s[a-z]+)?)", text, re.I)
+    words = [w for w in ([m[1].lower(), m[1].lower().split()[0]] if m else [])]
+    place = next((w for w in words if w in TRIP_PLACES), None)
+    if not place:
+        return None
+    w = WHEN.search(text)
+    return {"to": place.title(), "when": w[0].removeprefix("on ").strip() if w else ""}
+
+
+TRIP_MODES = {"🚆 Train": "train", "🚌 Bus": "bus", "✈️ Flight": "flight"}
+
+
 class Assistant:
     def __init__(self, home: Path, store: B.Store, memory_url: str = "http://127.0.0.1:8765", chat=brain.chat,
                  post=_post, nearby=places.nearby_food, swiggy=None, logins=None, magicpin=None, eatsure=None):
@@ -561,7 +594,7 @@ class Assistant:
             return self._need_login(chat, m[3].lower(), None)
         self._remember(chat, text)
         sess = self._session(chat)
-        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order", "travel", "travel_pick"):
+        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order", "travel", "travel_pick", "trip_spot"):
             r = self._stage(chat, text, sess)
             if r is not None:
                 return r
@@ -585,7 +618,7 @@ class Assistant:
                              text, re.I)
             if t["kind"] == "food" and m:  # "300" to "What's your budget?": code, not the model
                 return self._booking_reply(chat, B.update(self.store, tid, {"max_total": float(m[1])}))
-            if LEAVE_FORM.search(text):
+            if LEAVE_FORM.search(text) or trip_mention(text):  # a new trip mentioned isn't an answer to this form
                 self._pending(chat, clear=True)
                 B.finish(self.store, tid, "cancelled")
                 tid = None
@@ -613,6 +646,12 @@ class Assistant:
                 self._pending(chat, tid)
                 return ASK["max_total"]
             return self._booking_reply(chat, B.start(self.store, "food", slots, site))
+        spot = trip_mention(text)
+        if spot:  # a trip said in passing: offer to find tickets before the owner forgets (they asked for this)
+            self._start(chat, "trip_spot", 2, text=text, **spot)
+            when = (" on " if spot["when"][:1].isdigit() else " ") + spot["when"] if spot["when"] else ""
+            return Reply(f"A trip to {spot['to']}{when}! Want me to find tickets and watch the fares so you don't "
+                         "pay more later?", [*TRIP_MODES, "Not now"])
         memory, cur = self._memory(text)
         kinds = "; ".join(f"{k}: {', '.join(v)}" for k, v in B.TEMPLATES.items())
         current = (f"- The owner's current food request (keep it; a follow-up changes only what they mention, e.g. "
@@ -807,6 +846,18 @@ class Assistant:
                 o = st["options"][n - 1]
                 self._start(chat, "travel_pick", 1, kind=st["kind"], slots=st["slots"], option=o)
                 return Reply(f"{o['pick']}. {st['tail']}", [WATCH_ONE])
+            return None
+        if st["mode"] == "trip_spot":  # a trip said in passing: which way to go, or later
+            self._end(chat)
+            kind = next((k for label, k in TRIP_MODES.items() if t.lower() in (label.lower(), k)), None)
+            if kind:
+                said = st["text"]
+                slots = ground(self.store, kind, said, {"to": st["to"], **({"date": st["when"]} if st["when"] and
+                                                                           HAS_DATE.search(st["when"]) else {})})
+                return self._booking_reply(chat, B.start(self.store, kind, slots))
+            if re.fullmatch(r"(not now|later|no|nah|no thanks)[.!]?", t, re.I):
+                self._nudge(chat, st["to"], st["when"])
+                return f"Okay. I'll remind you about {st['to']} in 2 days so the fares don't get away."
             return None
         if st["mode"] == "travel_pick":
             self._end(chat)
@@ -1198,6 +1249,16 @@ class Assistant:
         return Reply(r["note"] + r["header"] + "\n".join(r["lines"]) + r["foot"] + "\nTap one (or reply its number), "
                      "or I can watch the prices for you.", r["labels"] + [WATCH])
 
+    def _nudge(self, chat: str, place: str, when: str, now: float | None = None) -> None:
+        """A reminder in 2 days about a trip the owner mentioned but didn't search (a watch with nothing to search)."""
+        now = now or self.now()
+        with self.lock:
+            self.db.execute("INSERT INTO watches (chat, channel, kind, slots, target, history, reminded, next, active) "
+                            "VALUES (?,?,?,?,?,?,?,?,1)", (chat, getattr(self.local, "channel", "whatsapp"), "nudge",
+                                                           json.dumps({"to": place, "when": when}), None, "[]", "[]",
+                                                           now + 2 * 86400))
+            self.db.commit()
+
     # watching a trip: never lose a fare (owner's first goal) ----------------------------------------------------
     def _route(self, kind: str, slots: dict) -> str:
         from datetime import date
@@ -1230,7 +1291,8 @@ class Assistant:
         return f"Stopped watching {n} trip{'s' if n != 1 else ''}." if n else "I'm not watching any trips for you."
 
     def _list_watches(self, chat: str) -> str:
-        rows = self._read("SELECT kind, slots, target, history FROM watches WHERE chat=? AND active=1", (chat,))
+        rows = self._read("SELECT kind, slots, target, history FROM watches WHERE chat=? AND active=1 AND kind!='nudge'",
+                          (chat,))
         if not rows:
             return "I'm not watching any trips for you. Search one and tap '👀 Watch prices for me'."
         return "Watching:\n" + "\n".join(
@@ -1246,6 +1308,12 @@ class Assistant:
                           "WHERE active=1 AND next<=?", (now,))
         for wid, chat, channel, kind, slots, target, hist, reminded in rows:
             slots, hist, reminded = json.loads(slots), json.loads(hist), json.loads(reminded)
+            if kind == "nudge":
+                when = f" {slots['when']}" if slots.get("when") else ""
+                send(channel, chat, f"⏰ You mentioned a trip to {slots['to']}{when}. Fares usually rise as the date "
+                                    f"nears: want me to find tickets? Say e.g. 'train to {slots['to']} on <date>'.")
+                self._update_watch(wid, hist, reminded, now, active=0)
+                continue
             left = (date.fromisoformat(str(slots["date"])) - date.fromtimestamp(now)).days
             if left < 0:
                 self._update_watch(wid, hist, reminded, now, active=0)
