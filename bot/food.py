@@ -24,14 +24,15 @@ PLATFORMS = {
     "swiggy": {"search": "https://www.swiggy.com/search?query={q}", "verified": True, "label": "Swiggy",
                "can": ["search", "link", "cart", "order"], "fast": True},
     "zomato": {"search": "https://www.zomato.com/{city}/delivery?q={q}", "verified": False, "label": "Zomato",
-               "can": [], "fast": False},  # Access Denied to the server's data-centre IP, even in real Chrome
+               "can": [], "fast": False,
+               "why": "it blocks the server's connection"},  # Access Denied to the data-centre IP, even in real Chrome
     # checked live 2026-10-23: the search page carries the dishes and prices in its text, at the given location
     "magicpin": {"search": "https://magicpin.in/{city}/search?query={q}&latitude={lat}&longitude={lng}", "verified": True,
                  "label": "magicpin", "can": ["search", "link"], "fast": False},
     "eatsure": {"search": "https://www.eatsure.com/", "verified": True, "label": "EatSure", "can": ["search", "link"],
                 "fast": True},  # its own data API over plain HTTP (~1 s, no browser), checked live 2026-10-23
     "eatclub": {"search": "https://www.eatclub.in/search?q={q}", "verified": False, "label": "EatClub", "can": [],
-                "fast": False},  # no search on the website (app-only)
+                "fast": False, "why": "its website has no search"}, 
 }
 MAPS = "https://www.google.com/maps/search/{q}"
 REVIEWS_SCHEMA = {"type": "object", "properties": {

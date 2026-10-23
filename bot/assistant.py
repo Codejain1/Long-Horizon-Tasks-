@@ -52,7 +52,8 @@ Decide what to do with the owner's message and answer as JSON:
 - action "suggest_food": they ask WHAT to eat and name no dish ("what should I eat?", "any food ideas?").
 - action "read_swiggy_orders": ONLY when they ask to read, check or refresh their Swiggy order history.
 - What you can really do (answer questions about yourself from this, never promise more): food apps connected:
-  {apps}; not connected yet: {not_apps}. Logins (phone + OTP, Google): {sites}. Bookings other than food are
+  {apps} (searched together, cheapest of each shown); not connected (you can't check them, never offer to):
+  {not_apps}. Only the Swiggy order history can be read. Logins (phone + OTP, Google): {sites}. Bookings other than food are
   saved as forms; booking them on the sites is not built yet.
 - action "reply": anything else; write the reply: brief and plain, like a person. You only get this one reply:
   never say "one moment" or "let me check"; answer now. Never invent facts about the owner. NEVER say you searched,
@@ -591,10 +592,11 @@ class Assistant:
         current = (f"- The owner's current food request (keep it; a follow-up changes only what they mention, e.g. "
                    f"place, budget or dish, and you output the full updated request): {json.dumps(req)}"
                    if req else "")
-        apps = [n.title() for n, p in food.PLATFORMS.items() if p["verified"]]
+        apps = [p["label"] for p in food.PLATFORMS.values() if p["verified"]]
         system = PERSONA.format(today=time.strftime("%A %d %B %Y"), memory=memory, kinds=kinds, current=current,
                                 apps=", ".join(apps),
-                                not_apps=", ".join(n.title() for n, p in food.PLATFORMS.items() if not p["verified"]),
+                                not_apps=", ".join(f"{p['label']} ({p['why']})" for p in food.PLATFORMS.values()
+                                                   if not p["verified"]),
                                 sites=", ".join(login.SITES))
         talk = [*self.recent(chat)[:-1], {"role": "user", "content": text}]
         d = brain.extract([{"role": "system", "content": system}, *talk], DECIDE, self.chat, max_tokens=450,
@@ -617,6 +619,10 @@ class Assistant:
         if action == "suggest_food":
             return self._ideas(chat, plain, talk)
         if action == "read_swiggy_orders":
+            other = next((m.lower() for m in APPS.findall(text) if m.lower() != "swiggy"), None)
+            if other and not re.search(r"swiggy", text, re.I):  # live: "Zomato orders history" read Swiggy's
+                return (f"I can read only your Swiggy order history so far; {food.PLATFORMS[other]['label']}'s isn't "
+                        "connected.")
             last = self.store.fact("swiggy:orders_read")
             stale = (not B.taste(self.store).get("orders")) if not last else last["age_h"] >= FRESH_H
             if stale or re.search(r"\b(refresh|re-?read|again|update|latest)\b", text, re.I):
@@ -639,7 +645,7 @@ class Assistant:
         if MADE_UP_LIST.search(reply) and re.search(r"\bkm\b|₹|\brs\b|restaurant|cafe|hotel", reply, re.I):
             # a list of places or prices the model wrote itself: never real (live: "Biryani House Jaito, 1.2 km")
             self._step("blocked_made_up_list", reply=reply[:200])
-            return ("Tell me the dish (and a budget) and I'll search Swiggy and magicpin for real options, "
+            return (f"Tell me the dish (and a budget) and I'll search {', '.join(p['label'] for p in food.PLATFORMS.values() if p['verified'])} for real options, "
                     "or ask for places near you to go out.")
         if reply and reply in self._said(chat):  # low temperature repeats itself ("same joke 3x")
             reply = self._say(plain + "\n\nYou already gave this exact answer; give a different one.", talk, 0.9) or reply

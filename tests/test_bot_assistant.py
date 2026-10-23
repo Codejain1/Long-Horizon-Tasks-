@@ -749,3 +749,9 @@ def test_dish_names_keep_their_own_words_and_the_restaurant():
                                                                   "max_total": 250.0}
     assert A.food_request("Order paneer tikka from Barbeque Nation under 600")["restaurant"] == "Barbeque Nation"
     assert A.food_request("I feel like having pav bhaji, keep it under 250")["dish"] == "pav bhaji"
+
+
+def test_order_history_of_an_unconnected_app_is_not_answered_with_swiggys(tmp_path):
+    b = bot(tmp_path, Model(call("swiggy_orders")))
+    r = b.handle({"channel": "app", "chat": "owner", "text": "And also pull out Zomato orders history"})
+    assert r == "I can read only your Swiggy order history so far; Zomato's isn't connected."
