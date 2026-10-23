@@ -129,6 +129,13 @@ def food_followup(text: str, req: dict | None) -> dict | None:
     return None
 
 
+def apps_reply() -> str:
+    on = [p["label"] for p in food.PLATFORMS.values() if p["verified"]]
+    off = [f"{p['label']} isn't connected: {p['why']}." for p in food.PLATFORMS.values() if not p["verified"]]
+    return (f"I search {', '.join(on[:-1])} and {on[-1]} together for every dish and show each one's best option. "
+            + " ".join(off))
+
+
 def food_request(text: str) -> dict | None:
     """A new food request named in the message (dish + intent), or None: the model handles everything else."""
     if ABOUT_BOT.search(text) or GO_OUT.search(text):
@@ -576,6 +583,8 @@ class Assistant:
             if tid:
                 self._pending(chat, clear=True)
                 B.finish(self.store, tid, "cancelled")
+        if ABOUT_BOT.search(text) and APPS.search(text):  # code: the model said "Swiggy is the only app" (botsmoke)
+            return apps_reply()
         req = self.store.fact(f"request:{chat}")
         req = req["value"] if req and not req["stale"] else None
         slots = food_followup(text, req) or food_request(text)

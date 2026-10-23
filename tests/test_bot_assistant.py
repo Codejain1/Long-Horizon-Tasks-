@@ -755,3 +755,11 @@ def test_order_history_of_an_unconnected_app_is_not_answered_with_swiggys(tmp_pa
     b = bot(tmp_path, Model(call("swiggy_orders")))
     r = b.handle({"channel": "app", "chat": "owner", "text": "And also pull out Zomato orders history"})
     assert r == "I can read only your Swiggy order history so far; Zomato's isn't connected."
+
+
+def test_questions_about_the_food_apps_are_answered_by_code(tmp_path):
+    b = bot(tmp_path, Model())  # no model call
+    for q in ["Why only Swiggy not Zomato and others", "Have you not checked on Zomato?"]:
+        r = b.handle({"channel": "app", "chat": "owner", "text": q})
+        assert r.startswith("I search Swiggy, magicpin and EatSure together") and \
+            "Zomato isn't connected: it blocks the server's connection." in r
