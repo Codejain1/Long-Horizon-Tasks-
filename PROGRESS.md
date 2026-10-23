@@ -134,12 +134,19 @@ Evidence from the code and from the live Hermes memory (read-only):
 - Indian airfares mostly rise as the date nears, and most train fares are fixed (the risk there is seats running
   out). So the watcher tracks real prices and seats per route rather than assuming "3 days before is cheaper".
 
-**Proposed order:**
-1. Fare watch with search: trains, buses, flights.
-2. Cash-on-delivery food ordering, rehearsed with the owner.
-3. The full food flow above.
-4. Multi-leg trips and the itinerary.
-5. Hotels.
+**The plan (2026-10-23, combined; owner: "start working on them, step by step, phase by phase").** Each phase
+ships live, with a check before the next phase starts. Platforms are chosen by location by me, never asked of
+the owner.
+
+| Phase | What the owner gets | Done when |
+|---|---|---|
+| **1. Never lose a fare** | **1.1-1.3** Train, bus and flight search with real prices and seats. **1.4** "Watch it": checks every few hours, price/seat history, alerts on drop, rise or seats running low, reminders before it's too late. **1.5** Trips said in passing are spotted ("going to Goa next month" → "Watch it?" Yes/No). **1.6** "Book now or wait", from the route's own history, with how sure it is | Search prices match the site on 10 real routes; every watched trip is checked and alerted on time (tests with a fake clock); trip spotting on real phrasing; the advice is backtested on stored history before it's trusted |
+| **2. Platforms by location** | For food, cabs and hotels, the bot uses what exists where the owner is, or in the trip's city | The registry says where each app works; a test location abroad picks that country's apps |
+| **3. Real orders and payment** | Cash on delivery first, then a UPI request; payment confirmed on the page; live delivery updates (text, then a map in the app) | One real order with the owner watching; tracking until delivered |
+| **4. Food the owner's way** | History from every reachable app → taste profile by kind of food; meal-type question; mood read from writing, confirmed Yes/No or changed; mood → food learned from history; 2-3 full carts ranked by delivery time and cost | A week of real use: the owner's picks match the top cart most of the time |
+| **5. Multi-leg trips** | Flight / train / bus / cab legs combined; 2-3 combos ranked by time, price and safe connection gaps; one pick books every leg (UPI per leg) | Combos match a careful manual search on 5 routes without direct links |
+| **6. Itinerary and on-trip guide** | A day plan with times (check-in, places, travel between); during the trip, the next step at the right time | A real trip followed end to end |
+| **7. Hotels** | Past stays read from platforms; the same properties and similar ones offered for the trip's city; nights and people asked; cheapest after coupons; sign-up on new platforms with the OTP box | Prices match the sites after discounts on 5 cities |
 
 ## Failures handled plainly; no home connection for Zomato (2026-10-23, deployed `/opt/bot-20261023-141441`)
 - **Home connection: built, then removed.** The owner asked to send Zomato (and any other blocked site) through
