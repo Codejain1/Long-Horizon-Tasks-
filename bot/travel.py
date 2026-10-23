@@ -151,7 +151,8 @@ def best_buses(found: list[dict], seat: str | None = None, window: str | None = 
         kind = b["type"].lower()
         if b["seats"] < people or not b["fare"] or (max_price and b["fare"] * people > float(max_price)):
             continue
-        if "sleeper" in seat and "sleeper" not in kind or "seater" in seat and "seater" not in kind:
+        berth = "sleeper" in kind.replace("semi sleeper", "").replace("semi-sleeper", "")  # live: a reclining seat
+        if "sleeper" in seat and not berth or "seater" in seat and "seater" not in kind:
             continue
         if re.search(r"\bnon[- ]?ac\b", seat) and not re.search(r"non[- ]?a/?c", kind):
             continue

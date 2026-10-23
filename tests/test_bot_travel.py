@@ -87,6 +87,8 @@ def test_buses_are_read_and_picked_by_code():
     assert [b["operator"] for b in T.best_buses(found, seat="sleeper")] == ["Jayavin Tours and Travels", "Night Rider"]
     assert [b["operator"] for b in T.best_buses(found, seat="AC sleeper", window="night")] == ["Night Rider"]
     assert [b["operator"] for b in T.best_buses(found, seat="non ac")] == ["KSRTC Kerala"]
+    semi = {**found[3], "operator": "NueGo", "type": "AC Semi Sleeper Electric (2 + 2)", "seats": 30}
+    assert [b["operator"] for b in T.best_buses(found + [semi], seat="sleeper", window="night")] == ["Night Rider"]
     assert T.best_buses(found, window="night", people=2) == []  # one seat left on the only night bus
     assert [b["total"] for b in T.best_buses(found, max_price=500, people=2)] == [438.0]
 
