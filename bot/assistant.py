@@ -1072,5 +1072,5 @@ class Assistant:
         self._end(chat)
         if v["kind"] == "food":
             return self._compare(chat, r["slots"], tid)
-        return (f"Got it: {self._summary_line(r['slots'], v['kind'])}. Searching {v['kind']}s on the sites isn't built "
+        return (f"Got it: {self._summary_line(r['slots'], v['kind'])}. Searching {'buses' if v['kind'] == 'bus' else v['kind'] + 's'} on the sites isn't built "
                 "yet, so I've saved it; food is the part that works end to end today.")
