@@ -291,9 +291,12 @@ TRIP_PLACES = set(travel.AIRPORTS) | {"manali", "shimla", "ooty", "coorg", "munn
                                      "varkala", "lonavala", "mahabaleshwar", "nainital", "mussoorie", "kasol", "wayanad",
                                      "chikmagalur", "kerala", "rajasthan", "ladakh", "sikkim", "meghalaya", "kashmir",
                                      "haridwar", "agra", "mathura", "vrindavan", "ajmer", "pushkar", "jaisalmer"}
-TRIP_TALK = re.compile(r"\b(going|go|travell?(ing)?|trip|visit(ing)?|heading|flying|fly|planning|plan|off|holiday|"
-                       r"vacation|leaving)\b", re.I)
-ASKING_TO_BOOK = re.compile(r"\b(book|ticket|tickets|find|search|get me|train|bus|flight|cab|hotel|stay)\b", re.I)
+# a statement about the owner's own plans ("I'm going", "we're heading", "my trip to"), never a request: botsmoke
+# showed "Fly to Goa", "Plan a trip to Coorg" and "I want a trip to Rishikesh" taken as mentions (those are forms)
+TRIP_TALK = re.compile(r"\b(i'?m|i am|we'?re|we are|i'?ll be|we'?ll be|i have|we have|i got|my|our|me and \w+ (are|will))\b"
+                       r"[\w\s']{0,25}?\b(going|heading|off|travell?ing|visiting|flying|leaving|trip|holiday|vacation)\b", re.I)
+ASKING_TO_BOOK = re.compile(r"\b(book|ticket|tickets|find|search|get me|train|bus|flight|cab|hotel|stay|plan|want|"
+                            r"need|help|arrange|organi[sz]e|can you|could you|please|suggest)\b", re.I)
 WHEN = re.compile(r"\b(today|tonight|tomorrow|day after tomorrow|this weekend|next weekend|next week|next month|"
                   r"(this |next |coming )?(mon|tues|wednes|thurs|fri|satur|sun)day|in (january|february|march|april|"
                   r"may|june|july|august|september|october|november|december)|on \d{1,2}(st|nd|rd|th)?\s*[a-z]{3,9}|"
