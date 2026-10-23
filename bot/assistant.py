@@ -198,11 +198,14 @@ PLACE_SLOTS = {"from", "to", "city", "pickup", "drop", "area"}
 class Reply(str):
     """A reply with tap options: the text (which also lists them, numbered, for channels without buttons) and the
     choices the channel shows as buttons / a poll. The owner's tap comes back as the choice's text. cards: richer
-    data for the app (photo, title, price, rating), one per choice."""
-    def __new__(cls, text: str, choices: list[str] | None = None, cards: list[dict] | None = None):
+    data for the app (photo, title, price, rating), one per choice. input: a box the app shows in the message for
+    the answer, e.g. {"kind": "otp", "label": "Swiggy OTP"} (iPhone offers the SMS code above the keyboard)."""
+    def __new__(cls, text: str, choices: list[str] | None = None, cards: list[dict] | None = None,
+                input: dict | None = None):
         r = super().__new__(cls, text)
         r.choices = list(choices or [])
         r.cards = list(cards or [])
+        r.input = input
         return r
 
 
@@ -689,7 +692,8 @@ class Assistant:
         if r != "otp_sent":
             return r
         self._start(chat, "login", 0.2, site=site, resume=resume)
-        return f"{site.title()} sent an OTP to your number ending {phone[-4:]}. Send it here (just the digits)."
+        return Reply(f"{site.title()} sent an OTP to your number ending {phone[-4:]}. Enter it below (or send just "
+                     "the digits).", input={"kind": "otp", "label": f"{site.title()} OTP"})
 
     def _finish_login(self, chat: str, text: str) -> str:
         site = self.login.waiting_for(chat)
@@ -1023,8 +1027,11 @@ class Assistant:
         acts = self._acts(offer)
         if re.search(r"\b(order|for me|place)\b", how, re.I) and "cart" in acts:
             if not ORDERING:
-                return (self._add_to_cart(chat, tid, offer) + "\n(Ordering for you is paused until I've verified the "
-                        "payment step on a real Swiggy checkout with you, so I filled the cart instead.)")
+                added = self._add_to_cart(chat, tid, offer)
+                if getattr(added, "input", None):  # a login first: keep its OTP box
+                    return added
+                return (added + "\n(Ordering for you is paused until I've verified the payment step on a real "
+                        "Swiggy checkout with you, so I filled the cart instead.)")
             return self._prepare_order(chat, offer, tid)
         if re.search(r"\bcart\b", how, re.I) and "cart" in acts:
             return self._add_to_cart(chat, tid, offer)

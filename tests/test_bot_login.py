@@ -162,6 +162,7 @@ def test_conversation_login_otp_redacted_and_task_resumed(tmp_path):
     m.replies.append(call("task_start", kind="food", slots={"dish": "veg biryani", "max_total": 400}))
     r = say(b, "order veg biryani under 400")
     assert "sent an OTP to your number ending 0001" in r
+    assert r.input == {"kind": "otp", "label": "Swiggy OTP"}  # the app shows a box for it in the message
     r = say(b, "482913")
     assert r.startswith("Logged in to Swiggy ✅") and "1. Veg Biryani — Paradise — ₹249 on Swiggy" in r  # carried on
     stored = json.dumps(b.db.execute("SELECT * FROM log").fetchall() + b.db.execute("SELECT * FROM traces").fetchall())

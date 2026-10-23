@@ -112,7 +112,9 @@ def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float
                 reply = f"Sorry, something broke on my side ({type(e).__name__}). Try again in a minute."
                 alert(f"⚠ bot error on {m['text'][:60]!r}: {e!r}"[:500])
             try:
-                if getattr(reply, "cards", None) and hasattr(ch, "send_cards"):
+                if getattr(reply, "input", None) and hasattr(ch, "send_input"):
+                    ch.send_input(m["chat"], str(reply), reply.input)  # the app: an OTP box in the message
+                elif getattr(reply, "cards", None) and hasattr(ch, "send_cards"):
                     ch.send_cards(m["chat"], str(reply), reply.choices, reply.cards)  # the app: photos + taps
                 elif getattr(reply, "choices", None) and hasattr(ch, "send_choice"):
                     ch.send_choice(m["chat"], str(reply), reply.choices)  # taps instead of typing

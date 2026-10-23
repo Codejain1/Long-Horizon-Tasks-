@@ -8,6 +8,7 @@ secret key in `Authorization: Bearer <key>`:
          transcribed by the speech service (bot/stt.py), then handled exactly like a typed message
     GET  /events?after=<id>&wait=<s>  -> {"events": [{"id", "text", "choices"?, "cards"?, "ts"}]}  (waits up to `wait` s)
          cards: [{"choice", "title", "subtitle", "price", "rating", "image", "note", "veg"}]: the app shows them
+         input: {"kind": "otp", "label"}: a box in the message; what's typed there comes back as a message
     GET  /health                       -> {"ok": true}   (no key needed)
 
 The key is BOT_APP_TOKEN, or BOT_HOME/app.token (created on first start, readable only by the bot's user).
@@ -64,6 +65,9 @@ class App:
 
     def send_cards(self, chat: str, text: str, choices: list[str], cards: list[dict]) -> None:
         self._emit({"text": text, "choices": choices, "cards": cards})
+
+    def send_input(self, chat: str, text: str, box: dict) -> None:
+        self._emit({"text": text, "input": box})
 
     def _emit(self, ev: dict) -> None:
         with self.cond:

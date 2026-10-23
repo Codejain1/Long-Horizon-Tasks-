@@ -19,7 +19,8 @@ type Card = {
   choice: string; title: string; subtitle?: string; price?: string; rating?: string; image?: string; note?: string;
   veg?: boolean | null;
 };
-type Msg = { id: string; from: 'me' | 'bot'; text: string; choices?: string[]; cards?: Card[] };
+type Box = { kind: 'otp'; label: string };
+type Msg = { id: string; from: 'me' | 'bot'; text: string; choices?: string[]; cards?: Card[]; input?: Box };
 type Coords = { lat: number; lng: number } | null;
 
 const LINK = /(https?:\/\/[^\s]+)/g; // for split/replace
@@ -41,6 +42,32 @@ function Body({ text, mine }: { text: string; mine: boolean }) {
         ),
       )}
     </Text>
+  );
+}
+
+// the bot asked for a login code: type it here (iPhone offers the code from the SMS above the keyboard), it goes
+// straight to the bot, which enters it on the site; the chat shows it hidden
+function OtpBox({ box, onSend }: { box: Box; onSend: (code: string) => void }) {
+  const [code, setCode] = useState('');
+  const ok = /^\d{4,8}$/.test(code);
+  return (
+    <View style={styles.otpRow}>
+      <TextInput
+        style={styles.otpInput}
+        value={code}
+        onChangeText={(t) => setCode(t.replace(/\D/g, '').slice(0, 8))}
+        placeholder={box.label}
+        keyboardType="number-pad"
+        textContentType="oneTimeCode"
+        autoComplete="sms-otp"
+        autoFocus
+        onSubmitEditing={() => ok && onSend(code)}
+      />
+      <Pressable style={({ pressed }) => [styles.send, !ok && styles.disabled, pressed && styles.pressed]}
+        disabled={!ok} onPress={() => onSend(code)}>
+        <Text style={styles.sendText}>Submit</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -136,8 +163,8 @@ export default function App() {
             setWaiting(WORKING.test(events[events.length - 1].text.trim()));
             setMsgs((m) => [
               ...m,
-              ...events.map((e: { id: number; text: string; choices?: string[]; cards?: Card[] }) => ({
-                id: `b${e.id}`, from: 'bot' as const, text: e.text, choices: e.choices, cards: e.cards,
+              ...events.map((e: { id: number; text: string; choices?: string[]; cards?: Card[]; input?: Box }) => ({
+                id: `b${e.id}`, from: 'bot' as const, text: e.text, choices: e.choices, cards: e.cards, input: e.input,
               })),
             ]);
             if (speakRef.current) {
@@ -155,12 +182,12 @@ export default function App() {
     };
   }, []);
 
-  const send = async (text: string) => {
+  const send = async (text: string, shown?: string) => {
     const t = text.trim();
     if (!t) return;
     setDraft('');
     Speech.stop();
-    setMsgs((m) => [...m, { id: `m${Date.now()}`, from: 'me', text: t }]);
+    setMsgs((m) => [...m, { id: `m${Date.now()}`, from: 'me', text: shown ?? t }]);
     setWaiting(true);
     const location = await locate();
     try {
@@ -231,6 +258,9 @@ export default function App() {
               </>
             ) : (
               <Body text={item.text} mine={item.from === 'me'} />
+            )}
+            {item.input?.kind === 'otp' && item === last && (
+              <OtpBox box={item.input} onSend={(code) => send(code, `🔐 ${item.input?.label ?? 'Code'} entered`)} />
             )}
             {item.choices && !item.cards?.length && item === last && (
               <View style={styles.choices}>
@@ -311,6 +341,12 @@ const styles = StyleSheet.create({
   sendText: { color: '#fff', fontWeight: '700' },
   listening: { backgroundColor: '#D93025' },
   pressed: { opacity: 0.55 },
+  disabled: { opacity: 0.4 },
+  otpRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  otpInput: {
+    flex: 1, borderWidth: 1, borderColor: '#1F6FEB', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
+    fontSize: 20, letterSpacing: 4, backgroundColor: '#fff',
+  },
   typing: { backgroundColor: '#E9EEF6' },
   typingText: { fontSize: 15, color: '#555', fontStyle: 'italic' },
   chips: { flexGrow: 0, backgroundColor: '#fff', borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#ddd' },

@@ -94,3 +94,13 @@ def test_voice_is_transcribed_then_handled_like_text():
     finally:
         app.close()
         stt.shutdown()
+
+
+def test_an_otp_box_reaches_the_app():
+    app = appapi.App("k", port=0)
+    try:
+        app.send_input("owner", "Swiggy sent an OTP", {"kind": "otp", "label": "Swiggy OTP"})
+        ev = call(app, "/events?after=0&wait=0")[1]["events"][0]
+        assert ev["input"] == {"kind": "otp", "label": "Swiggy OTP"} and ev["text"] == "Swiggy sent an OTP"
+    finally:
+        app.close()
