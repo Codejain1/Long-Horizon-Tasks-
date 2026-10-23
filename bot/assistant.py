@@ -342,6 +342,8 @@ class Assistant:
         self.db.execute("CREATE TABLE IF NOT EXISTS sessions (chat TEXT PRIMARY KEY, mode TEXT, data TEXT, expires REAL)")
         # orders being tracked: survive restarts (resume_trackers)
         self.db.execute("CREATE TABLE IF NOT EXISTS trackers (chat TEXT PRIMARY KEY, channel TEXT, last TEXT, until REAL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS fares (ts REAL, kind TEXT, frm TEXT, dest TEXT, day TEXT, "
+                        "days_left INTEGER, price REAL, status TEXT)")
         # trips the owner asked to watch: searched again in the background (check_watches), alerts on changes
         self.db.execute("CREATE TABLE IF NOT EXISTS watches (id INTEGER PRIMARY KEY, chat TEXT, channel TEXT, kind TEXT, "
                         "slots TEXT, target TEXT, history TEXT, reminded TEXT, next REAL, active INTEGER)")
@@ -1235,7 +1237,20 @@ class Assistant:
         else:
             return f"Searching {kind}s isn't built yet."
         out["top"] = top
+        if top:
+            self._log_fare(kind, slots, top[0], day)
+            out["advice"] = travel.advice(kind, top[0], (day - date.fromtimestamp(self.now())).days)
         return out
+
+    def _log_fare(self, kind: str, slots: dict, opt: dict, day) -> None:
+        """Every price seen, by route and days before departure: the history 'book now or wait' needs (none yet)."""
+        from datetime import date
+        with self.lock:
+            self.db.execute("INSERT INTO fares VALUES (?,?,?,?,?,?,?,?)",
+                            (self.now(), kind, str(slots.get("from", "")).lower(), str(slots.get("to", "")).lower(),
+                             day.isoformat(), (day - date.fromtimestamp(self.now())).days, opt["price"],
+                             str(opt.get("status") or "")))
+            self.db.commit()
 
     def _trip(self, chat: str, kind: str, slots: dict, tid: int | None) -> str:
         """A complete travel form: real options now (no 'go ahead?'), a tap for the link, or watch the prices."""
@@ -1249,8 +1264,9 @@ class Assistant:
             return r["empty"]
         self._start(chat, "travel", 1, options=r["top"], labels=r["labels"], task=tid, tail=r["tail"], kind=kind,
                     slots=slots)
-        return Reply(r["note"] + r["header"] + "\n".join(r["lines"]) + r["foot"] + "\nTap one (or reply its number), "
-                     "or I can watch the prices for you.", r["labels"] + [WATCH])
+        tip = f"\n💡 {r['advice']}" if r.get("advice") else ""
+        return Reply(r["note"] + r["header"] + "\n".join(r["lines"]) + r["foot"] + tip + "\nTap one (or reply its "
+                     "number), or I can watch the prices for you.", r["labels"] + [WATCH])
 
     def _nudge(self, chat: str, place: str, when: str, now: float | None = None) -> None:
         """A reminder in 2 days about a trip the owner mentioned but didn't search (a watch with nothing to search)."""

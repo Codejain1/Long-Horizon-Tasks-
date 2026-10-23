@@ -893,7 +893,9 @@ def test_flight_request_searches_real_flights(tmp_path):
     b = bot(tmp_path, m)
     r = say(b, "Flight from Bangalore to Goa on 30 Oct 2099 under 6000")
     assert r.startswith("Flights BLR → GOI, Fri 30 Oct:\n1. Air India AI 602, AI 681: 21:00→12:00 (3h30m, 1 stop via "
-                        "BOM), ₹4990\n2. Akasa Air QP 1301: 13:30→12:00 (1h30m, non-stop), ₹5600\nTap one"), r  # 6120: over
+                        "BOM), ₹4990\n2. Akasa Air QP 1301: 13:30→12:00 (1h30m, non-stop), ₹5600\n💡 Fares this far out can still "
+                        "move both ways"), r  # 6120: over budget; the tip says it's a rule of thumb
+    assert b._read("SELECT kind, frm, dest, price FROM fares", ()) == [("flight", "bangalore", "goa", 4990.0)]  # logged
     assert say(b, "2").startswith("Akasa Air QP 1301 at 13:30, ₹5600 in all. I can't book flights for you yet; book it "
                                   "on EaseMyTrip: https://flight.easemytrip.com/FlightList/Index?srch=BLR-BLR-India|GOI-GOI-India|30/10/2099")
 

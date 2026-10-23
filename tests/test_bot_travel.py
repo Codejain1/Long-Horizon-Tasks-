@@ -143,3 +143,15 @@ def test_flights_open_the_results_page_and_read_its_own_data():
             pass
     got = T.flights("BLR", "GOI", date(2026, 10, 30), 1, tab=Tab)
     assert "srch=BLR-BLR-India|GOI-GOI-India|30/10/2026&px=1-0-0" in opened[0] and len(got) == 4
+
+
+def test_book_now_or_wait_from_what_is_visible_today():
+    assert T.advice("train", {"status": "WL 12", "chance": 64}, 20).startswith("Book now: it's already WL 12 (64% chance")
+    assert T.advice("train", {"status": "AVL 8"}, 30) == "Book now: 8 seats left and train fares don't drop by waiting."
+    assert T.advice("train", {"status": "AVL 176"}, 30).startswith("No rush on price")
+    assert T.advice("train", {"status": "AVL 176"}, 5).startswith("Book now")  # a week out
+    assert T.advice("bus", {"status": "4 seats"}, 3) == "Book now: only 4 seats left on this bus."
+    assert T.advice("bus", {"status": "30 seats"}, 3).startswith("Bus fares here are mostly steady")
+    assert T.advice("flight", {"status": ""}, 7).startswith("Book now: 7 days out") and "rule of thumb" in \
+        T.advice("flight", {}, 7)
+    assert T.advice("flight", {}, 60).startswith("Fares this far out can still move both ways")

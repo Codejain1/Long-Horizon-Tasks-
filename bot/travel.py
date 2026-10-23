@@ -253,3 +253,29 @@ def best_flights(found: list[dict], max_price=None, window: str | None = None, a
 def flight_link(frm: str, to: str, day: date, adults: int = 1) -> str:
     return (f"https://flight.easemytrip.com/FlightList/Index?srch={frm}-{frm}-India|{to}-{to}-India|{day:%d/%m/%Y}"
             f"&px={adults}-0-0&cbn=0&isow=true&isdm=true")
+
+
+def advice(kind: str, opt: dict, days_left: int) -> str:
+    """Book now or wait, from what's visible today (no price history yet: rules of thumb, said as such).
+    Trains: fares are fixed, the risk is seats. Buses: seats. Flights: Indian fares mostly rise as the date nears."""
+    status = str(opt.get("status") or "")
+    if kind == "train":
+        m = re.match(r"AVL\s*(\d+)", status, re.I)
+        if not m:
+            chance = f" ({opt['chance']}% chance to confirm)" if opt.get("chance") is not None else ""
+            return f"Book now: it's already {status}{chance}; train fares don't drop, only seats go."
+        if int(m[1]) < 30 or days_left <= 7:
+            return f"Book now: {m[1]} seats left and train fares don't drop by waiting."
+        return f"No rush on price (train fares are fixed), but book within a few days: {m[1]} seats left today."
+    if kind == "bus":
+        seats = int(re.match(r"(\d+)", status)[1]) if re.match(r"(\d+)", status) else None
+        if seats is not None and seats < 10:
+            return f"Book now: only {seats} seats left on this bus."
+        return "Bus fares here are mostly steady; seats are the risk, so book when you're sure of the plan."
+    if kind == "flight":
+        if days_left <= 21:
+            return (f"Book now: {days_left} days out, Indian airfares usually only go up from here (a rule of thumb; "
+                    "I don't have this route's history yet).")
+        return ("Fares this far out can still move both ways; I can watch it and tell you when it drops "
+                "(a rule of thumb; no history for this route yet).")
+    return ""
