@@ -235,6 +235,7 @@ def best_flights(found: list[dict], max_price=None, window: str | None = None, a
     fewer stops, then quicker; one option per flight."""
     lo, hi = WINDOWS.get((window or "").lower().strip(), (0, 28))
     avoid = (avoid or "").lower()
+    direct = min((f["total"] for f in found if not f["stops"]), default=None)
     ok, seen = [], set()
     for f in sorted(found, key=lambda f: (f["total"], f["stops"], f["minutes"])):
         hour = int(f["dep"][:2]) if f["dep"][:2].isdigit() else 0
@@ -242,8 +243,8 @@ def best_flights(found: list[dict], max_price=None, window: str | None = None, a
             continue
         if avoid and any(a.strip() and a.strip() in f["airline"].lower() for a in re.split(r"[,/]| and ", avoid)):
             continue
-        if f["flight"] in seen:
-            continue
+        if f["flight"] in seen or f["stops"] and direct is not None and f["total"] >= direct:
+            continue  # a stop is worth it only when cheaper than flying direct (live: 9 h via BOM for more)
         seen.add(f["flight"])
         ok.append(f)
     return ok[:n]

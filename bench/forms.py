@@ -44,7 +44,7 @@ HISTORY = ([("train", {"from": "Bangalore", "to": "Chennai", "class": "3A", "pas
 CASES = [
     ("dev", "Book a train to Mumbai this Friday", "train", True,
      {"to": "mumbai", "date": "2026-10-23", "from": "bangalore", "class": "3a", "passengers": ["kartik"]}),
-    ("dev", "Need a flight to Delhi on 5 Nov", "flight", False, ["max_price"]),
+    ("dev", "Need a flight to Delhi on 5 Nov", "flight", True, {"to": "delhi", "date": "2026-11-05"}),
     ("dev", "Bus from Bangalore to Goa tomorrow night", "bus", True,
      {"from": "bangalore", "to": "goa", "date": "2026-10-22", "passengers": ["kartik"]}),
     ("dev", "Order paneer biryani, keep it under 350", "food", True, {"dish": "paneer biryani", "max_total": 350}),
@@ -68,7 +68,7 @@ CASES = [
     ("test", "Train to Pune", "train", False, ["date"]),
     ("test", "Bus from Bangalore to Hampi on Friday for me and Rahul", "bus", True,
      {"to": "hampi", "date": "2026-10-23", "passengers": ["kartik", "rahul"]}),
-    ("test", "Flight to Bali", "flight", False, ["date", "max_price"]),
+    ("test", "Flight to Bali", "flight", False, ["date"]),
     ("test", "Masala dosa from MTR, budget 250", "food", True,
      {"dish": "masala dosa", "restaurant": "mtr", "max_total": 250}),
     ("test", "Book train tickets to Chennai on 31 Oct, 2A this time", "train", True,

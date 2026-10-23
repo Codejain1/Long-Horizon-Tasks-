@@ -115,6 +115,8 @@ def test_flights_are_read_and_picked_by_code():
     assert found[2] == {"airline": "Air India", "flight": "AI 602, AI 681", "from": "BLR", "to": "GOI", "dep": "21:00",
                         "arr": "00:50", "stops": 1, "via": ["BOM"], "minutes": 230, "total": 4990.0, "fare": 4990}
     assert [f["flight"] for f in T.best_flights(found)] == ["AI 602, AI 681", "9I 547", "6E 6101"]  # one fare per flight
+    dearer_stop = {**found[2], "flight": "AI 1, AI 2", "total": 6500.0}
+    assert "AI 1, AI 2" not in [f["flight"] for f in T.best_flights(found + [dearer_stop])]
     assert [f["flight"] for f in T.best_flights(found, max_price=6000, window="afternoon")] == ["9I 547"]
     assert [f["flight"] for f in T.best_flights(found, avoid="Air India")] == ["9I 547", "6E 6101"]
     assert T.read_flights(EMT, adults=2)[0]["fare"] == 2747  # TF is for everyone

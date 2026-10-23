@@ -91,7 +91,7 @@ def test_destinations_and_caps_are_never_habits(tmp_path):
                                            "max_price": 8000, "cabin": "economy"}, today=TODAY)["task_id"], today=TODAY)
     v = B.start(s, "flight", {"date": "friday"}, today=TODAY)
     assert v["slots"]["from"] == "BLR" and v["slots"]["cabin"] == "economy"
-    assert v["missing"] == ["to", "max_price"]
+    assert v["missing"] == ["to"] and "max_price" not in v["slots"]  # the old cap isn't reused as a habit
 
 
 def test_spoken_amounts():

@@ -29,7 +29,7 @@ from pathlib import Path
 # kind -> slot -> required? (order = order in the summary). Defaults that are rails, not tastes, are in FIXED.
 TEMPLATES = {
     "flight": {"from": True, "to": True, "date": True, "passengers": True, "time_window": False, "cabin": False,
-               "max_price": True, "airline_avoid": False},
+               "max_price": False, "airline_avoid": False},  # the search shows prices: no budget question
     "train": {"from": True, "to": True, "date": True, "passengers": True, "class": True, "quota": False,
               "max_price": False},
     "bus": {"from": True, "to": True, "date": True, "passengers": True, "seat": False, "time_window": False,
