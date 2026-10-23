@@ -54,6 +54,7 @@ def bot(tmp_path, model, post=memory_ok, nearby=None):
     b._memory_location = lambda: None
     b.magicpin, b.eatsure = NoMagicpin(), NoMagicpin()
     b.rail = FakeRail()  # nor real ConfirmTkt
+    b.bus = FakeBus()  # nor real abhibus
     return b
 
 
@@ -73,6 +74,17 @@ class FakeRail:
                  "from": "SBC", "to": "MAS", "classes": {"SL": c(315, "AVL 120"), "3A": c(805, "WL 12", 64)}},
                 {"number": "12610", "name": "Mys Mas Exp", "dep": "14:30", "arr": "20:30", "minutes": 360,
                  "from": "SBC", "to": "MAS", "classes": {"3A": c(790, "AVL 8"), "2A": c(1110, "Regret", 0)}}]
+
+
+class FakeBus:
+    def bus_city(self, name):
+        return {"bangalore": {"id": 7, "name": "Bangalore"}, "pondicherry": {"id": 77, "name": "Pondicherry"}}.get(name.lower())
+
+    def buses(self, a, b, day):
+        bus = lambda op, kind, dep, fare, seats: {"operator": op, "type": kind, "dep": dep, "arr": "06:00",  # noqa: E731
+                                                  "minutes": 420, "fare": fare, "seats": seats, "rating": 4.2, "ratings": 80}
+        return [bus("KSRTC", "Non AC Seater", "09:00", 420, 30), bus("SRS", "AC Sleeper (2+1)", "22:30", 899, 5),
+                bus("Orange", "Non AC Sleeper", "23:15", 750, 1), bus("VRL", "AC Sleeper", "21:00", 1100, 12)]
 
 
 class NoMagicpin:  # nor a real magicpin page or EatSure API
@@ -849,3 +861,17 @@ def test_failed_apps_are_named_with_their_reason(tmp_path):
     b.swiggy, b.magicpin = FakeSwiggy(OFFERS), Blocked()
     r = b.handle({"channel": "app", "chat": "owner", "text": "veg biryani under 400"})
     assert r.startswith("Best options:") and "(magicpin: magicpin blocked the request from the server.)" in r
+
+
+def test_bus_request_searches_real_buses_and_picks_by_code(tmp_path):
+    m = Model(call("task_start", kind="bus", slots={"from": "Bangalore", "to": "Pondicherry", "date": "2099-10-24",
+                                                   "passengers": ["me", "mom"], "seat": "sleeper", "time_window": "night"}))
+    b = bot(tmp_path, m)
+    b.store.set_fact("traveller:mom", {"name": "Sunita"})
+    r = say(b, "Bus from Bangalore to Pondicherry on 24 Oct 2099 at night for me and mom, sleeper")
+    assert r.startswith("Buses Bangalore → Pondicherry, Sat 24 Oct:\n1. SRS, AC Sleeper (2+1): 22:30→06:00 (7h00m), "
+                        "₹899 (₹1798 for 2), 5 seats left, ★4.2\n2. VRL"), r  # Orange: 1 seat for 2; KSRTC: a seater
+    assert r.choices == ["1. SRS 22:30 ₹899", "2. VRL 21:00 ₹1100"]
+    r = say(b, "2")
+    assert r.startswith("VRL at 21:00, ₹1100 a seat. I can't book buses for you yet; book it on abhibus: "
+                        "https://www.abhibus.com/bus_search/Bangalore/7/Pondicherry/77/24-10-2099/O")

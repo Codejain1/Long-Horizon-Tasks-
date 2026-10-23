@@ -292,7 +292,7 @@ class Assistant:
         self.orders = food.Orders(chat=self._traced)
         self.magicpin = magicpin or food.MagicPin(chat=self._traced)
         self.eatsure = eatsure or food.EatSure()
-        self.rail = travel  # .station / .trains (tests replace it)
+        self.rail = self.bus = travel  # .station / .trains, .bus_city / .buses (tests replace them)
         self.extra_wait = float(os.environ.get("BOT_EXTRA_WAIT", "5"))  # s a slow app gets to join the first list
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
@@ -549,7 +549,7 @@ class Assistant:
             return self._need_login(chat, m[3].lower(), None)
         self._remember(chat, text)
         sess = self._session(chat)
-        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order", "trains"):
+        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order", "travel"):
             r = self._stage(chat, text, sess)
             if r is not None:
                 return r
@@ -787,12 +787,10 @@ class Assistant:
         m = re.fullmatch(r"\s*#?([1-3])\s*[,.]?\s*(link|cart|order|order it|for me|place it|place)?\s*[.!]?\s*", t, re.I)
         if n is None and m:
             n = int(m[1])
-        if st["mode"] == "trains":
+        if st["mode"] == "travel":  # a train or bus picked: booking for the owner isn't built, the link is
             self._end(chat)
             if n and n <= len(st["options"]):
-                o = st["options"][n - 1]
-                return (f"{o['name']} ({o['number']}), {o['class']} ₹{o['fare']:g} a seat, {o['status']}. I can't book "
-                        f"trains for you yet (IRCTC blocks the server); book it on ConfirmTkt: {st['link']}")
+                return f"{st['options'][n - 1]['pick']}. {st['tail']}"
             return None
         if st["mode"] == "ideas":
             self._end(chat)
@@ -1107,9 +1105,51 @@ class Assistant:
                          f"₹{o['fare']:g}{total}, {o['status']}{chance}")
         seen = min((o["as_of"] for o in top if o["as_of"]), default="")
         labels = [f"{n}. {o['name']} {o['class']} ₹{o['fare']:g}" for n, o in enumerate(top, 1)]
-        self._start(chat, "trains", 1, options=top, labels=labels, link=link, task=tid)
+        for o in top:
+            o["pick"] = f"{o['name']} ({o['number']}), {o['class']} ₹{o['fare']:g} a seat, {o['status']}"
+        self._start(chat, "travel", 1, options=top, labels=labels, task=tid,
+                    tail=f"I can't book trains for you yet (IRCTC blocks the server); book it on ConfirmTkt: {link}")
         return Reply(note + f"Trains {a['name']} → {b['name']}, {day:%a %d %b}:\n" + "\n".join(lines)
                      + (f"\n(Seats as ConfirmTkt last saw them, oldest {seen.replace('T', ' ')}.)" if seen else "")
+                     + "\nTap one (or reply its number).", labels)
+
+    def _buses(self, chat: str, slots: dict, tid: int | None) -> str:
+        """Real buses for the form from abhibus: enough seats for everyone, the seat and time asked, cheapest 3."""
+        from datetime import date
+        try:
+            day = date.fromisoformat(str(slots.get("date")))
+        except ValueError:
+            return f"I couldn't read the date '{slots.get('date')}'. Which day?"
+        self.notify(f"Looking for buses from {slots['from']} to {slots['to']} on {day:%a %d %b}…")
+        try:
+            a, b = self.bus.bus_city(str(slots["from"])), self.bus.bus_city(str(slots["to"]))
+            if not a or not b:
+                return f"I couldn't find {slots['from'] if not a else slots['to']} on abhibus."
+            found = self.bus.buses(a, b, day)
+        except Exception as e:
+            return f"abhibus didn't answer just now ({type(e).__name__}), so I couldn't search buses. Try again in a minute."
+        people = len(slots["passengers"]) if isinstance(slots.get("passengers"), list) else 1
+        top = travel.best_buses(found, slots.get("seat"), slots.get("time_window"), slots.get("max_price"), people)
+        if not top:
+            if tid:
+                B.finish(self.store, tid, "failed", "no bus fits", "abhibus")
+            asked = ", ".join(str(x) for x in (slots.get("seat"), slots.get("time_window")) if x)
+            return (f"{len(found)} buses run from {a['name']} to {b['name']} on {day:%a %d %b}, but none fits"
+                    + (f" ({asked}" + (f", under ₹{slots['max_price']:g}" if slots.get("max_price") else "") + ")"
+                       if asked or slots.get("max_price") else "") + " with seats for everyone.")
+        link = travel.bus_link(a, b, day)
+        lines, labels = [], []
+        for n, o in enumerate(top, 1):
+            h, m = divmod(o["minutes"], 60)
+            total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
+            star = f", ★{o['rating']}" if o["rating"] else ""
+            lines.append(f"{n}. {o['operator']}, {o['type']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m), ₹{o['fare']:g}{total}, "
+                         f"{o['seats']} seats left{star}")
+            labels.append(f"{n}. {o['operator']} {o['dep']} ₹{o['fare']:g}")
+            o["pick"] = f"{o['operator']} at {o['dep']}, ₹{o['fare']:g} a seat"
+        self._start(chat, "travel", 1, options=top, labels=labels, task=tid,
+                    tail=f"I can't book buses for you yet; book it on abhibus: {link}")
+        return Reply(f"Buses {a['name']} → {b['name']}, {day:%a %d %b}:\n" + "\n".join(lines)
                      + "\nTap one (or reply its number).", labels)
 
     def _booking_reply(self, chat: str, v: dict) -> str:
@@ -1132,5 +1172,7 @@ class Assistant:
             return self._compare(chat, r["slots"], tid)
         if v["kind"] == "train":
             return self._trains(chat, r["slots"], tid)
+        if v["kind"] == "bus":
+            return self._buses(chat, r["slots"], tid)
         return (f"Got it: {self._summary_line(r['slots'], v['kind'])}. Searching {'buses' if v['kind'] == 'bus' else v['kind'] + 's'} on the sites isn't built "
                 "yet, so I've saved it; food is the part that works end to end today.")
