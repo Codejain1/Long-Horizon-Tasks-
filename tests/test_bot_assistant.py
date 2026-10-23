@@ -1002,3 +1002,12 @@ def test_a_trip_said_in_passing_becomes_a_search_or_a_reminder(tmp_path):
                     "tickets? Say e.g. 'train to Goa on <date>'."]
     b.check_watches(lambda ch, chat, text: sent.append(text), now=t0 + 5 * 86400)
     assert len(sent) == 1  # once
+
+
+def test_travel_from_is_where_the_phone_is(tmp_path):
+    b = bot(tmp_path, Model(call("task_update", slots={"class": "3A"})))  # only the class answer reaches the model
+    b.store.set_fact("owner:location", {"lat": 12.97, "lng": 77.59, "area": "Indiranagar", "city": "Bangalore"}, "app")
+    say(b, "I am going to Chennai on 2 nov 2099 for a wedding")
+    r = say(b, "🚆 Train")
+    assert r == "Which class (SL, 3A, 2A, 1A)?"  # not "From where?": the phone says Bangalore
+    assert say(b, "3A").startswith("Trains KSR Bengaluru → MGR Chennai Ctr")

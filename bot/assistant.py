@@ -1404,6 +1404,10 @@ class Assistant:
                 slot = p.split(":")[0]
                 asks.insert(0, ASK.get(slot, f"What's the {slot}?") if "who they are" in p or "not a" in p else p + ".")
             return " ".join(dict.fromkeys(asks))
+        here = self.store.fact("owner:location")
+        city = (here["value"].get("city") if here and not here["stale"] else "") or ""
+        if "from" in v.get("missing", []) and city and v.get("kind") in ("train", "bus", "flight"):
+            return self._booking_reply(chat, B.update(self.store, v["task_id"], {"from": city}))  # from the phone
         if v.get("missing"):
             return " ".join(ASK.get(s, f"What's the {s.replace('_', ' ')}?") for s in v["missing"])
         # complete: searching is harmless, so no "go ahead?" (owner, 2026-10-23); a YES is asked only before paying
