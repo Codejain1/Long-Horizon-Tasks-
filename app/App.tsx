@@ -23,6 +23,9 @@ type Msg = { id: string; from: 'me' | 'bot'; text: string; choices?: string[]; c
 type Coords = { lat: number; lng: number } | null;
 
 const LINK = /(https?:\/\/[^\s]+)/g; // for split/replace
+// one tap to start: what the bot does well today (food by dish + budget, ideas from your orders, your location)
+const SUGGESTIONS = ['What should I eat?', 'Biryani under 300', 'Paneer wrap under 250', 'Masala dosa under 150', 'Where am I?'];
+const WORKING = /…$/; // the bot's progress notes ("Comparing … with reviews…"): the answer is still coming
 const IS_LINK = /^https?:\/\//; // for testing one part (a /g regex's .test() keeps state between calls)
 
 function Body({ text, mine }: { text: string; mine: boolean }) {
@@ -53,6 +56,15 @@ export default function App() {
   const list = useRef<FlatList<Msg>>(null);
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [listening, setListening] = useState(false);
+  const [waiting, setWaiting] = useState(false); // sent, no answer yet: show that the bot is working
+  const [dots, setDots] = useState('');
+
+  useEffect(() => {
+    if (!waiting) return;
+    const tick = setInterval(() => setDots((d) => (d.length >= 3 ? '' : d + '.')), 400);
+    const giveUp = setTimeout(() => setWaiting(false), 90000); // never spin forever
+    return () => { clearInterval(tick); clearTimeout(giveUp); };
+  }, [waiting]);
 
   // hold to talk: record while pressed, then the server turns it into text (Whisper) and handles it like typing
   const startTalk = async () => {
@@ -77,6 +89,7 @@ export default function App() {
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }); // replies play on the speaker
       const uri = recorder.uri;
       if (!uri) return;
+      setWaiting(true);
       const audio = await (await fetch(uri)).blob();
       const loc = await locate();
       const q = loc ? `?lat=${loc.lat}&lng=${loc.lng}` : '';
@@ -86,6 +99,7 @@ export default function App() {
       const { text } = await r.json();
       setMsgs((m) => [...m, { id: `v${Date.now()}`, from: 'me', text: text ? `🎤 ${text}` : "🎤 (didn't catch that, try again)" }]);
     } catch {
+      setWaiting(false);
       setMsgs((m) => [...m, { id: `e${Date.now()}`, from: 'bot', text: "Couldn't send the voice note. Is the tunnel running?" }]);
     }
   };
@@ -119,6 +133,7 @@ export default function App() {
           setOnline(true);
           if (events.length) {
             after.current = events[events.length - 1].id;
+            setWaiting(WORKING.test(events[events.length - 1].text.trim()));
             setMsgs((m) => [
               ...m,
               ...events.map((e: { id: number; text: string; choices?: string[]; cards?: Card[] }) => ({
@@ -146,11 +161,13 @@ export default function App() {
     setDraft('');
     Speech.stop();
     setMsgs((m) => [...m, { id: `m${Date.now()}`, from: 'me', text: t }]);
+    setWaiting(true);
     const location = await locate();
     try {
       const r = await fetch(`${URL}/messages`, { method: 'POST', headers, body: JSON.stringify({ text: t, location }) });
       if (!r.ok) throw new Error(String(r.status));
     } catch {
+      setWaiting(false);
       setMsgs((m) => [...m, { id: `e${Date.now()}`, from: 'bot', text: "Couldn't reach the assistant. Is the tunnel running?" }]);
     }
   };
@@ -173,6 +190,21 @@ export default function App() {
         keyExtractor={(m) => m.id}
         contentContainerStyle={styles.list}
         onContentSizeChange={() => list.current?.scrollToEnd({ animated: true })}
+        ListHeaderComponent={
+          <View style={[styles.bubble, styles.theirs]}>
+            <Text style={styles.text}>
+              Hi! Tell me a dish and a budget and I'll compare Swiggy, magicpin and EatSure near you. Tap an idea
+              below, type, or hold 🎤 to talk.
+            </Text>
+          </View>
+        }
+        ListFooterComponent={
+          waiting ? (
+            <View style={[styles.bubble, styles.theirs, styles.typing]}>
+              <Text style={styles.typingText}>Working on it{dots}</Text>
+            </View>
+          ) : undefined
+        }
         renderItem={({ item }) => (
           <View style={[styles.bubble, item.from === 'me' ? styles.mine : styles.theirs]}>
             {item.cards?.length ? (
@@ -180,7 +212,8 @@ export default function App() {
                 <Text style={styles.text}>{item.text.split('\n')[0]}</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.cards}>
                   {item.cards.map((c) => (
-                    <Pressable key={c.choice} style={styles.card} onPress={() => send(c.choice)}>
+                    <Pressable key={c.choice} style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+                      onPress={() => send(c.choice)}>
                       {c.image ? <Image source={{ uri: c.image }} style={styles.cardImage} /> : <View style={styles.cardImage} />}
                       <View style={styles.cardBody}>
                         <Text style={styles.cardTitle} numberOfLines={2}>
@@ -202,7 +235,8 @@ export default function App() {
             {item.choices && !item.cards?.length && item === last && (
               <View style={styles.choices}>
                 {item.choices.map((c) => (
-                  <Pressable key={c} style={styles.choice} onPress={() => send(c)}>
+                  <Pressable key={c} style={({ pressed }) => [styles.choice, pressed && styles.pressed]}
+                    onPress={() => send(c)}>
                     <Text style={styles.choiceText}>{c}</Text>
                   </Pressable>
                 ))}
@@ -211,6 +245,14 @@ export default function App() {
           </View>
         )}
       />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chips}
+        contentContainerStyle={styles.chipsRow} keyboardShouldPersistTaps="handled">
+        {SUGGESTIONS.map((q) => (
+          <Pressable key={q} style={({ pressed }) => [styles.chip, pressed && styles.pressed]} onPress={() => send(q)}>
+            <Text style={styles.chipText}>{q}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
       <View style={styles.composer}>
         <TextInput
           style={styles.input}
@@ -268,4 +310,11 @@ const styles = StyleSheet.create({
   send: { backgroundColor: '#1F6FEB', borderRadius: 20, paddingHorizontal: 16, justifyContent: 'center' },
   sendText: { color: '#fff', fontWeight: '700' },
   listening: { backgroundColor: '#D93025' },
+  pressed: { opacity: 0.55 },
+  typing: { backgroundColor: '#E9EEF6' },
+  typingText: { fontSize: 15, color: '#555', fontStyle: 'italic' },
+  chips: { flexGrow: 0, backgroundColor: '#fff', borderTopWidth: StyleSheet.hairlineWidth, borderColor: '#ddd' },
+  chipsRow: { paddingHorizontal: 10, paddingTop: 8, gap: 8 },
+  chip: { borderRadius: 16, backgroundColor: '#EEF3FC', paddingVertical: 7, paddingHorizontal: 12 },
+  chipText: { color: '#1F6FEB', fontSize: 14, fontWeight: '600' },
 });
