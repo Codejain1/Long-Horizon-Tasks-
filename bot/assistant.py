@@ -25,6 +25,7 @@ import brain
 import food
 import login
 import places
+import travel
 
 # a yes inside a longer answer ("Upi request and yes", live): a yes-word and no no-word
 YES_IN = re.compile(r"\b(yes|yep|yeah|haan|go ahead|confirm(ed)?|do it|sure|place it|order it)\b", re.I)
@@ -291,6 +292,7 @@ class Assistant:
         self.orders = food.Orders(chat=self._traced)
         self.magicpin = magicpin or food.MagicPin(chat=self._traced)
         self.eatsure = eatsure or food.EatSure()
+        self.rail = travel  # .station / .trains (tests replace it)
         self.extra_wait = float(os.environ.get("BOT_EXTRA_WAIT", "5"))  # s a slow app gets to join the first list
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
@@ -547,7 +549,7 @@ class Assistant:
             return self._need_login(chat, m[3].lower(), None)
         self._remember(chat, text)
         sess = self._session(chat)
-        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order"):
+        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order", "trains"):
             r = self._stage(chat, text, sess)
             if r is not None:
                 return r
@@ -785,6 +787,13 @@ class Assistant:
         m = re.fullmatch(r"\s*#?([1-3])\s*[,.]?\s*(link|cart|order|order it|for me|place it|place)?\s*[.!]?\s*", t, re.I)
         if n is None and m:
             n = int(m[1])
+        if st["mode"] == "trains":
+            self._end(chat)
+            if n and n <= len(st["options"]):
+                o = st["options"][n - 1]
+                return (f"{o['name']} ({o['number']}), {o['class']} ₹{o['fare']:g} a seat, {o['status']}. I can't book "
+                        f"trains for you yet (IRCTC blocks the server); book it on ConfirmTkt: {st['link']}")
+            return None
         if st["mode"] == "ideas":
             self._end(chat)
             if n and n <= len(st["ideas"]):
@@ -1061,6 +1070,48 @@ class Assistant:
         return f"{kind.title()}: " + ", ".join(f"{k.replace('_', ' ')} {' + '.join(map(str, v)) if isinstance(v, list) else v}"
                                                for k, v in slots.items())
 
+    def _trains(self, chat: str, slots: dict, tid: int | None) -> str:
+        """Real trains for the form: stations from the names, ConfirmTkt's fares and seats, the surest 3 by code."""
+        from datetime import date
+        try:
+            day = date.fromisoformat(str(slots.get("date")))
+        except ValueError:
+            return f"I couldn't read the date '{slots.get('date')}'. Which day?"
+        self.notify(f"Looking for trains from {slots['from']} to {slots['to']} on {day:%a %d %b}…")
+        try:
+            a, b = self.rail.station(str(slots["from"])), self.rail.station(str(slots["to"]))
+            if not a or not b:
+                return f"I couldn't find a railway station for {slots['from'] if not a else slots['to']}."
+            found = self.rail.trains(a["code"], b["code"], day)
+        except Exception as e:
+            return f"ConfirmTkt didn't answer just now ({type(e).__name__}), so I couldn't search trains. Try again in a minute."
+        people = len(slots["passengers"]) if isinstance(slots.get("passengers"), list) else 1
+        cls = travel.train_class(slots.get("class"))
+        top = travel.best(found, cls, slots.get("max_price"), people)
+        note = ""
+        if not top and cls:  # nothing bookable in that class: say so and show the others
+            top = travel.best(found, None, slots.get("max_price"), people)
+            note = f"Nothing bookable in {cls}" + (" within your budget" if slots.get("max_price") else "") + ". "
+        if not top:
+            if tid:
+                B.finish(self.store, tid, "failed", "no bookable train", "confirmtkt")
+            return (f"{len(found)} trains run from {a['name']} to {b['name']} on {day:%a %d %b}, but none has a "
+                    "bookable seat" + (" within your budget" if slots.get("max_price") else "") + ".")
+        link = travel.link(a["code"], b["code"], day)
+        lines = []
+        for n, o in enumerate(top, 1):
+            h, m = divmod(int(o["minutes"] or 0), 60)
+            chance = "" if o["status"].upper().startswith("AVL") or o["chance"] is None else f", {o['chance']}% chance to confirm"
+            total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
+            lines.append(f"{n}. {o['name']} {o['number']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m), {o['class']} "
+                         f"₹{o['fare']:g}{total}, {o['status']}{chance}")
+        seen = min((o["as_of"] for o in top if o["as_of"]), default="")
+        labels = [f"{n}. {o['name']} {o['class']} ₹{o['fare']:g}" for n, o in enumerate(top, 1)]
+        self._start(chat, "trains", 1, options=top, labels=labels, link=link, task=tid)
+        return Reply(note + f"Trains {a['name']} → {b['name']}, {day:%a %d %b}:\n" + "\n".join(lines)
+                     + (f"\n(Seats as ConfirmTkt last saw them, oldest {seen.replace('T', ' ')}.)" if seen else "")
+                     + "\nTap one (or reply its number).", labels)
+
     def _booking_reply(self, chat: str, v: dict) -> str:
         if "error" in v:
             return "Sorry: " + v["error"]
@@ -1079,5 +1130,7 @@ class Assistant:
         self._end(chat)
         if v["kind"] == "food":
             return self._compare(chat, r["slots"], tid)
+        if v["kind"] == "train":
+            return self._trains(chat, r["slots"], tid)
         return (f"Got it: {self._summary_line(r['slots'], v['kind'])}. Searching {'buses' if v['kind'] == 'bus' else v['kind'] + 's'} on the sites isn't built "
                 "yet, so I've saved it; food is the part that works end to end today.")

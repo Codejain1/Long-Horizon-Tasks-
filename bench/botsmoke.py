@@ -143,6 +143,8 @@ def main() -> int:
                     return []
             bot = A.Assistant(home / "h", store, post=down, logins=NoBrowserLogin(), swiggy=NoBrowserSwiggy(),
                               magicpin=NoBrowserMagicpin(), eatsure=NoBrowserMagicpin())
+            bot.rail = type("NoRail", (), {"station": lambda self, n: {"code": "X", "name": n, "city": n},
+                                            "trains": lambda self, a, b, d: []})()  # nor real ConfirmTkt
             bot.reviews = lambda restaurant: None  # nor Google Maps
             store.set_fact("owner:phone", "9800000001")
             t = time.time()

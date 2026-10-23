@@ -53,7 +53,26 @@ def bot(tmp_path, model, post=memory_ok, nearby=None):
     b.geoplace = lambda name: {"lat": 12.935, "lng": 77.624, "area": "Koramangala", "city": "Bengaluru"}
     b._memory_location = lambda: None
     b.magicpin, b.eatsure = NoMagicpin(), NoMagicpin()
+    b.rail = FakeRail()  # nor real ConfirmTkt
     return b
+
+
+class FakeRail:
+    """Trains as travel.trains returns them (shapes seen live on ConfirmTkt, 2026-10-23)."""
+    def station(self, name):
+        return {"bangalore": {"code": "SBC", "name": "KSR Bengaluru", "city": "Bengaluru"},
+                "chennai": {"code": "MAS", "name": "MGR Chennai Ctr", "city": "Chennai"}}.get(name.lower())
+
+    def trains(self, frm, to, day):
+        self.asked = (frm, to, day)
+        c = lambda fare, status, chance=100: {"fare": fare, "status": status, "chance": chance,  # noqa: E731
+                                              "as_of": "2026-10-23T16:30"}
+        return [{"number": "12007", "name": "Shatabdi Express", "dep": "06:00", "arr": "11:00", "minutes": 300,
+                 "from": "SBC", "to": "MAS", "classes": {"CC": c(895, "AVL 40"), "EC": c(1720, "AVL 3")}},
+                {"number": "12658", "name": "Chennai Mail", "dep": "22:40", "arr": "04:30", "minutes": 350,
+                 "from": "SBC", "to": "MAS", "classes": {"SL": c(315, "AVL 120"), "3A": c(805, "WL 12", 64)}},
+                {"number": "12610", "name": "Mys Mas Exp", "dep": "14:30", "arr": "20:30", "minutes": 360,
+                 "from": "SBC", "to": "MAS", "classes": {"3A": c(790, "AVL 8"), "2A": c(1110, "Regret", 0)}}]
 
 
 class NoMagicpin:  # nor a real magicpin page or EatSure API
@@ -81,9 +100,15 @@ def test_booking_conversation_runs_in_code(tmp_path):
     assert m.seen[0][1] is A.DECIDE  # forced JSON, no tool calling
     r = say(b, "3A")
     assert m.seen[1][1] is A.UPDATE
-    # complete: no "Go ahead? (YES / no)" (owner, 2026-10-23); travel search isn't built, said plainly
-    assert r.startswith("Got it: Train:") and "class 3A" in r and "passengers Kartik" in r and "isn't built" in r
+    # complete: no "Go ahead? (YES / no)" (owner, 2026-10-23); real trains, searched by code (no model call)
+    assert r.startswith("Trains KSR Bengaluru → MGR Chennai Ctr, Mon 02 Nov:\n1. Mys Mas Exp 12610: 14:30→20:30 "
+                        "(6h00m), 3A ₹790, AVL 8\n2. Chennai Mail 12658: 22:40→04:30 (5h50m), 3A ₹805, WL 12, 64% "
+                        "chance to confirm"), r  # a confirmed seat first; Regret and other classes left out
+    assert "(Seats as ConfirmTkt last saw them, oldest 2026-10-23 16:30.)" in r and r.choices[0] == "1. Mys Mas Exp 3A ₹790"
     assert b.store.task(1)["status"] == "confirmed" and b._pending("c1") is None and len(m.seen) == 2
+    r = say(b, "1. Mys Mas Exp 3A ₹790")  # the tap
+    assert r.startswith("Mys Mas Exp (12610), 3A ₹790 a seat, AVL 8.") and \
+        "https://www.confirmtkt.com/rbooking-d/trains/from/SBC/to/MAS/02-11-2099" in r
 
 
 def test_no_cancels_and_new_request_replaces_pending(tmp_path):
