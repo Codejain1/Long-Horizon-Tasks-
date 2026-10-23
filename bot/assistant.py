@@ -270,7 +270,7 @@ def ground(store: B.Store, kind: str, text: str, slots: dict, earlier: str = "")
 
 class Assistant:
     def __init__(self, home: Path, store: B.Store, memory_url: str = "http://127.0.0.1:8765", chat=brain.chat,
-                 post=_post, nearby=places.nearby_food, swiggy=None, logins=None):
+                 post=_post, nearby=places.nearby_food, swiggy=None, logins=None, magicpin=None):
         self.home, self.store, self.mem, self.post, self.nearby = Path(home), store, memory_url, post, nearby
         self.model, self.local = chat, threading.local()
         self.chat = self._traced  # every model call goes through the trace
@@ -278,7 +278,8 @@ class Assistant:
         self.think = os.environ.get("BOT_THINK", "0") == "1"  # Qwen reasoning for routing (A/B in botsmoke)
         self.login = logins or login.Login()
         self.orders = food.Orders(chat=self._traced)
-        self.magicpin = food.MagicPin(chat=self._traced)
+        self.magicpin = magicpin or food.MagicPin(chat=self._traced)
+        self.extra_wait = float(os.environ.get("BOT_EXTRA_WAIT", "5"))  # s a slow app gets to join the first list
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS log (ts REAL, channel TEXT, chat TEXT, role TEXT, text TEXT)")
@@ -733,7 +734,12 @@ class Assistant:
         return Reply("\n".join(f"{n}. {i['dish']} — {i['why']}" for n, i in enumerate(ideas, 1))
                      + "\nTap one (or reply its number) and I'll compare it across the food apps, with reviews.", labels)
 
-    ACTIONS = {"link": "Send me the link", "cart": "Add to my Swiggy cart", "order": "Order it for me"}
+    ACTIONS = {"link": "Send me the link", "cart": "Add to my {app} cart", "order": "Order it for me"}
+
+    def _acts(self, offer: dict) -> list[str]:
+        """What the bot can do with this option on its app: always the link; cart / order where that app supports it."""
+        can = food.PLATFORMS.get(offer.get("platform"), {}).get("can", [])
+        return ["link"] + [a for a in ("cart", "order") if a in can and (a != "order" or ORDERING)]
 
     def _stage(self, chat: str, text: str, st: dict) -> str | None:
         """The owner answering choices the bot sent (a tap arrives as the choice's text; a number works too) or a
@@ -749,7 +755,8 @@ class Assistant:
             return None
         if st["mode"] == "act":
             # the button's text or a short answer only: "order veg biryani under 400" is a new request, not "order it"
-            how = next((k for k, label in self.ACTIONS.items() if t.lower() == label.lower() or
+            app = food.PLATFORMS.get(st["offer"].get("platform"), {}).get("label", "")
+            how = next((k for k, label in self.ACTIONS.items() if t.lower() == label.format(app=app).lower() or
                         re.fullmatch(rf"(send (me )?the |the |a )?{k}( it| me| please)?[.!]?", t, re.I)), None)
             self._end(chat)
             return self._choose(chat, st["offer"], how, st.get("task")) if how else None
@@ -768,47 +775,59 @@ class Assistant:
             if how:  # "1 link" typed in one go
                 self._end(chat)
                 return self._choose(chat, offer, how, st.get("task"))
-            acts = ["link", "cart"] + (["order"] if ORDERING else [])
             self._start(chat, "act", 1, offer=offer, task=st.get("task"))
-            return Reply(f"{offer['item']} from {offer['restaurant']}, ₹{offer['price']:g}. What should I do?",
-                         [self.ACTIONS[a] for a in acts])
+            app = food.PLATFORMS.get(offer.get("platform"), {}).get("label", offer.get("platform", ""))
+            return Reply(f"{offer['item']} from {offer['restaurant']}, ₹{offer['price']:g} on {app}. What should I do?",
+                         [self.ACTIONS[a].format(app=app) for a in self._acts(offer)])
         self._end(chat)
         return None
 
+    def apps(self) -> dict:
+        """Every connected food app (PLATFORMS verified), by name."""
+        have = {"swiggy": self.swiggy, "magicpin": self.magicpin}
+        return {n: have[n] for n, p in food.PLATFORMS.items() if p["verified"] and n in have}
+
     def _compare(self, chat: str, slots: dict, tid: int | None) -> str:
         dish = slots["dish"][0] if isinstance(slots.get("dish"), list) else slots.get("dish", "")
-        apps = {name: self.swiggy for name, p in food.PLATFORMS.items() if p["verified"] and name == "swiggy"}
+        apps = self.apps()
+        label = lambda n: food.PLATFORMS[n]["label"]  # noqa: E731
         asked = next((n for n in food.PLATFORMS if tid and n in str(self.store.task(tid).get("site") or "")), None)
         note = ""
         if asked and asked not in apps:  # live: "on Zomato" was searched on Swiggy without a word
-            note = (f"{asked.title()} isn't connected to me yet (it blocks the server or I haven't checked its pages), "
-                    f"so here's {', '.join(a.title() for a in apps)}.\n")
+            note = (f"{label(asked)} isn't connected to me yet (it blocks the server or I haven't checked its pages), "
+                    f"so here's {', '.join(map(label, apps))}.\n")
         near = slots.get("near")
         place = self.geoplace(near) if near else None
-        self.swiggy.where = place or self._where() or self._memory_location()
+        where = place or self._where() or self._memory_location()
+        for app in apps.values():
+            app.where = where
         self.store.set_fact(f"request:{chat}", {k: v for k, v in {"dish": dish, "max_total": slots.get("max_total"),
                                                                   "near": near, "diet": slots.get("diet")}.items() if v},
                             "owner", ttl_h=2)
-        self.notify(f"Comparing {dish} on {', '.join(apps)}, with reviews…")
+        names = [label(n) for n in apps]
+        self.notify(f"Comparing {dish} on {' and '.join([', '.join(names[:-1]), names[-1]] if len(names) > 1 else names)}"
+                    ", with reviews…")
         said = f"{slots.get('diet', '')} {dish}".lower()
         veg = bool(re.search(r"\bveg(etarian)?\b", said)) and not re.search(r"non[- ]?veg", said)
-        try:
-            top, failed = food.compare(dish, apps, slots.get("max_total"), veg)
-        except food.NothingHere as e:
-            v = self.swiggy.where or {}
-            near = ", ".join(x for x in dict.fromkeys((v.get("area"), v.get("city"))) if x)  # not "Jaito, Jaito"
-            return str(e).replace("where you are now", f"near {near}" if near else "where you are now")
-        except food.LoggedOut:
+        r = food.compare(dish, apps, slots.get("max_total"), veg, extra_wait=self.extra_wait)
+        top, failed = r["top"], r["failed"]
+        if not top and "swiggy" in r["logged_out"]:
             return self._need_login(chat, "swiggy", {"do": "compare", "slots": slots, "task": tid})
-        except (food.NotReady, food.cdp.Blocked) as e:
-            return str(e)
-        if not top and failed and len(failed) == len(apps):
-            return f"{', '.join(a.title() for a in failed)} didn't load just now, so I couldn't compare. Try again in a minute."
+        if not top and r["late"]:  # the slow apps may still find it: their results come as their own message
+            self._follow_up(dish, slots.get("max_total"), veg, [], r["late"])
+            return f"Nothing yet on {', '.join(label(n) for n in apps if n not in r['late'])}; still checking " \
+                   f"{', '.join(map(label, r['late']))}…"
+        if not top and r["why"]:
+            v = where or {}
+            near = ", ".join(x for x in dict.fromkeys((v.get("area"), v.get("city"))) if x)  # not "Jaito, Jaito"
+            return " ".join(r["why"].values()).replace("where you are now", f"near {near}" if near else "where you are now")
+        if not top and failed:
+            return f"{', '.join(map(label, failed))} didn't load just now, so I couldn't compare. Try again in a minute."
         if not top:
             if tid:
-                B.finish(self.store, tid, "failed", f"no {dish} found", "swiggy")
+                B.finish(self.store, tid, "failed", f"no {dish} found", ",".join(apps))
             budget = f" under ₹{slots['max_total']:g}" if slots.get("max_total") else ""
-            return f"I couldn't find {dish}{budget} on {', '.join(apps)} right now. Want something else?"
+            return f"I couldn't find {dish}{budget} on {', '.join(map(label, apps))} right now. Want something else?"
         t0 = time.time()
         self._add_reviews(top)
         self._step("reviews", ms=int(1000 * (time.time() - t0)), n=len(top))
@@ -820,12 +839,15 @@ class Assistant:
             rev = (f" · Google ★{g['rating']:g} ({g['reviews']:g}): +{', '.join(g['liked'][:2])}"
                    + (f"; −{g['disliked'][0]}" if g.get("disliked") else "")) if g else ""
             lines.append(f"{n}. {o['item']} — {o['restaurant']}" + (f" ({o['area']})" if o.get("area") else "")
-                         + f" — ₹{o['price']:g} on {o['platform'].title()}"
+                         + f" — ₹{o['price']:g} on {label(o['platform']) if o['platform'] in food.PLATFORMS else o['platform']}"
                          + (f" ★{o['rating']}" if o.get("rating") else "") + (f" ({o['eta']})" if o.get("eta") else "")
                          + rev)
-        tail = f"\n(Couldn't read {', '.join(failed)} this time.)" if failed else ""
-        self._follow_up(dish, slots.get("max_total"), veg, top)
-        cards = [{"choice": lab, "title": o["item"], "subtitle": o["restaurant"] + (f" · {o['area']}" if o.get("area") else ""),
+        tail = f"\n(Couldn't read {', '.join(map(label, failed))} this time.)" if failed else ""
+        if r["late"]:
+            tail += f"\n(Still checking {', '.join(map(label, r['late']))}: I'll send anything cheaper.)"
+            self._follow_up(dish, slots.get("max_total"), veg, top, r["late"])
+        cards = [{"choice": lab, "title": o["item"], "subtitle": o["restaurant"] + (f" · {o['area']}" if o.get("area") else "")
+                  + f" · {label(o['platform']) if o['platform'] in food.PLATFORMS else o['platform']}",
                   "price": f"₹{o['price']:g}", "rating": o.get("rating") or "", "image": o.get("image") or "",
                   "note": (f"Google ★{o['google']['rating']:g}: " + ", ".join(o["google"]["liked"][:2])) if o.get("google") else "",
                   "veg": o.get("veg")} for lab, o in zip(labels, top)]
@@ -922,28 +944,28 @@ class Assistant:
                              daemon=True).start()
         return len(rows)
 
-    def _follow_up(self, dish: str, max_total, veg: bool, swiggy_top: list) -> None:
-        """magicpin is slower (page reading): its best options come as a second message, compared with Swiggy's."""
-        if not food.PLATFORMS["magicpin"]["verified"] or not self.swiggy.where:
-            return
-        send, where = self.notify, self.swiggy.where
-        best = min((float(o["price"]) for o in swiggy_top), default=None)
+    def _follow_up(self, dish: str, max_total, veg: bool, shown: list, late: dict) -> None:
+        """Apps still searching after the first answer (page reading is slower): when each finishes, its best options
+        come as their own message, but only those cheaper than what was shown (or anything, if nothing was)."""
+        send = self.notify
+        best = min((float(o["price"]) for o in shown), default=None)
 
-        def run():
+        def run(name, future):
             try:
-                self.magicpin.where = where
-                top = food.pick(self.magicpin.search(dish), max_total, veg, 2, dish)
+                future.result(timeout=90)
             except Exception:
-                return  # a bonus: never an error message for a follow-up
+                pass
+            top = food.pick(food.collect(name, future, dish), max_total, veg, 2, dish)
+            if best is not None:
+                top = [o for o in top if float(o["price"]) < best]
             if not top:
-                return
-            lines = []
-            for o in top:
-                cheaper = (f" (₹{best - float(o['price']):g} less than Swiggy's best)"
-                           if best is not None and float(o["price"]) < best else "")
-                lines.append(f"• {o['item']} — {o['restaurant']} — ₹{float(o['price']):g}{cheaper}")
-            send("Also on magicpin:\n" + "\n".join(lines) + f"\n{top[0]['link']}")
-        threading.Thread(target=run, daemon=True).start()
+                return  # a bonus: never an error message for a follow-up
+            app = food.PLATFORMS[name]["label"]
+            lines = [f"• {o['item']} — {o['restaurant']} — ₹{float(o['price']):g}"
+                     + (f" (₹{best - float(o['price']):g} less)" if best is not None else "") for o in top]
+            send(f"Also on {app}:\n" + "\n".join(lines) + f"\n{top[0]['link']}")
+        for name, future in late.items():
+            threading.Thread(target=run, args=(name, future), daemon=True).start()
 
     def _memory_location(self) -> dict | None:
         """The last location shared on WhatsApp (memory), when the phone hasn't sent one."""
@@ -979,14 +1001,16 @@ class Assistant:
 
     def _choose(self, chat: str, offer: dict, how: str, tid: int | None) -> str:
         self._end(chat)
-        if re.search(r"\b(order|for me|place)\b", how, re.I) and offer.get("platform") == "swiggy":
+        acts = self._acts(offer)
+        if re.search(r"\b(order|for me|place)\b", how, re.I) and "cart" in acts:
             if not ORDERING:
                 return (self._add_to_cart(chat, tid, offer) + "\n(Ordering for you is paused until I've verified the "
                         "payment step on a real Swiggy checkout with you, so I filled the cart instead.)")
             return self._prepare_order(chat, offer, tid)
-        if re.search(r"\bcart\b", how, re.I) and offer.get("platform") == "swiggy":
+        if re.search(r"\bcart\b", how, re.I) and "cart" in acts:
             return self._add_to_cart(chat, tid, offer)
-        return f"Here's {offer['item']} from {offer['restaurant']} on {offer['platform'].title()}: {offer.get('link')}"
+        app = food.PLATFORMS.get(offer.get("platform"), {}).get("label", offer.get("platform", ""))
+        return f"Here's {offer['item']} from {offer['restaurant']} on {app}: {offer.get('link')}"
 
     def _add_to_cart(self, chat: str, tid, offer: dict) -> str:
         self.notify(f"Adding {offer['item']} from {offer['restaurant']} to your Swiggy cart…")

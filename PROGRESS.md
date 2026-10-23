@@ -87,6 +87,24 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Every food app in one comparison (2026-10-23, owner: "why is the whole process still around Swiggy")
+Built locally and tested. **Not deployed yet**: AWS login expired.
+- **One shape for every app.** `food.PLATFORMS` says what the bot can do on each app (`can`: search / link / cart /
+  order) and whether it answers in seconds (`fast`: a data feed) or not (page read by the model).
+  - Connected now: Swiggy (search, link, cart, order) and magicpin (search, link).
+  - Zomato is still blocked from the server; EatClub has no web search.
+- **One list.** `food.compare` searches every connected app at once, at the owner's location.
+  - Fast apps are waited for. Slow apps get 5 s more (`BOT_EXTRA_WAIT`) to join the list.
+  - Anything later arrives as its own "Also on <app>" message, sent only if it's cheaper than what was shown.
+  - One app failing, logged out or empty no longer stops the others.
+- **Buttons per app.** Options show which app they're on. The action buttons offer only what that app supports:
+  "Add to my Swiggy cart" appears on Swiggy options; a magicpin option gets "Send me the link".
+- **Tests:** 275 pass. New tests cover one list across apps, a slow app following up only when cheaper, and one app
+  failing without stopping the others.
+- **Still to do:**
+  - EatSure: probe its pages on the server, then add it (`/v1/api/get_restaurants` seen).
+  - Real-model botsmoke and deploy, after `aws login`.
+
 ## Conversation keeps its thread; the food path is code (2026-10-23)
 **Owner: "it is not remembering anything, taking every request as new."** The live chat showed:
 - "where am I" answered "Whitefield" 4x: the model repeated its own old answer;
@@ -651,6 +669,8 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-23: slow food apps (magicpin takes about 21 s) get 5 s to join the first list, then follow up. The
+  first answer stays fast (Swiggy takes about 5 s), and a later result is sent only if it's cheaper.
 - 2026-10-23: Qwen reasoning stays off for routing. Measured on the real model (botsmoke, 2 reps), reasoning on vs off:
   - test2: 35/40 vs 40/40;
   - test3: 16/20 vs 20/20;
@@ -700,6 +720,7 @@ The coding-ticket benchmarks are no longer the target.
   score ≥ 0.5, at most 3.
 
 ## Open questions
+- **Zomato needs a home connection:** the owner hasn't chosen between an always-on machine at home and their Mac.
 - **UPI request reachability:** NPCI stopped person-to-person UPI collect requests in 2025. Merchant checkouts that
   take a UPI ID likely still work, but some sites offer only QR or app intent. Check per site in rehearsals.
 - **Logins:** IRCTC, Swiggy, Zomato and Uber need OTP logins, which Hermes must not enter. Default: the owner logs in

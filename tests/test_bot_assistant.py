@@ -52,7 +52,15 @@ def bot(tmp_path, model, post=memory_ok, nearby=None):
     b.geocode = lambda lat, lng: {"area": "Kotkapura", "city": "Faridkot"}  # nor a real map service
     b.geoplace = lambda name: {"lat": 12.935, "lng": 77.624, "area": "Koramangala", "city": "Bengaluru"}
     b._memory_location = lambda: None
+    b.magicpin = NoMagicpin()
     return b
+
+
+class NoMagicpin:  # nor a real magicpin page
+    where = None
+
+    def search(self, dish):
+        return []
 
 
 REVIEW = {"rating": 4.4, "reviews": 1200, "liked": ["great taste", "big portions"], "disliked": ["slow delivery"]}
@@ -227,7 +235,7 @@ def test_food_order_goes_straight_to_options_then_taps(tmp_path):
     b.swiggy = sw
     notes = []
     r = b.handle({"channel": "whatsapp", "chat": "c1", "text": "order veg biryani under 400"}, notify=notes.append)
-    assert notes == ["Comparing veg biryani on swiggy, with reviews…"]  # no "go ahead?"; the dish read by code
+    assert notes == ["Comparing veg biryani on Swiggy and magicpin, with reviews…"]  # no "go ahead?"; the dish read by code
     lines = r.splitlines()
     assert lines[1] == ("1. Veg Biryani — Paradise — ₹249 on Swiggy ★4.3 (40 MINS) · Google ★4.4 (1200): "
                         "+great taste, big portions; −slow delivery")
@@ -630,29 +638,47 @@ def test_the_phones_location_comes_first_and_drives_the_search(tmp_path):
     assert r == "Swiggy shows nothing for dosa near Kotkapura, Faridkot; it may not deliver there."
 
 
-def test_magicpin_follows_up_after_swiggy_with_the_saving(tmp_path):
+class Mp:
+    where, delay = None, 0
+
+    def search(self, dish):
+        import time as _t
+        _t.sleep(self.delay)
+        return [{"restaurant": "Biryani Pot", "item": "Veg Biryani", "price": 218, "platform": "magicpin",
+                 "link": "https://magicpin.in/x"}]
+
+
+def test_every_app_in_one_list_when_it_answers_in_time(tmp_path):
+    m = Model(call("task_start", kind="food", slots={"dish": "veg biryani", "max_total": 400}))
+    b = bot(tmp_path, m)
+    b.swiggy, b.magicpin = FakeSwiggy(OFFERS), Mp()
+    r = b.handle({"channel": "app", "chat": "owner", "text": "veg biryani under 400",
+                  "location": {"lat": 12.91, "lng": 77.64}})
+    assert r.startswith("Best options:\n1. Veg Biryani — Biryani Pot — ₹218 on magicpin")  # cheapest first, any app
+    assert "on Swiggy" in r and b.magicpin.where["lat"] == 12.91  # every app searched at the owner's location
+    assert [c["subtitle"].split(" · ")[-1] for c in r.cards][:1] == ["magicpin"]
+    r = b.handle({"channel": "app", "chat": "owner", "text": "1"})
+    assert r.choices == ["Send me the link"]  # magicpin: no cart or ordering through the bot
+    assert b.handle({"channel": "app", "chat": "owner", "text": "Send me the link"}) == \
+        "Here's Veg Biryani from Biryani Pot on magicpin: https://magicpin.in/x"
+
+
+def test_a_slow_app_follows_up_only_when_cheaper(tmp_path):
     import time as _t
     m = Model(call("task_start", kind="food", slots={"dish": "veg biryani", "max_total": 400}))
     b = bot(tmp_path, m)
-    b.swiggy = FakeSwiggy(OFFERS)
-
-    class Mp:
-        where = None
-
-        def search(self, dish):
-            return [{"restaurant": "Biryani Pot", "item": "Veg Biryani", "price": 218, "platform": "magicpin",
-                     "link": "https://magicpin.in/x"}]
-    b.magicpin = Mp()
+    b.swiggy, b.magicpin, b.extra_wait = FakeSwiggy(OFFERS), Mp(), 0.05
+    b.magicpin.delay = 0.4
     notes = []
     r = b.handle({"channel": "app", "chat": "owner", "text": "veg biryani under 400",
                   "location": {"lat": 12.91, "lng": 77.64}}, notify=notes.append)
-    assert r.startswith("Best options:")  # Swiggy first, at once
-    end = _t.time() + 2
+    assert r.startswith("Best options:") and "magicpin" not in r.split("\n(")[0]  # Swiggy at once
+    assert "Still checking magicpin" in r
+    end = _t.time() + 3
     while _t.time() < end and not any(n.startswith("Also on magicpin") for n in notes):
         _t.sleep(0.02)
     follow = [n for n in notes if n.startswith("Also on magicpin")][0]
-    assert "Veg Biryani — Biryani Pot — ₹218 (₹31 less than Swiggy's best)" in follow and "https://magicpin.in/x" in follow
-
+    assert "Veg Biryani — Biryani Pot — ₹218 (₹31 less)" in follow and "https://magicpin.in/x" in follow
 
 
 def test_replay_of_the_live_chat_of_2026_10_23_keeps_the_thread(tmp_path):

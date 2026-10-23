@@ -136,7 +136,13 @@ def main() -> int:
 
                 def add(self, offer):
                     raise AssertionError("never")
-            bot = A.Assistant(home / "h", store, post=down, logins=NoBrowserLogin(), swiggy=NoBrowserSwiggy())
+            class NoBrowserMagicpin:
+                where = None
+
+                def search(self, dish):
+                    return []
+            bot = A.Assistant(home / "h", store, post=down, logins=NoBrowserLogin(), swiggy=NoBrowserSwiggy(),
+                              magicpin=NoBrowserMagicpin())
             bot.reviews = lambda restaurant: None  # nor Google Maps
             store.set_fact("owner:phone", "9800000001")
             t = time.time()

@@ -143,10 +143,26 @@ def test_compare_across_apps_keeps_each_app_and_reports_failures():
                 raise RuntimeError("page changed")
             return self.offers
     same = {"restaurant": "Paradise", "item": "Veg Biryani"}
-    top, failed = F.compare("veg biryani", {"swiggy": App([{**same, "price": 249}]), "zomato": App([{**same, "price": 239}]),
-                                            "magicpin": App(boom=True)})
-    assert [(o["platform"], o["price"]) for o in top] == [("zomato", 239), ("swiggy", 249)]
-    assert failed == ["magicpin"] and top[0]["link"].startswith("https://www.zomato.com/bangalore/")
+    r = F.compare("veg biryani", {"swiggy": App([{**same, "price": 249}]), "zomato": App([{**same, "price": 239}]),
+                                  "magicpin": App(boom=True)})
+    assert [(o["platform"], o["price"]) for o in r["top"]] == [("zomato", 239), ("swiggy", 249)]
+    assert r["failed"] == ["magicpin"] and r["top"][0]["link"].startswith("https://www.zomato.com/bangalore/")
+
+
+def test_one_app_with_nothing_or_logged_out_never_stops_the_others():
+    class App:
+        def __init__(self, offers=None, boom=None):
+            self.offers, self.boom = offers or [], boom
+
+        def search(self, dish):
+            if self.boom:
+                raise self.boom
+            return self.offers
+    r = F.compare("dosa", {"swiggy": App(boom=F.NothingHere("Swiggy shows nothing for dosa")),
+                           "zomato": App([{"restaurant": "MTR", "item": "Masala Dosa", "price": 120}]),
+                           "magicpin": App(boom=F.LoggedOut("login"))})
+    assert [o["restaurant"] for o in r["top"]] == ["MTR"]
+    assert r["empty"] == ["swiggy"] and r["logged_out"] == ["magicpin"] and "swiggy" in r["why"]
 
 
 class PayTab:

@@ -18,12 +18,18 @@ import login
 
 # Every app the comparison may use. An app runs only once its real search page has been checked ("verified"):
 # guessing how outside sites look was the main source of bugs (PROGRESS 2026-10-22).
+# can: what the bot can do there (search / link / cart / order); fast: answers in seconds (a data feed) or not (the
+# page is read by the model): slow apps get a short extra wait, then follow as their own message.
 PLATFORMS = {
-    "swiggy": {"search": "https://www.swiggy.com/search?query={q}", "verified": True},
-    "zomato": {"search": "https://www.zomato.com/{city}/delivery?q={q}", "verified": False},
+    "swiggy": {"search": "https://www.swiggy.com/search?query={q}", "verified": True, "label": "Swiggy",
+               "can": ["search", "link", "cart", "order"], "fast": True},
+    "zomato": {"search": "https://www.zomato.com/{city}/delivery?q={q}", "verified": False, "label": "Zomato",
+               "can": [], "fast": False},  # Access Denied to the server's data-centre IP, even in real Chrome
     # checked live 2026-10-23: the search page carries the dishes and prices in its text, at the given location
-    "magicpin": {"search": "https://magicpin.in/{city}/search?query={q}&latitude={lat}&longitude={lng}", "verified": True},
-    "eatclub": {"search": "https://www.eatclub.in/search?q={q}", "verified": False},
+    "magicpin": {"search": "https://magicpin.in/{city}/search?query={q}&latitude={lat}&longitude={lng}", "verified": True,
+                 "label": "magicpin", "can": ["search", "link"], "fast": False},
+    "eatclub": {"search": "https://www.eatclub.in/search?q={q}", "verified": False, "label": "EatClub", "can": [],
+                "fast": False},  # no search on the website (app-only)
 }
 MAPS = "https://www.google.com/maps/search/{q}"
 REVIEWS_SCHEMA = {"type": "object", "properties": {
@@ -180,6 +186,8 @@ def pick(offers: list[dict], max_total=None, veg: bool = False, n: int = 3, dish
 
 
 class Swiggy:
+    name = "swiggy"
+
     def __init__(self, tab=cdp.Tab, chat=brain.chat, captures=None):
         """captures: a folder where a page the bot couldn't read is saved, to test the fix on the real page.
         where: the owner's location {"lat", "lng"} for searches (set by the assistant from the phone)."""
@@ -322,24 +330,60 @@ def google_reviews(restaurant: str, area: str = "", tab=cdp.Tab, chat=brain.chat
             t.close()
 
 
-def compare(dish: str, apps: dict, max_total=None, veg: bool = False, n: int = 3) -> tuple[list[dict], list[str]]:
-    """The dish on every verified app, in parallel -> (best n by price within budget, apps that failed).
-    apps: name -> object with .search(dish)."""
+def compare(dish: str, apps: dict, max_total=None, veg: bool = False, n: int = 3, extra_wait: float = 5) -> dict:
+    """The dish on every connected app at once. Fast apps are waited for; slow ones get `extra_wait` more seconds to
+    join the list, else they keep running and come back in "late" (the assistant sends them as a follow-up).
+    One app failing never stops the others. -> {"top", "failed", "empty", "logged_out", "why": {name: message},
+    "late": {name: future}}"""
     import contextvars
-    from concurrent.futures import ThreadPoolExecutor
-    found, failed = [], []
-    with ThreadPoolExecutor(len(apps) or 1) as pool:  # each search runs in the turn's context: its steps get timed
-        futures = {name: pool.submit(contextvars.copy_context().run, app.search, dish) for name, app in apps.items()}
-        for name, f in futures.items():
-            try:
-                for o in f.result(timeout=90):
-                    link = o.get("link") or PLATFORMS[name]["search"].format(q=urllib.parse.quote(dish), city="bangalore")
-                    found.append({**o, "platform": o.get("platform", name), "link": link})
-            except NotReady:
-                raise
-            except Exception:
-                failed.append(name)
-    return pick(found, max_total, veg, n, dish), failed
+    import time as _t
+    from concurrent.futures import ThreadPoolExecutor, wait
+    pool = ThreadPoolExecutor(max(1, len(apps)))
+    futures = {name: pool.submit(contextvars.copy_context().run, app.search, dish) for name, app in apps.items()}
+    pool.shutdown(wait=False)  # slow searches may outlive this call
+    fast = [f for name, f in futures.items() if PLATFORMS.get(name, {}).get("fast", True)]
+    wait(fast, timeout=90)
+    slow = [f for name, f in futures.items() if not PLATFORMS.get(name, {}).get("fast", True)]
+    if slow:
+        wait(slow, timeout=extra_wait if fast else 60)
+    out = {"found": [], "failed": [], "empty": [], "logged_out": [], "why": {}, "late": {}}
+    for name, f in futures.items():
+        if not f.done():
+            out["late"][name] = f
+            continue
+        got = collect(name, f, dish, out)
+        out["found"] += got
+    out["top"] = pick(out["found"], max_total, veg, n, dish)
+    return out
+
+
+def collect(name: str, future, dish: str, out: dict | None = None) -> list[dict]:
+    """One app's finished search as offers (each tagged with its app and a link); its failure noted in out."""
+    out = out if out is not None else {"failed": [], "empty": [], "logged_out": [], "why": {}}
+    try:
+        got = future.result(timeout=0)
+    except LoggedOut:
+        out["logged_out"].append(name)
+        return []
+    except NothingHere as e:
+        out["empty"].append(name)
+        out["why"][name] = str(e)
+        return []
+    except (NotReady, cdp.Blocked) as e:  # the message says what the owner can do
+        out["failed"].append(name)
+        out["why"][name] = str(e)
+        return []
+    except Exception:
+        out["failed"].append(name)
+        return []
+    res = []
+    for o in got or []:
+        link = o.get("link") or PLATFORMS[name]["search"].format(q=urllib.parse.quote(dish), city="bangalore", lat="",
+                                                                 lng="")
+        res.append({**o, "platform": o.get("platform", name), "link": link})
+    if not res:
+        out["empty"].append(name)
+    return res
 
 
 # ordering on the owner's behalf (rails v2: one-time permits checked against the page total; the owner approves the
@@ -438,7 +482,8 @@ class Orders:
 
 class MagicPin:
     """magicpin's search page at the owner's location: no data feed seen, so the page is read (model + one-card
-    check). Slower (~15-35 s), so the assistant sends it as a follow-up after Swiggy's results."""
+    check). Slower (~15-35 s): it joins the list if it finishes in time, else follows as its own message."""
+    name = "magicpin"
 
     def __init__(self, tab=cdp.Tab, chat=brain.chat):
         self.tab, self.chat, self.where = tab, chat, None
