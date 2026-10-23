@@ -104,6 +104,29 @@ Evidence from the code and from the live Hermes memory (read-only):
 5. **Multi-leg trips.** When there's no direct route, offer 2-3 combinations (flight+bus, flight+train,
    train+bus) with price and timing. One pick books every leg, each paid by UPI request.
 
+**Re-read on the owner's request: parts the first summary dropped.** The bot should:
+- **Notice trips** said in passing ("going to Goa next month") and nudge to book, so they're never forgotten.
+- **Advise when to buy:** now or wait, from demand and price history.
+- **Guide during the trip**, sending the next step at the right time, not just a plan written once.
+- **Hotels:**
+  - offer the same properties stayed in before, not only the same kind of place;
+  - take the city from the booked trip;
+  - compare after coupons and bank offers;
+  - sign up where the owner never has (OTP from the owner).
+- **Food:**
+  - read mood from the owner's way of writing, and learn which food goes with which mood from their history;
+  - build full carts (more than one item);
+  - rank by delivery time as well as cost;
+  - confirm the UPI payment on the page itself;
+  - show a live map of the delivery, not just text.
+- **Trips:**
+  - cabs count as a leg;
+  - "better connected" (safe connection gaps) is a ranking rule next to time and price;
+  - one pick books every leg.
+- **OTP:** the owner types it in a box inside the chat message, not as a reply to "send the OTP". **Built
+  2026-10-23:** the app shows the box and iPhone offers the SMS code; the code goes straight to the site and the
+  chat shows it hidden.
+
 **Limits stated to the owner:**
 - Only platforms that let the server in, with no getting round a block. Zomato stays out; each travel and hotel
   site is to be checked.
@@ -137,7 +160,7 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Already there:** a Swiggy login is done by the bot (phone + OTP); payment failures say "nothing was paid";
     order tracking stops after 3 failed reads and says so; Chrome has its watch; a broken turn gets "Sorry,
     something broke" plus an alert.
-- **Checks:** 283 tests pass. Live scratch chat after deploy: masala dosa returned 3 Swiggy options, then magicpin
+- **Checks:** 282 tests pass. Live scratch chat after deploy: masala dosa returned 3 Swiggy options, then magicpin
   ₹48 after 2 s.
 
 ## Every food app in one comparison (2026-10-23, owner: "why is the whole process still around Swiggy"; deployed `/opt/bot-20261023-135554`)
