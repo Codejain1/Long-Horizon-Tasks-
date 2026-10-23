@@ -52,11 +52,11 @@ def bot(tmp_path, model, post=memory_ok, nearby=None):
     b.geocode = lambda lat, lng: {"area": "Kotkapura", "city": "Faridkot"}  # nor a real map service
     b.geoplace = lambda name: {"lat": 12.935, "lng": 77.624, "area": "Koramangala", "city": "Bengaluru"}
     b._memory_location = lambda: None
-    b.magicpin = NoMagicpin()
+    b.magicpin, b.eatsure = NoMagicpin(), NoMagicpin()
     return b
 
 
-class NoMagicpin:  # nor a real magicpin page
+class NoMagicpin:  # nor a real magicpin page or EatSure API
     where = None
 
     def search(self, dish):
@@ -235,7 +235,7 @@ def test_food_order_goes_straight_to_options_then_taps(tmp_path):
     b.swiggy = sw
     notes = []
     r = b.handle({"channel": "whatsapp", "chat": "c1", "text": "order veg biryani under 400"}, notify=notes.append)
-    assert notes == ["Comparing veg biryani on Swiggy and magicpin, with reviews…"]  # no "go ahead?"; the dish read by code
+    assert notes == ["Comparing veg biryani on Swiggy, magicpin and EatSure, with reviews…"]  # no "go ahead?"; the dish read by code
     lines = r.splitlines()
     assert lines[1] == ("1. Veg Biryani — Paradise — ₹249 on Swiggy ★4.3 (40 MINS) · Google ★4.4 (1200): "
                         "+great taste, big portions; −slow delivery")

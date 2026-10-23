@@ -142,7 +142,7 @@ def main() -> int:
                 def search(self, dish):
                     return []
             bot = A.Assistant(home / "h", store, post=down, logins=NoBrowserLogin(), swiggy=NoBrowserSwiggy(),
-                              magicpin=NoBrowserMagicpin())
+                              magicpin=NoBrowserMagicpin(), eatsure=NoBrowserMagicpin())
             bot.reviews = lambda restaurant: None  # nor Google Maps
             store.set_fact("owner:phone", "9800000001")
             t = time.time()

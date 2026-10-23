@@ -28,6 +28,8 @@ PLATFORMS = {
     # checked live 2026-10-23: the search page carries the dishes and prices in its text, at the given location
     "magicpin": {"search": "https://magicpin.in/{city}/search?query={q}&latitude={lat}&longitude={lng}", "verified": True,
                  "label": "magicpin", "can": ["search", "link"], "fast": False},
+    "eatsure": {"search": "https://www.eatsure.com/", "verified": True, "label": "EatSure", "can": ["search", "link"],
+                "fast": True},  # its own data API over plain HTTP (~1 s, no browser), checked live 2026-10-23
     "eatclub": {"search": "https://www.eatclub.in/search?q={q}", "verified": False, "label": "EatClub", "can": [],
                 "fast": False},  # no search on the website (app-only)
 }
@@ -419,6 +421,59 @@ def read_status(page: str, chat=brain.chat) -> dict:
                            "its status in a few words (as the page says it), minutes to delivery if shown, and whether "
                            "it is delivered."}, {"role": "user", "content": page[:8000]}], STATUS_SCHEMA, chat,
                          max_tokens=120)
+
+
+def _get_json(url: str, cookie: str = "") -> dict:
+    import json
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Cookie": cookie})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+def read_eatsure(products: list, brands: dict, active: dict, link: str) -> list[dict]:
+    """EatSure dishes as offers: search_product's own data, kept only when get_products_status says it's on now
+    (search_product marks every dish unavailable; live 2026-10-23). brands: id -> {"name", "slug", "rating"}."""
+    out = []
+    for p in products:
+        b = brands.get(p.get("brand_id")) or {}
+        if not b or not p.get("product_name") or not p.get("price") or not active.get(str(p.get("product_id"))):
+            continue
+        out.append({"restaurant": b["name"], "item": p["product_name"].strip(), "price": float(p["price"]),
+                    "rating": str(p["rating"]) if p.get("rating") else "", "area": "", "veg": bool(p.get("is_veg")),
+                    "image": p.get("image") or "", "link": link.format(brand=b["slug"]), "platform": "eatsure"})
+    return out
+
+
+class EatSure:
+    """EatSure (Rebel Foods' brands: Behrouz, Faasos, Oven Story...): the store that delivers to the owner's location,
+    then its dish search and live stock, all from EatSure's own data API."""
+    name = "eatsure"
+    API = "https://www.eatsure.com/v1/api/"
+
+    def __init__(self, get=_get_json):
+        self.get, self.where = get, None
+
+    def search(self, dish: str) -> list[dict]:
+        if not self.where:
+            return []
+        w = self.where
+        st = (self.get(f"{self.API}get_store_details_by_lat_lng?lat={w['lat']}&lng={w['lng']}") or {}).get("data") or {}
+        if not st.get("store_id"):
+            raise NothingHere("EatSure doesn't deliver where you are now.")
+        cookie = f"store_id={st['store_id']}; city_id={st['city_id']}"
+        brands = {b["brand_id"]: {"name": b["brand_name"], "slug": b["slug"]} for b in
+                  self.get(f"{self.API}get_all_brands?&store_id={st['store_id']}&city_id={st['city_id']}", cookie)
+                  ["data"]["data"]}
+        products = self.get(f"{self.API}search_product?keyword={urllib.parse.quote(dish)}&page=0&availableBrands="
+                            "&food_type=", cookie)["data"]["products"][:40]
+        if not products:
+            return []
+        ids = ",".join(str(p["product_id"]) for p in products)
+        status = self.get(f"{self.API}get_products_status?&store_id={st['store_id']}&product_ids={ids}", cookie)
+        active = {k: v.get("is_active") == 1 for k, v in status["data"]["data"]["products"].items()}
+        city = re.sub(r"\s+", "-", st.get("city_name", "").strip().lower())
+        return read_eatsure(products, brands, active, f"https://www.eatsure.com/{{brand}}/{city}/{st.get('store_slug', '')}")
 
 
 class Orders:

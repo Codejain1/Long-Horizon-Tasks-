@@ -337,3 +337,38 @@ def test_magicpin_reads_its_page_at_the_owners_location():
     got = mp.search("veg biryani")
     assert [o["price"] for o in got] == [218, 289] and got[0]["platform"] == "magicpin"
     assert opened[-1] == "https://magicpin.in/Bangalore/search?query=veg%20biryani&latitude=12.9116&longitude=77.6474"
+
+
+def test_eatsure_reads_its_data_api_and_keeps_only_dishes_on_now():
+    """Shapes as seen live on 2026-10-23: search_product says every dish is unavailable; get_products_status is right."""
+    calls = []
+
+    def get(url, cookie=""):
+        calls.append((url.split("/api/")[1].split("?")[0], cookie))
+        if "get_store_details_by_lat_lng" in url:
+            assert "lat=12.93&lng=77.62" in url
+            return {"data": {"store_id": 10229, "city_id": 7995, "city_name": "Bengaluru", "store_slug": "jakkasandra-fc"}}
+        if "get_all_brands" in url:
+            return {"data": {"data": [{"brand_id": 26, "brand_name": "Behrouz Biryani", "slug": "behrouz-biryani"}]}}
+        if "search_product" in url:
+            assert "keyword=veg%20biryani" in url
+            p = {"brand_id": 26, "is_available": 0, "is_veg": 1, "rating": 4.4, "image": "https://img/x.jpg"}
+            return {"data": {"products": [{**p, "product_id": 1, "product_name": "Subz-e-Biryani ", "price": 299},
+                                          {**p, "product_id": 2, "product_name": "Veg Biryani Combo", "price": 399},
+                                          {**p, "product_id": 3, "brand_id": 99, "product_name": "Mystery", "price": 9}]}}
+        assert "product_ids=1,2,3" in url
+        return {"data": {"data": {"products": {"1": {"is_active": 1}, "2": {"is_active": 0}, "3": {"is_active": 1}}}}}
+    es = F.EatSure(get=get)
+    assert es.search("veg biryani") == []  # no location: nothing searched
+    es.where = {"lat": 12.93, "lng": 77.62}
+    got = es.search("veg biryani")
+    assert got == [{"restaurant": "Behrouz Biryani", "item": "Subz-e-Biryani", "price": 299.0, "rating": "4.4", "area": "",
+                    "veg": True, "image": "https://img/x.jpg", "platform": "eatsure",
+                    "link": "https://www.eatsure.com/behrouz-biryani/bengaluru/jakkasandra-fc"}]
+    assert all(c == "store_id=10229; city_id=7995" for _, c in calls[1:])  # the store goes in a cookie
+    es.get = lambda url, cookie="": {"data": {}}
+    try:
+        es.search("dosa")
+        raise AssertionError("expected NothingHere")
+    except F.NothingHere as e:
+        assert "EatSure doesn't deliver" in str(e)

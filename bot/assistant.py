@@ -270,7 +270,7 @@ def ground(store: B.Store, kind: str, text: str, slots: dict, earlier: str = "")
 
 class Assistant:
     def __init__(self, home: Path, store: B.Store, memory_url: str = "http://127.0.0.1:8765", chat=brain.chat,
-                 post=_post, nearby=places.nearby_food, swiggy=None, logins=None, magicpin=None):
+                 post=_post, nearby=places.nearby_food, swiggy=None, logins=None, magicpin=None, eatsure=None):
         self.home, self.store, self.mem, self.post, self.nearby = Path(home), store, memory_url, post, nearby
         self.model, self.local = chat, threading.local()
         self.chat = self._traced  # every model call goes through the trace
@@ -279,6 +279,7 @@ class Assistant:
         self.login = logins or login.Login()
         self.orders = food.Orders(chat=self._traced)
         self.magicpin = magicpin or food.MagicPin(chat=self._traced)
+        self.eatsure = eatsure or food.EatSure()
         self.extra_wait = float(os.environ.get("BOT_EXTRA_WAIT", "5"))  # s a slow app gets to join the first list
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
@@ -784,7 +785,7 @@ class Assistant:
 
     def apps(self) -> dict:
         """Every connected food app (PLATFORMS verified), by name."""
-        have = {"swiggy": self.swiggy, "magicpin": self.magicpin}
+        have = {"swiggy": self.swiggy, "magicpin": self.magicpin, "eatsure": self.eatsure}
         return {n: have[n] for n, p in food.PLATFORMS.items() if p["verified"] and n in have}
 
     def _compare(self, chat: str, slots: dict, tid: int | None) -> str:
