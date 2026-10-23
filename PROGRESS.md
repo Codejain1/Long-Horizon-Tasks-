@@ -87,6 +87,28 @@ Evidence from the code and from the live Hermes memory (read-only):
   - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
   - These are now model-quality failures, not harness bugs.
 
+## Failures handled plainly; no home connection for Zomato (2026-10-23, deployed `/opt/bot-20261023-141441`)
+- **Home connection: built, then removed.** The owner asked to send Zomato (and any other blocked site) through
+  their home internet.
+  - I built it and checked it: from the server, Zomato returned 200 through home and 403 direct.
+  - Then the permission check stopped the first Zomato page read, and it was right. Zomato blocks data-centre
+    connections to keep automated traffic out, so going round that block evades its bot detection.
+  - Everything was removed: the services on the server, the Mac helper and the code (commit `ce34ecf`). No Zomato
+    page was read.
+- **What the bot now does when something fails:**
+  - **The model can't be reached** (GPU server or tunnel): the owner gets a plain message saying dish searches still
+    work. That works because the dish path is code; a test proves it. For a minute after a failure, model calls fail
+    at once instead of each waiting up to 120 s.
+  - **Alerts:** the model has a watch like Chrome's, alerting once when it goes down and once when it's back.
+  - **One app failing:** a search that broke for no stated reason is retried once. A stated reason (logged out,
+    blocked, nothing there, model down) is final and shown next to the results, e.g. "(magicpin: magicpin blocked
+    the request from the server.)". The other apps' results still show.
+  - **Already there:** a Swiggy login is done by the bot (phone + OTP); payment failures say "nothing was paid";
+    order tracking stops after 3 failed reads and says so; Chrome has its watch; a broken turn gets "Sorry,
+    something broke" plus an alert.
+- **Checks:** 283 tests pass. Live scratch chat after deploy: masala dosa returned 3 Swiggy options, then magicpin
+  ₹48 after 2 s.
+
 ## Every food app in one comparison (2026-10-23, owner: "why is the whole process still around Swiggy"; deployed `/opt/bot-20261023-135554`)
 - **One shape for every app.** `food.PLATFORMS` says what the bot can do on each app (`can`: search / link / cart /
   order), how fast it answers (`fast`), and, for apps not connected, why (`why`).
@@ -684,6 +706,8 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-23: no home or residential connection to get past a site's block on the server (Zomato). It
+  evades the site's bot detection, so it isn't done even on request. Zomato stays unconnected.
 - 2026-10-23: slow food apps (magicpin takes about 21 s) get 5 s to join the first list, then follow up. The
   first answer stays fast (Swiggy takes about 5 s), and a later result is sent only if it's cheaper.
 - 2026-10-23: Qwen reasoning stays off for routing. Measured on the real model (botsmoke, 2 reps), reasoning on vs off:
@@ -735,7 +759,8 @@ The coding-ticket benchmarks are no longer the target.
   score ≥ 0.5, at most 3.
 
 ## Open questions
-- **Zomato needs a home connection:** the owner hasn't chosen between an always-on machine at home and their Mac.
+- **Zomato:** not connected (see Decisions). Possible next step: a Zomato search link next to the results, for
+  the owner to open in their own Zomato app.
 - **UPI request reachability:** NPCI stopped person-to-person UPI collect requests in 2025. Merchant checkouts that
   take a UPI ID likely still work, but some sites offer only QR or app intent. Check per site in rehearsals.
 - **Logins:** IRCTC, Swiggy, Zomato and Uber need OTP logins, which Hermes must not enter. Default: the owner logs in
