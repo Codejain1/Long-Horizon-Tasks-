@@ -97,3 +97,47 @@ def test_bus_city():
     sugg = [{"id": 926, "label": "Mysore", "city": "Mysuru"}, {"id": 1, "label": "Other"}]
     assert T.bus_city("Mysore", lambda url, body=None: sugg) == {"id": 926, "name": "Mysore"}
     assert T.bus_city("Nowhere", lambda url, body=None: []) is None
+
+
+EMT = {"C": {"9I": "AllianceAir", "6E": "IndiGo", "AI": "Air India"},  # the shape seen live, BLR -> GOI, 30 Oct 2026
+       "dctFltDtl": {"0": {"OG": "BLR", "DT": "GOI", "DTM": "14:50", "ATM": "16:25", "FN": "547", "AC": "9I"},
+                     "1": {"OG": "BLR", "DT": "GOI", "DTM": "06:10", "ATM": "07:25", "FN": "6101", "AC": "6E"},
+                     "2": {"OG": "BLR", "DT": "BOM", "DTM": "21:00", "ATM": "22:45", "FN": "602", "AC": "AI"},
+                     "3": {"OG": "BOM", "DT": "GOI", "DTM": "23:40", "ATM": "00:50", "FN": "681", "AC": "AI"}},
+       "j": [{"s": [{"TF": 5494, "TotalJyTm": 95, "b": [{"FL": [0]}]},
+                    {"TF": 6120, "TotalJyTm": 75, "b": [{"FL": [1]}]},
+                    {"TF": 4990, "TotalJyTm": 230, "b": [{"FL": [2, 3]}]},
+                    {"TF": 7020, "TotalJyTm": 75, "b": [{"FL": [1]}]}]}]}
+
+
+def test_flights_are_read_and_picked_by_code():
+    found = T.read_flights(EMT)
+    assert found[2] == {"airline": "Air India", "flight": "AI 602, AI 681", "from": "BLR", "to": "GOI", "dep": "21:00",
+                        "arr": "00:50", "stops": 1, "via": ["BOM"], "minutes": 230, "total": 4990.0, "fare": 4990}
+    assert [f["flight"] for f in T.best_flights(found)] == ["AI 602, AI 681", "9I 547", "6E 6101"]  # one fare per flight
+    assert [f["flight"] for f in T.best_flights(found, max_price=6000, window="afternoon")] == ["9I 547"]
+    assert [f["flight"] for f in T.best_flights(found, avoid="Air India")] == ["9I 547", "6E 6101"]
+    assert T.read_flights(EMT, adults=2)[0]["fare"] == 2747  # TF is for everyone
+    assert [T.airport(x) for x in ("Bangalore", "goa", "IXZ", "Nowhere")] == ["BLR", "GOI", "IXZ", None]
+
+
+def test_flights_open_the_results_page_and_read_its_own_data():
+    opened = []
+
+    class Tab:
+        def net_start(self):
+            pass
+
+        def open(self, url):
+            opened.append(url)
+
+        def settle(self, timeout=0):
+            return ""
+
+        def net_json(self, contains, limit=20):
+            return [{"url": "https://flightservice-node.easemytrip.com/AirAvail_Lights/AirBus_New", "body": EMT}]
+
+        def close(self):
+            pass
+    got = T.flights("BLR", "GOI", date(2026, 10, 30), 1, tab=Tab)
+    assert "srch=BLR-BLR-India|GOI-GOI-India|30/10/2026&px=1-0-0" in opened[0] and len(got) == 4

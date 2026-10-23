@@ -169,3 +169,86 @@ def best_buses(found: list[dict], seat: str | None = None, window: str | None = 
 
 def bus_link(src: dict, dst: dict, day: date) -> str:
     return f"https://www.abhibus.com/bus_search/{src['name']}/{src['id']}/{dst['name']}/{dst['id']}/{day:%d-%m-%Y}/O"
+
+
+# Flights: EaseMyTrip's results page, opened in the bot's Chrome; its own data answer (AirBus_New) is read, never
+# the page text (~15 s). Checked live 2026-10-23. ixigo's flight search needs a captcha token and Skyscanner shows a
+# captcha, so they're not used; Yatra, Goibibo and MakeMyTrip didn't load for the server.
+# ponytail: airports from a fixed list of Indian cities (plus any 3-letter code); add the site's own lookup when
+# the owner flies somewhere not on it.
+AIRPORTS = {"bangalore": "BLR", "bengaluru": "BLR", "goa": "GOI", "mumbai": "BOM", "bombay": "BOM", "delhi": "DEL",
+            "new delhi": "DEL", "chennai": "MAA", "madras": "MAA", "hyderabad": "HYD", "kolkata": "CCU", "calcutta": "CCU",
+            "pune": "PNQ", "kochi": "COK", "cochin": "COK", "ahmedabad": "AMD", "jaipur": "JAI", "lucknow": "LKO",
+            "chandigarh": "IXC", "amritsar": "ATQ", "srinagar": "SXR", "leh": "IXL", "varanasi": "VNS", "patna": "PAT",
+            "bhubaneswar": "BBI", "guwahati": "GAU", "indore": "IDR", "bhopal": "BHO", "nagpur": "NAG", "coimbatore": "CJB",
+            "madurai": "IXM", "trivandrum": "TRV", "thiruvananthapuram": "TRV", "mangalore": "IXE", "mangaluru": "IXE",
+            "visakhapatnam": "VTZ", "vizag": "VTZ", "udaipur": "UDR", "jodhpur": "JDH", "dehradun": "DED", "ranchi": "IXR",
+            "raipur": "RPR", "port blair": "IXZ", "andaman": "IXZ", "bagdogra": "IXB", "siliguri": "IXB", "mysore": "MYQ",
+            "mysuru": "MYQ", "hubli": "HBX", "belgaum": "IXG", "tirupati": "TIR", "vijayawada": "VGA", "surat": "STV",
+            "vadodara": "BDQ", "rajkot": "HSR", "dharamshala": "DHM", "kullu": "KUU", "manali": "KUU", "agartala": "IXA",
+            "imphal": "IMF", "dibrugarh": "DIB", "jammu": "IXJ", "kozhikode": "CCJ", "calicut": "CCJ", "kannur": "CNN"}
+
+
+def airport(name: str) -> str | None:
+    n = (name or "").strip()
+    if re.fullmatch(r"[A-Za-z]{3}", n) and n.lower() not in AIRPORTS:
+        return n.upper()
+    return AIRPORTS.get(n.lower())
+
+
+def read_flights(body: dict, adults: int = 1) -> list[dict]:
+    """EaseMyTrip's flight data -> options: legs (airline, number, times), total fare for everyone, minutes, stops."""
+    legs, names, out = body.get("dctFltDtl") or {}, body.get("C") or {}, []
+    for j in body.get("j") or []:
+        for s in j.get("s") or []:
+            fl = ((s.get("b") or [{}])[0]).get("FL") or []
+            ls = [legs.get(str(i)) for i in fl if legs.get(str(i))]
+            if not ls or not s.get("TF"):
+                continue
+            out.append({"airline": " + ".join(dict.fromkeys(names.get(x["AC"], x.get("FlightName") or x["AC"]) for x in ls)),
+                        "flight": ", ".join(f"{x['AC']} {x['FN']}" for x in ls), "from": ls[0]["OG"], "to": ls[-1]["DT"],
+                        "dep": ls[0]["DTM"], "arr": ls[-1]["ATM"], "stops": len(ls) - 1,
+                        "via": [x["DT"] for x in ls[:-1]], "minutes": int(s.get("TotalJyTm") or 0),
+                        "total": float(s["TF"]), "fare": round(float(s["TF"]) / max(1, adults))})
+    return out
+
+
+def flights(frm: str, to: str, day: date, adults: int = 1, tab=None) -> list[dict]:
+    import cdp
+    url = (f"https://flight.easemytrip.com/FlightList/Index?srch={frm}-{frm}-India|{to}-{to}-India|{day:%d/%m/%Y}"
+           f"&px={adults}-0-0&cbn=0&ar=undefined&isow=true&isdm=true&lang=en-us&IsDoubleSeat=false&CCODE=IN&curr=INR"
+           "&apptype=B2C")
+    t = (tab or cdp.Tab)()
+    try:
+        t.net_start()
+        t.open(url)
+        t.settle(timeout=20)
+        got = t.net_json("AirBus_New", 2)
+    finally:
+        t.close()
+    return read_flights(got[-1]["body"], adults) if got else []
+
+
+def best_flights(found: list[dict], max_price=None, window: str | None = None, avoid: str | None = None,
+                 n: int = 3) -> list[dict]:
+    """Code: within budget for everyone, the time of day asked, no airline the owner avoids; cheapest first, then
+    fewer stops, then quicker; one option per flight."""
+    lo, hi = WINDOWS.get((window or "").lower().strip(), (0, 28))
+    avoid = (avoid or "").lower()
+    ok, seen = [], set()
+    for f in sorted(found, key=lambda f: (f["total"], f["stops"], f["minutes"])):
+        hour = int(f["dep"][:2]) if f["dep"][:2].isdigit() else 0
+        if max_price and f["total"] > float(max_price) or not (lo <= hour < hi or lo <= hour + 24 < hi):
+            continue
+        if avoid and any(a.strip() and a.strip() in f["airline"].lower() for a in re.split(r"[,/]| and ", avoid)):
+            continue
+        if f["flight"] in seen:
+            continue
+        seen.add(f["flight"])
+        ok.append(f)
+    return ok[:n]
+
+
+def flight_link(frm: str, to: str, day: date, adults: int = 1) -> str:
+    return (f"https://flight.easemytrip.com/FlightList/Index?srch={frm}-{frm}-India|{to}-{to}-India|{day:%d/%m/%Y}"
+            f"&px={adults}-0-0&cbn=0&isow=true&isdm=true")

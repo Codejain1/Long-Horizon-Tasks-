@@ -147,6 +147,7 @@ def main() -> int:
                                             "trains": lambda self, a, b, d: []})()  # nor real ConfirmTkt
             bot.bus = type("NoBus", (), {"bus_city": lambda self, n: {"id": 1, "name": n},
                                          "buses": lambda self, a, b, d: []})()  # nor real abhibus
+            bot.air = type("NoAir", (), {"flights": lambda self, a, b, d, n: []})()  # nor real EaseMyTrip
             bot.reviews = lambda restaurant: None  # nor Google Maps
             store.set_fact("owner:phone", "9800000001")
             t = time.time()

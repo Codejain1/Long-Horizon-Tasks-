@@ -292,7 +292,7 @@ class Assistant:
         self.orders = food.Orders(chat=self._traced)
         self.magicpin = magicpin or food.MagicPin(chat=self._traced)
         self.eatsure = eatsure or food.EatSure()
-        self.rail = self.bus = travel  # .station / .trains, .bus_city / .buses (tests replace them)
+        self.rail = self.bus = self.air = travel  # .station/.trains, .bus_city/.buses, .flights (tests replace them)
         self.extra_wait = float(os.environ.get("BOT_EXTRA_WAIT", "5"))  # s a slow app gets to join the first list
         self.home.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.home / "bot.db"), check_same_thread=False)
@@ -1152,6 +1152,44 @@ class Assistant:
         return Reply(f"Buses {a['name']} → {b['name']}, {day:%a %d %b}:\n" + "\n".join(lines)
                      + "\nTap one (or reply its number).", labels)
 
+    def _flights(self, chat: str, slots: dict, tid: int | None) -> str:
+        """Real flights for the form from EaseMyTrip's results (in the bot's Chrome, ~15 s): the cheapest 3 that fit."""
+        from datetime import date
+        try:
+            day = date.fromisoformat(str(slots.get("date")))
+        except ValueError:
+            return f"I couldn't read the date '{slots.get('date')}'. Which day?"
+        a, b = travel.airport(str(slots.get("from") or "")), travel.airport(str(slots.get("to") or ""))
+        if not a or not b:
+            return (f"I don't know the airport for {slots.get('from') if not a else slots.get('to')}. Send its 3-letter "
+                    "code (e.g. GOI for Goa).")
+        people = len(slots["passengers"]) if isinstance(slots.get("passengers"), list) else 1
+        self.notify(f"Looking for flights {a} → {b} on {day:%a %d %b}…")
+        try:
+            found = self.air.flights(a, b, day, people)
+        except Exception as e:
+            return f"EaseMyTrip didn't load just now ({type(e).__name__}), so I couldn't search flights. Try again in a minute."
+        top = travel.best_flights(found, slots.get("max_price"), slots.get("time_window"), slots.get("airline_avoid"))
+        if not top:
+            if tid:
+                B.finish(self.store, tid, "failed", "no flight fits", "easemytrip")
+            return (f"{len(found)} flights {a} → {b} on {day:%a %d %b}, but none fits"
+                    + (f" under ₹{slots['max_price']:g} for everyone" if slots.get("max_price") else "") + ".")
+        link = travel.flight_link(a, b, day, people)
+        lines, labels = [], []
+        for n, o in enumerate(top, 1):
+            h, m = divmod(o["minutes"], 60)
+            stops = "non-stop" if not o["stops"] else f"{o['stops']} stop via {', '.join(o['via'])}"
+            total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
+            lines.append(f"{n}. {o['airline']} {o['flight']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m, {stops}), "
+                         f"₹{o['fare']:g}{total}")
+            labels.append(f"{n}. {o['airline']} {o['dep']} ₹{o['fare']:g}")
+            o["pick"] = f"{o['airline']} {o['flight']} at {o['dep']}, ₹{o['total']:g} in all"
+        self._start(chat, "travel", 1, options=top, labels=labels, task=tid,
+                    tail=f"I can't book flights for you yet; book it on EaseMyTrip: {link}")
+        return Reply(f"Flights {a} → {b}, {day:%a %d %b}:\n" + "\n".join(lines) + "\nTap one (or reply its number).",
+                     labels)
+
     def _booking_reply(self, chat: str, v: dict) -> str:
         if "error" in v:
             return "Sorry: " + v["error"]
@@ -1174,5 +1212,7 @@ class Assistant:
             return self._trains(chat, r["slots"], tid)
         if v["kind"] == "bus":
             return self._buses(chat, r["slots"], tid)
+        if v["kind"] == "flight":
+            return self._flights(chat, r["slots"], tid)
         return (f"Got it: {self._summary_line(r['slots'], v['kind'])}. Searching {'buses' if v['kind'] == 'bus' else v['kind'] + 's'} on the sites isn't built "
                 "yet, so I've saved it; food is the part that works end to end today.")

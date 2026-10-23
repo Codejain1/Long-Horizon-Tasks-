@@ -55,6 +55,7 @@ def bot(tmp_path, model, post=memory_ok, nearby=None):
     b.magicpin, b.eatsure = NoMagicpin(), NoMagicpin()
     b.rail = FakeRail()  # nor real ConfirmTkt
     b.bus = FakeBus()  # nor real abhibus
+    b.air = FakeAir()  # nor real EaseMyTrip
     return b
 
 
@@ -74,6 +75,15 @@ class FakeRail:
                  "from": "SBC", "to": "MAS", "classes": {"SL": c(315, "AVL 120"), "3A": c(805, "WL 12", 64)}},
                 {"number": "12610", "name": "Mys Mas Exp", "dep": "14:30", "arr": "20:30", "minutes": 360,
                  "from": "SBC", "to": "MAS", "classes": {"3A": c(790, "AVL 8"), "2A": c(1110, "Regret", 0)}}]
+
+
+class FakeAir:
+    def flights(self, a, b, day, people):
+        f = lambda al, no, dep, total, stops=0: {"airline": al, "flight": no, "from": a, "to": b, "dep": dep,  # noqa: E731
+                                                 "arr": "12:00", "stops": stops, "via": ["BOM"] if stops else [],
+                                                 "minutes": 90 + 120 * stops, "total": total, "fare": total / people}
+        return [f("IndiGo", "6E 6101", "06:10", 6120), f("Air India", "AI 602, AI 681", "21:00", 4990, 1),
+                f("Akasa Air", "QP 1301", "13:30", 5600)]
 
 
 class FakeBus:
@@ -875,3 +885,14 @@ def test_bus_request_searches_real_buses_and_picks_by_code(tmp_path):
     r = say(b, "2")
     assert r.startswith("VRL at 21:00, ₹1100 a seat. I can't book buses for you yet; book it on abhibus: "
                         "https://www.abhibus.com/bus_search/Bangalore/7/Pondicherry/77/24-10-2099/O")
+
+
+def test_flight_request_searches_real_flights(tmp_path):
+    m = Model(call("task_start", kind="flight", slots={"from": "Bangalore", "to": "Goa", "date": "2099-10-30",
+                                                      "passengers": ["me"], "max_price": 6000, "cabin": "economy"}))
+    b = bot(tmp_path, m)
+    r = say(b, "Flight from Bangalore to Goa on 30 Oct 2099 under 6000")
+    assert r.startswith("Flights BLR → GOI, Fri 30 Oct:\n1. Air India AI 602, AI 681: 21:00→12:00 (3h30m, 1 stop via "
+                        "BOM), ₹4990\n2. Akasa Air QP 1301: 13:30→12:00 (1h30m, non-stop), ₹5600\nTap one"), r  # 6120: over
+    assert say(b, "2").startswith("Akasa Air QP 1301 at 13:30, ₹5600 in all. I can't book flights for you yet; book it "
+                                  "on EaseMyTrip: https://flight.easemytrip.com/FlightList/Index?srch=BLR-BLR-India|GOI-GOI-India|30/10/2099")
