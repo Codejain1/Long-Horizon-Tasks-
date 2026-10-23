@@ -342,7 +342,7 @@ def compare(dish: str, apps: dict, max_total=None, veg: bool = False, n: int = 3
     import time as _t
     from concurrent.futures import ThreadPoolExecutor, wait
     pool = ThreadPoolExecutor(max(1, len(apps)))
-    futures = {name: pool.submit(contextvars.copy_context().run, app.search, dish) for name, app in apps.items()}
+    futures = {name: pool.submit(contextvars.copy_context().run, search_retry, app, dish) for name, app in apps.items()}
     pool.shutdown(wait=False)  # slow searches may outlive this call
     fast = [f for name, f in futures.items() if PLATFORMS.get(name, {}).get("fast", True)]
     wait(fast, timeout=90)
@@ -369,6 +369,17 @@ def best_each(offers: list[dict], max_total=None, veg: bool = False, n: int = 3,
     return sorted(firsts + rest[:max(0, n - len(firsts))], key=lambda o: float(str(o["price"]).replace(",", "")))
 
 
+def search_retry(app, dish: str) -> list[dict]:
+    """One retry for a page that broke for no stated reason (a load timeout, a closed tab); a reason (logged out,
+    blocked, nothing there, the model down) is final."""
+    try:
+        return app.search(dish)
+    except (NotReady, cdp.Blocked, brain.ModelDown):
+        raise
+    except Exception:
+        return app.search(dish)
+
+
 def collect(name: str, future, dish: str, out: dict | None = None) -> list[dict]:
     """One app's finished search as offers (each tagged with its app and a link); its failure noted in out."""
     out = out if out is not None else {"failed": [], "empty": [], "logged_out": [], "why": {}}
@@ -384,6 +395,10 @@ def collect(name: str, future, dish: str, out: dict | None = None) -> list[dict]
     except (NotReady, cdp.Blocked) as e:  # the message says what the owner can do
         out["failed"].append(name)
         out["why"][name] = str(e)
+        return []
+    except brain.ModelDown:
+        out["failed"].append(name)
+        out["why"][name] = f"{PLATFORMS.get(name, {}).get('label', name)}'s page is read by the language model, which isn't reachable."
         return []
     except Exception:
         out["failed"].append(name)

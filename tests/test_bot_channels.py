@@ -114,5 +114,5 @@ def test_main_sends_choices_as_buttons():
         def tick(self):
             pass
     ch = Ch()
-    M.serve({"telegram": ch}, Bot(), Sched(), once=True, check=lambda: True)
+    M.serve({"telegram": ch}, Bot(), Sched(), once=True, check=lambda: True, model_check=lambda: True)
     assert ch.choices == [["1. A", "2. B"]] and ch.plain == []

@@ -12,13 +12,29 @@ import urllib.request
 
 URL = os.environ.get("BOT_MODEL_URL", "http://127.0.0.1:8000/v1")
 MODEL = os.environ.get("BOT_MODEL", "local")
+DOWN = {"until": 0.0}  # after the model was unreachable, calls fail at once for a minute instead of each waiting
+
+
+class ModelDown(Exception):
+    """The model server (the GPU in Stockholm, or the tunnel to it) can't be reached."""
+
+
+def model_ok(url: str = "") -> bool:
+    try:
+        with urllib.request.urlopen((url or URL).rstrip("/") + "/models", timeout=10) as r:
+            return r.status == 200
+    except Exception:
+        return False
 
 
 def chat(messages: list, url: str = "", model: str = "", key_env: str = "",
          max_tokens: int = 1500, timeout: float = 120, temperature: float = 0.2, schema: dict | None = None,
          think: bool = False) -> dict:
-    """One completion -> the assistant message ({"content"}). Retries busy servers twice."""
+    """One completion -> the assistant message ({"content"}). Retries busy servers twice; an unreachable one raises
+    ModelDown (and, for the default model, every call in the next minute does too, without waiting)."""
     url, model = url or URL, model or MODEL
+    if url == URL and time.time() < DOWN["until"]:
+        raise ModelDown("the model was unreachable a moment ago")
     body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     if url == URL:  # Qwen's reasoning: off by default (1-2 s a step); on where measured to help (assistant routing)
         body["chat_template_kwargs"] = {"enable_thinking": think}
@@ -42,6 +58,10 @@ def chat(messages: list, url: str = "", model: str = "", key_env: str = "",
             if wait is None or e.code not in (429, 500, 502, 503, 504):
                 raise
             time.sleep(wait)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:  # nothing answers: no retry storm
+            if url == URL:
+                DOWN["until"] = time.time() + 60
+            raise ModelDown(f"{type(e).__name__}: {getattr(e, 'reason', e)}") from e
     raise RuntimeError("unreachable")
 
 

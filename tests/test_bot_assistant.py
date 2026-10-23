@@ -155,11 +155,11 @@ def test_main_loop_answers_and_ticks(tmp_path, monkeypatch):
         def tick(self):
             Sched.ticks += 1
     ch = Ch()
-    M.serve({"whatsapp": ch}, bot(tmp_path, Model(reply("hey"))), Sched(), once=True, check=lambda: True)
+    M.serve({"whatsapp": ch}, bot(tmp_path, Model(reply("hey"))), Sched(), once=True, check=lambda: True, model_check=lambda: True)
     assert ch.out == [("c", "hey")] and Sched.ticks == 1
     broken = bot(tmp_path / "x", Model())  # the model has nothing to say: IndexError inside the turn
     ch.inbox = [{"channel": "whatsapp", "chat": "c", "text": "hi"}]
-    M.serve({"whatsapp": ch}, broken, Sched(), once=True, check=lambda: True)
+    M.serve({"whatsapp": ch}, broken, Sched(), once=True, check=lambda: True, model_check=lambda: True)
     assert ch.out[-1][1].startswith("Sorry, something broke")
 
 
@@ -348,7 +348,7 @@ def test_every_turn_leaves_a_trace_and_errors_alert_the_owner(tmp_path):
         def tick(self):
             pass
     ch, broken = Ch(), bot(tmp_path / "x", Model())
-    M.serve({"whatsapp": ch}, broken, Sched(), once=True, check=lambda: True)
+    M.serve({"whatsapp": ch}, broken, Sched(), once=True, check=lambda: True, model_check=lambda: True)
     assert any(c == "owner-chat" and t.startswith("⚠ bot error on 'hi'") for c, t in ch.out)
     (*_, steps), = broken.db.execute("SELECT * FROM traces").fetchall()
     assert json.loads(steps)[-1]["step"] == "error"
@@ -510,7 +510,8 @@ def test_a_yes_inside_a_longer_answer_counts(tmp_path):
 def test_chrome_health_alerts_once_when_it_breaks_and_once_when_back():
     import main as M
     sent, states = [], iter([True, False, False, False, True, True])
-    w = M.ChromeWatch(lambda: next(states), sent.append)
+    w = M.Watch(lambda: next(states), sent.append, "⚠ The bot's Chrome isn't loading pages, so Swiggy and logins "
+                "won't work until it's fixed.", "✅ The bot's Chrome loads pages again.")
     for _ in range(6):
         w.tick()
     assert sent == ["⚠ The bot's Chrome isn't loading pages, so Swiggy and logins won't work until it's fixed.",
@@ -763,3 +764,63 @@ def test_questions_about_the_food_apps_are_answered_by_code(tmp_path):
         r = b.handle({"channel": "app", "chat": "owner", "text": q})
         assert r.startswith("I search Swiggy, magicpin and EatSure together") and \
             "Zomato isn't connected: it blocks the server's connection." in r
+
+
+def test_model_down_is_said_plainly_and_calls_stop_waiting(tmp_path, monkeypatch):
+    import urllib.error
+    import brain
+    import main as M
+    calls = []
+
+    def refused(req, timeout=0):
+        calls.append(req.full_url)
+        raise urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+    monkeypatch.setattr(brain.urllib.request, "urlopen", refused)
+    monkeypatch.setitem(brain.DOWN, "until", 0.0)
+    for _ in range(2):
+        try:
+            brain.chat([{"role": "user", "content": "hi"}])
+            raise AssertionError("expected ModelDown")
+        except brain.ModelDown:
+            pass
+    assert len(calls) == 1  # the second call didn't wait on a dead server
+    assert brain.model_ok() is False
+
+    class Ch:
+        name = "whatsapp"
+
+        def __init__(self):
+            self.inbox, self.out = [{"channel": "whatsapp", "chat": "c", "text": "what's up"}], []
+
+        def poll(self):
+            m, self.inbox = self.inbox, []
+            return m
+
+        def send(self, chat, text):
+            self.out.append((chat, text))
+
+    class Sched:
+        def tick(self):
+            pass
+    b = bot(tmp_path, brain.chat)  # the real model call, with the server unreachable
+    ch = Ch()
+    M.serve({"whatsapp": ch}, b, Sched(), once=True, check=lambda: True, model_check=lambda: True)
+    assert ch.out == [("c", M.MODEL_DOWN)]
+    b.swiggy = FakeSwiggy(OFFERS)  # a dish search still works without the model (what MODEL_DOWN promises)
+    r = b.handle({"channel": "app", "chat": "owner", "text": "veg biryani under 400"})
+    assert r.startswith("Best options:"), r
+    monkeypatch.setitem(brain.DOWN, "until", 0.0)
+
+
+def test_failed_apps_are_named_with_their_reason(tmp_path):
+    m = Model(call("task_start", kind="food", slots={"dish": "veg biryani", "max_total": 400}))
+    b = bot(tmp_path, m)
+
+    class Blocked:
+        where = None
+
+        def search(self, dish):
+            raise A.food.NotReady("magicpin blocked the request from the server.")
+    b.swiggy, b.magicpin = FakeSwiggy(OFFERS), Blocked()
+    r = b.handle({"channel": "app", "chat": "owner", "text": "veg biryani under 400"})
+    assert r.startswith("Best options:") and "(magicpin: magicpin blocked the request from the server.)" in r

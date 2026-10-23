@@ -858,7 +858,8 @@ class Assistant:
                          + f" — ₹{o['price']:g} on {label(o['platform']) if o['platform'] in food.PLATFORMS else o['platform']}"
                          + (f" ★{o['rating']}" if o.get("rating") else "") + (f" ({o['eta']})" if o.get("eta") else "")
                          + rev)
-        tail = f"\n(Couldn't read {', '.join(map(label, failed))} this time.)" if failed else ""
+        why = {n: r["why"].get(n) or "didn't load this time" for n in failed}
+        tail = "".join(f"\n({label(n)}: {why[n]})" for n in failed)
         if r["late"]:
             tail += f"\n(Still checking {', '.join(map(label, r['late']))}: I'll send anything cheaper.)"
             self._follow_up(dish, slots.get("max_total"), veg, top, r["late"])

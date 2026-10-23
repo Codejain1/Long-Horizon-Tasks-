@@ -21,6 +21,7 @@ HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE)]
 import assistant as A  # noqa: E402
 import booking as B  # noqa: E402
+import brain  # noqa: E402
 import channels as C  # noqa: E402
 import jobs as J  # noqa: E402
 import scheduler as S  # noqa: E402
@@ -66,21 +67,24 @@ def chrome_ok() -> bool:
             t.close()
 
 
-class ChromeWatch:
-    """Alerts once when Chrome stops loading pages and once when it's back (not every 5 minutes in between)."""
+class Watch:
+    """Alerts once when a part stops working and once when it's back (not every 5 minutes in between)."""
 
-    def __init__(self, check, alert):
-        self.check, self.alert, self.ok = check, alert, True
+    def __init__(self, check, alert, down: str, up: str):
+        self.check, self.alert, self.down, self.up, self.ok = check, alert, down, up, True
 
     def tick(self):
         ok = self.check()
         if ok != self.ok:
-            self.alert("✅ The bot's Chrome loads pages again." if ok else
-                       "⚠ The bot's Chrome isn't loading pages, so Swiggy and logins won't work until it's fixed.")
+            self.alert(self.up if ok else self.down)
             self.ok = ok
 
 
-def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float = 300):
+MODEL_DOWN = ("My language model isn't reachable right now (the GPU server or its tunnel). Searching a dish still "
+              "works, e.g. 'paneer wrap under 300'; for anything else, try again in a few minutes.")
+
+
+def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float = 300, model_check=brain.model_ok):
     pool = ThreadPoolExecutor(4)
     if hasattr(bot, "resume_trackers"):  # orders being tracked before a restart carry on
         bot.resume_trackers(lambda channel, chat, text: chans[channel].send(chat, text) if channel in chans else None)
@@ -100,6 +104,9 @@ def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float
             t = time.time()
             try:
                 reply = bot.handle(m, notify=lambda text: ch.send(m["chat"], text))
+            except brain.ModelDown:  # said plainly; the model watch alerts the owner once
+                log.warning("model down during a turn")
+                reply = MODEL_DOWN
             except Exception as e:
                 log.exception("turn failed")
                 reply = f"Sorry, something broke on my side ({type(e).__name__}). Try again in a minute."
@@ -115,12 +122,17 @@ def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float
                 log.exception("send failed")
             log.info("turn %s %.1fs", ch.name, time.time() - t)
 
-    watch, next_check = ChromeWatch(check, alert), 0.0
+    watches = [Watch(check, alert, "⚠ The bot's Chrome isn't loading pages, so Swiggy and logins won't work until "
+                     "it's fixed.", "✅ The bot's Chrome loads pages again."),
+               Watch(model_check, alert, "⚠ The language model (GPU server or its tunnel) isn't answering: only dish "
+                     "searches work until it's back.", "✅ The language model answers again.")]
+    next_check = 0.0
 
     while True:
         if time.time() >= next_check:
             next_check = time.time() + every_s
-            threading.Thread(target=watch.tick, daemon=True).start()
+            for w in watches:
+                threading.Thread(target=w.tick, daemon=True).start()
         for ch in chans.values():
             try:
                 for m in ch.poll():

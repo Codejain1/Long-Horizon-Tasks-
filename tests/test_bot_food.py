@@ -381,3 +381,21 @@ def test_each_app_keeps_its_best_option_in_the_comparison():
     top = F.best_each(sw + es, 400, True, 3, "veg biryani")
     assert [(o["platform"], o["price"]) for o in top] == [("swiggy", 100), ("swiggy", 101), ("eatsure", 205)]
     assert [o["price"] for o in F.best_each(sw, 400, True, 3, "veg biryani")] == [100, 101, 102]
+
+
+def test_a_page_that_broke_once_is_tried_again_but_a_stated_reason_is_final():
+    class App:
+        def __init__(self, first):
+            self.first, self.calls = first, 0
+
+        def search(self, dish):
+            self.calls += 1
+            if self.calls == 1:
+                raise self.first
+            return [{"restaurant": "MTR", "item": "Masala Dosa", "price": 120}]
+    flaky, out = App(TimeoutError("page load")), App(F.LoggedOut("login"))
+    down = App(F.brain.ModelDown("refused"))
+    r = F.compare("dosa", {"swiggy": flaky, "zomato": out, "magicpin": down})
+    assert [o["platform"] for o in r["top"]] == ["swiggy"] and (flaky.calls, out.calls, down.calls) == (2, 1, 1)
+    assert r["logged_out"] == ["zomato"] and r["why"]["magicpin"] == \
+        "magicpin's page is read by the language model, which isn't reachable."
