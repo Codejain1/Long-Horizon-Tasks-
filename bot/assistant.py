@@ -178,6 +178,10 @@ UPDATE = {"type": "object", "properties": {"action": {"type": "string", "enum": 
 FRESH_H = 12  # order history read this recently is reused, not re-read from Swiggy
 SET_PHONE = re.compile(r"^\s*(set\s+)?(my\s+)?log ?in\s+phone(\s+number)?\s*(is|to|:|=)?\s*(\+?[\d][\d\s-]{8,15}\d)\s*$", re.I)
 SET_GOOGLE = re.compile(r"^\s*(use\s+)?google\s+(for\s+)?log ?ins?\s*(with|:|=)?\s*([\w.+-]+@[\w-]+\.[\w.]+)\s*$", re.I)
+WATCH, WATCH_ONE = "👀 Watch prices for me", "👀 Watch this one"
+STOP_WATCH = re.compile(r"^\s*(stop watching|stop (the )?(watch|alerts)|(i )?(have )?booked( it)?|already booked)\b", re.I)
+MY_WATCHES = re.compile(r"^\s*(my watches|what are you watching|watch(ed|ing)? (list|trips))\s*\??\s*$", re.I)
+WATCH_EVERY_H, WATCH_SOON_H = 3, 1  # how often a watched trip is searched again (the last 2 days: hourly)
 LOGIN_TO = re.compile(r"^\s*(log ?in|sign ?in)\s+(to|on|into)?\s*(%s)\b" % "|".join(login.SITES), re.I)
 SET_UPI = re.compile(r"^\s*(set\s+)?(my\s+)?upi(\s+id)?\s*(is|to|:|=)?\s*([\w.\-]{2,256}@[a-z][a-z0-9]{1,63})\s*$", re.I)
 SET_CAP = re.compile(r"^\s*(set\s+)?(my\s+)?order\s+cap\s*(is|to|:|=)?\s*₹?\s*([\d,]{2,7})\s*$", re.I)
@@ -292,6 +296,7 @@ class Assistant:
         self.orders = food.Orders(chat=self._traced)
         self.magicpin = magicpin or food.MagicPin(chat=self._traced)
         self.eatsure = eatsure or food.EatSure()
+        self.now = time.time  # the trip watcher's clock (tests move it)
         self.rail = self.bus = self.air = travel  # .station/.trains, .bus_city/.buses, .flights (tests replace them)
         self.extra_wait = float(os.environ.get("BOT_EXTRA_WAIT", "5"))  # s a slow app gets to join the first list
         self.home.mkdir(parents=True, exist_ok=True)
@@ -301,6 +306,9 @@ class Assistant:
         self.db.execute("CREATE TABLE IF NOT EXISTS sessions (chat TEXT PRIMARY KEY, mode TEXT, data TEXT, expires REAL)")
         # orders being tracked: survive restarts (resume_trackers)
         self.db.execute("CREATE TABLE IF NOT EXISTS trackers (chat TEXT PRIMARY KEY, channel TEXT, last TEXT, until REAL)")
+        # trips the owner asked to watch: searched again in the background (check_watches), alerts on changes
+        self.db.execute("CREATE TABLE IF NOT EXISTS watches (id INTEGER PRIMARY KEY, chat TEXT, channel TEXT, kind TEXT, "
+                        "slots TEXT, target TEXT, history TEXT, reminded TEXT, next REAL, active INTEGER)")
         self.db.execute("CREATE TABLE IF NOT EXISTS traces (ts REAL, chat TEXT, text TEXT, reply TEXT, ms INTEGER, "
                         "steps TEXT)")
         self.lock = threading.Lock()
@@ -544,12 +552,16 @@ class Assistant:
             self.store.set_fact("owner:google", m[4].lower(), "owner")
             return (f"Saved: on sites with 'Continue with Google' I'll use {m[4].lower()}. Sign in to that Google account "
                     "once in the bot's Chrome (Hermes desktop) so I can pick it.")
+        if STOP_WATCH.match(text):
+            return self._stop_watches(chat)
+        if MY_WATCHES.match(text):
+            return self._list_watches(chat)
         m = LOGIN_TO.match(text)
         if m:
             return self._need_login(chat, m[3].lower(), None)
         self._remember(chat, text)
         sess = self._session(chat)
-        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order", "travel"):
+        if sess and sess["mode"] in ("ideas", "options", "act", "confirm_order", "travel", "travel_pick"):
             r = self._stage(chat, text, sess)
             if r is not None:
                 return r
@@ -787,10 +799,19 @@ class Assistant:
         m = re.fullmatch(r"\s*#?([1-3])\s*[,.]?\s*(link|cart|order|order it|for me|place it|place)?\s*[.!]?\s*", t, re.I)
         if n is None and m:
             n = int(m[1])
-        if st["mode"] == "travel":  # a train or bus picked: booking for the owner isn't built, the link is
+        if st["mode"] == "travel":  # an option picked (booking for the owner isn't built: the link), or watch them all
             self._end(chat)
+            if t.lower() == WATCH.lower() or re.fullmatch(r"(please )?watch( (it|them|this|the prices?|prices))?[.!]?", t, re.I):
+                return self._watch(chat, st["kind"], st["slots"], None, st["options"][0])
             if n and n <= len(st["options"]):
-                return f"{st['options'][n - 1]['pick']}. {st['tail']}"
+                o = st["options"][n - 1]
+                self._start(chat, "travel_pick", 1, kind=st["kind"], slots=st["slots"], option=o)
+                return Reply(f"{o['pick']}. {st['tail']}", [WATCH_ONE])
+            return None
+        if st["mode"] == "travel_pick":
+            self._end(chat)
+            if t.lower() == WATCH_ONE.lower() or re.fullmatch(r"(please )?watch( (it|this|this one|that))?[.!]?", t, re.I):
+                return self._watch(chat, st["kind"], st["slots"], st["option"]["key"], st["option"])
             return None
         if st["mode"] == "ideas":
             self._end(chat)
@@ -1068,127 +1089,223 @@ class Assistant:
         return f"{kind.title()}: " + ", ".join(f"{k.replace('_', ' ')} {' + '.join(map(str, v)) if isinstance(v, list) else v}"
                                                for k, v in slots.items())
 
-    def _trains(self, chat: str, slots: dict, tid: int | None) -> str:
-        """Real trains for the form: stations from the names, ConfirmTkt's fares and seats, the surest 3 by code."""
+    def _search_trip(self, kind: str, slots: dict, n: int = 3) -> dict | str:
+        """One train / bus / flight search for a form, by code. -> {"top", "header", "lines", "labels", "tail",
+        "empty", "note", "foot", "site"} or a message saying what went wrong. No chat state: the chat and the trip
+        watcher both use it. Each option gets "key" (which train/bus/flight it is), "price" (for everyone) and
+        "pick" (one line for a tap)."""
         from datetime import date
         try:
             day = date.fromisoformat(str(slots.get("date")))
         except ValueError:
             return f"I couldn't read the date '{slots.get('date')}'. Which day?"
-        self.notify(f"Looking for trains from {slots['from']} to {slots['to']} on {day:%a %d %b}…")
-        try:
-            a, b = self.rail.station(str(slots["from"])), self.rail.station(str(slots["to"]))
-            if not a or not b:
-                return f"I couldn't find a railway station for {slots['from'] if not a else slots['to']}."
-            found = self.rail.trains(a["code"], b["code"], day)
-        except Exception as e:
-            return f"ConfirmTkt didn't answer just now ({type(e).__name__}), so I couldn't search trains. Try again in a minute."
         people = len(slots["passengers"]) if isinstance(slots.get("passengers"), list) else 1
-        cls = travel.train_class(slots.get("class"))
-        top = travel.best(found, cls, slots.get("max_price"), people)
-        note = ""
-        if not top and cls:  # nothing bookable in that class: say so and show the others
-            top = travel.best(found, None, slots.get("max_price"), people)
-            note = f"Nothing bookable in {cls}" + (" within your budget" if slots.get("max_price") else "") + ". "
-        if not top:
-            if tid:
-                B.finish(self.store, tid, "failed", "no bookable train", "confirmtkt")
-            return (f"{len(found)} trains run from {a['name']} to {b['name']} on {day:%a %d %b}, but none has a "
-                    "bookable seat" + (" within your budget" if slots.get("max_price") else "") + ".")
-        link = travel.link(a["code"], b["code"], day)
-        lines = []
-        for n, o in enumerate(top, 1):
-            h, m = divmod(int(o["minutes"] or 0), 60)
-            chance = "" if o["status"].upper().startswith("AVL") or o["chance"] is None else f", {o['chance']}% chance to confirm"
-            total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
-            lines.append(f"{n}. {o['name']} {o['number']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m), {o['class']} "
-                         f"₹{o['fare']:g}{total}, {o['status']}{chance}")
-        seen = min((o["as_of"] for o in top if o["as_of"]), default="")
-        labels = [f"{n}. {o['name']} {o['class']} ₹{o['fare']:g}" for n, o in enumerate(top, 1)]
-        for o in top:
-            o["pick"] = f"{o['name']} ({o['number']}), {o['class']} ₹{o['fare']:g} a seat, {o['status']}"
-        self._start(chat, "travel", 1, options=top, labels=labels, task=tid,
-                    tail=f"I can't book trains for you yet (IRCTC blocks the server); book it on ConfirmTkt: {link}")
-        return Reply(note + f"Trains {a['name']} → {b['name']}, {day:%a %d %b}:\n" + "\n".join(lines)
-                     + (f"\n(Seats as ConfirmTkt last saw them, oldest {seen.replace('T', ' ')}.)" if seen else "")
-                     + "\nTap one (or reply its number).", labels)
-
-    def _buses(self, chat: str, slots: dict, tid: int | None) -> str:
-        """Real buses for the form from abhibus: enough seats for everyone, the seat and time asked, cheapest 3."""
-        from datetime import date
-        try:
-            day = date.fromisoformat(str(slots.get("date")))
-        except ValueError:
-            return f"I couldn't read the date '{slots.get('date')}'. Which day?"
-        self.notify(f"Looking for buses from {slots['from']} to {slots['to']} on {day:%a %d %b}…")
-        try:
-            a, b = self.bus.bus_city(str(slots["from"])), self.bus.bus_city(str(slots["to"]))
-            if not a or not b:
-                return f"I couldn't find {slots['from'] if not a else slots['to']} on abhibus."
-            found = self.bus.buses(a, b, day)
-        except Exception as e:
-            return f"abhibus didn't answer just now ({type(e).__name__}), so I couldn't search buses. Try again in a minute."
-        people = len(slots["passengers"]) if isinstance(slots.get("passengers"), list) else 1
-        top = travel.best_buses(found, slots.get("seat"), slots.get("time_window"), slots.get("max_price"), people)
-        if not top:
-            if tid:
-                B.finish(self.store, tid, "failed", "no bus fits", "abhibus")
+        budget, when = slots.get("max_price"), f"{day:%a %d %b}"
+        out = {"note": "", "foot": "", "lines": [], "labels": []}
+        if kind == "train":
+            try:
+                a, b = self.rail.station(str(slots["from"])), self.rail.station(str(slots["to"]))
+                if not a or not b:
+                    return f"I couldn't find a railway station for {slots['from'] if not a else slots['to']}."
+                found = self.rail.trains(a["code"], b["code"], day)
+            except Exception as e:
+                return f"ConfirmTkt didn't answer just now ({type(e).__name__}), so I couldn't search trains. Try again in a minute."
+            cls = travel.train_class(slots.get("class"))
+            top = travel.best(found, cls, budget, people, n)
+            if not top and cls:  # nothing bookable in that class: say so and show the others
+                top = travel.best(found, None, budget, people, n)
+                out["note"] = f"Nothing bookable in {cls}" + (" within your budget" if budget else "") + ". "
+            for i, o in enumerate(top, 1):
+                h, m = divmod(int(o["minutes"] or 0), 60)
+                chance = "" if o["status"].upper().startswith("AVL") or o["chance"] is None else f", {o['chance']}% chance to confirm"
+                total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
+                out["lines"].append(f"{i}. {o['name']} {o['number']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m), {o['class']} "
+                                    f"₹{o['fare']:g}{total}, {o['status']}{chance}")
+                out["labels"].append(f"{i}. {o['name']} {o['class']} ₹{o['fare']:g}")
+                o.update(key=f"{o['number']} {o['class']}", price=o["total"],
+                         pick=f"{o['name']} ({o['number']}), {o['class']} ₹{o['fare']:g} a seat, {o['status']}")
+            seen = min((o["as_of"] for o in top if o["as_of"]), default="")
+            out.update(header=f"Trains {a['name']} → {b['name']}, {when}:\n", site="confirmtkt",
+                       foot=f"\n(Seats as ConfirmTkt last saw them, oldest {seen.replace('T', ' ')}.)" if seen else "",
+                       tail=f"I can't book trains for you yet (IRCTC blocks the server); book it on ConfirmTkt: "
+                            f"{travel.link(a['code'], b['code'], day)}",
+                       empty=f"{len(found)} trains run from {a['name']} to {b['name']} on {when}, but none has a "
+                             "bookable seat" + (" within your budget" if budget else "") + ".")
+        elif kind == "bus":
+            try:
+                a, b = self.bus.bus_city(str(slots["from"])), self.bus.bus_city(str(slots["to"]))
+                if not a or not b:
+                    return f"I couldn't find {slots['from'] if not a else slots['to']} on abhibus."
+                found = self.bus.buses(a, b, day)
+            except Exception as e:
+                return f"abhibus didn't answer just now ({type(e).__name__}), so I couldn't search buses. Try again in a minute."
+            top = travel.best_buses(found, slots.get("seat"), slots.get("time_window"), budget, people, n)
+            for i, o in enumerate(top, 1):
+                h, m = divmod(o["minutes"], 60)
+                total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
+                star = f", ★{o['rating']}" if o["rating"] else ""
+                out["lines"].append(f"{i}. {o['operator']}, {o['type']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m), "
+                                    f"₹{o['fare']:g}{total}, {o['seats']} seats left{star}")
+                out["labels"].append(f"{i}. {o['operator']} {o['dep']} ₹{o['fare']:g}")
+                o.update(key=f"{o['operator']} {o['dep']}", price=o["total"], status=f"{o['seats']} seats",
+                         pick=f"{o['operator']} at {o['dep']}, ₹{o['fare']:g} a seat")
             asked = ", ".join(str(x) for x in (slots.get("seat"), slots.get("time_window")) if x)
-            return (f"{len(found)} buses run from {a['name']} to {b['name']} on {day:%a %d %b}, but none fits"
-                    + (f" ({asked}" + (f", under ₹{slots['max_price']:g}" if slots.get("max_price") else "") + ")"
-                       if asked or slots.get("max_price") else "") + " with seats for everyone.")
-        link = travel.bus_link(a, b, day)
-        lines, labels = [], []
-        for n, o in enumerate(top, 1):
-            h, m = divmod(o["minutes"], 60)
-            total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
-            star = f", ★{o['rating']}" if o["rating"] else ""
-            lines.append(f"{n}. {o['operator']}, {o['type']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m), ₹{o['fare']:g}{total}, "
-                         f"{o['seats']} seats left{star}")
-            labels.append(f"{n}. {o['operator']} {o['dep']} ₹{o['fare']:g}")
-            o["pick"] = f"{o['operator']} at {o['dep']}, ₹{o['fare']:g} a seat"
-        self._start(chat, "travel", 1, options=top, labels=labels, task=tid,
-                    tail=f"I can't book buses for you yet; book it on abhibus: {link}")
-        return Reply(f"Buses {a['name']} → {b['name']}, {day:%a %d %b}:\n" + "\n".join(lines)
-                     + "\nTap one (or reply its number).", labels)
+            out.update(header=f"Buses {a['name']} → {b['name']}, {when}:\n", site="abhibus",
+                       tail=f"I can't book buses for you yet; book it on abhibus: {travel.bus_link(a, b, day)}",
+                       empty=f"{len(found)} buses run from {a['name']} to {b['name']} on {when}, but none fits"
+                             + (f" ({asked}" + (f", under ₹{budget:g}" if budget else "") + ")" if asked or budget else "")
+                             + " with seats for everyone.")
+        elif kind == "flight":
+            a, b = travel.airport(str(slots.get("from") or "")), travel.airport(str(slots.get("to") or ""))
+            if not a or not b:
+                return (f"I don't know the airport for {slots.get('from') if not a else slots.get('to')}. Send its "
+                        "3-letter code (e.g. GOI for Goa).")
+            try:
+                found = self.air.flights(a, b, day, people)
+            except Exception as e:
+                return f"EaseMyTrip didn't load just now ({type(e).__name__}), so I couldn't search flights. Try again in a minute."
+            top = travel.best_flights(found, budget, slots.get("time_window"), slots.get("airline_avoid"), n)
+            for i, o in enumerate(top, 1):
+                h, m = divmod(o["minutes"], 60)
+                stops = "non-stop" if not o["stops"] else f"{o['stops']} stop via {', '.join(o['via'])}"
+                total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
+                out["lines"].append(f"{i}. {o['airline']} {o['flight']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m, {stops}), "
+                                    f"₹{o['fare']:g}{total}")
+                out["labels"].append(f"{i}. {o['airline']} {o['dep']} ₹{o['fare']:g}")
+                o.update(key=o["flight"], price=o["total"], status="",
+                         pick=f"{o['airline']} {o['flight']} at {o['dep']}, ₹{o['total']:g} in all")
+            out.update(header=f"Flights {a} → {b}, {when}:\n", site="easemytrip",
+                       tail=f"I can't book flights for you yet; book it on EaseMyTrip: {travel.flight_link(a, b, day, people)}",
+                       empty=f"{len(found)} flights {a} → {b} on {when}, but none fits"
+                             + (f" under ₹{budget:g} for everyone" if budget else "") + ".")
+        else:
+            return f"Searching {kind}s isn't built yet."
+        out["top"] = top
+        return out
 
-    def _flights(self, chat: str, slots: dict, tid: int | None) -> str:
-        """Real flights for the form from EaseMyTrip's results (in the bot's Chrome, ~15 s): the cheapest 3 that fit."""
-        from datetime import date
-        try:
-            day = date.fromisoformat(str(slots.get("date")))
-        except ValueError:
-            return f"I couldn't read the date '{slots.get('date')}'. Which day?"
-        a, b = travel.airport(str(slots.get("from") or "")), travel.airport(str(slots.get("to") or ""))
-        if not a or not b:
-            return (f"I don't know the airport for {slots.get('from') if not a else slots.get('to')}. Send its 3-letter "
-                    "code (e.g. GOI for Goa).")
-        people = len(slots["passengers"]) if isinstance(slots.get("passengers"), list) else 1
-        self.notify(f"Looking for flights {a} → {b} on {day:%a %d %b}…")
-        try:
-            found = self.air.flights(a, b, day, people)
-        except Exception as e:
-            return f"EaseMyTrip didn't load just now ({type(e).__name__}), so I couldn't search flights. Try again in a minute."
-        top = travel.best_flights(found, slots.get("max_price"), slots.get("time_window"), slots.get("airline_avoid"))
-        if not top:
+    def _trip(self, chat: str, kind: str, slots: dict, tid: int | None) -> str:
+        """A complete travel form: real options now (no 'go ahead?'), a tap for the link, or watch the prices."""
+        self.notify(f"Looking for {'buses' if kind == 'bus' else kind + 's'} from {slots.get('from')} to {slots.get('to')}…")
+        r = self._search_trip(kind, slots)
+        if isinstance(r, str):
+            return r
+        if not r["top"]:
             if tid:
-                B.finish(self.store, tid, "failed", "no flight fits", "easemytrip")
-            return (f"{len(found)} flights {a} → {b} on {day:%a %d %b}, but none fits"
-                    + (f" under ₹{slots['max_price']:g} for everyone" if slots.get("max_price") else "") + ".")
-        link = travel.flight_link(a, b, day, people)
-        lines, labels = [], []
-        for n, o in enumerate(top, 1):
-            h, m = divmod(o["minutes"], 60)
-            stops = "non-stop" if not o["stops"] else f"{o['stops']} stop via {', '.join(o['via'])}"
-            total = f" (₹{o['total']:g} for {people})" if people > 1 else ""
-            lines.append(f"{n}. {o['airline']} {o['flight']}: {o['dep']}→{o['arr']} ({h}h{m:02d}m, {stops}), "
-                         f"₹{o['fare']:g}{total}")
-            labels.append(f"{n}. {o['airline']} {o['dep']} ₹{o['fare']:g}")
-            o["pick"] = f"{o['airline']} {o['flight']} at {o['dep']}, ₹{o['total']:g} in all"
-        self._start(chat, "travel", 1, options=top, labels=labels, task=tid,
-                    tail=f"I can't book flights for you yet; book it on EaseMyTrip: {link}")
-        return Reply(f"Flights {a} → {b}, {day:%a %d %b}:\n" + "\n".join(lines) + "\nTap one (or reply its number).",
-                     labels)
+                B.finish(self.store, tid, "failed", r["empty"], r["site"])
+            return r["empty"]
+        self._start(chat, "travel", 1, options=r["top"], labels=r["labels"], task=tid, tail=r["tail"], kind=kind,
+                    slots=slots)
+        return Reply(r["note"] + r["header"] + "\n".join(r["lines"]) + r["foot"] + "\nTap one (or reply its number), "
+                     "or I can watch the prices for you.", r["labels"] + [WATCH])
+
+    # watching a trip: never lose a fare (owner's first goal) ----------------------------------------------------
+    def _route(self, kind: str, slots: dict) -> str:
+        from datetime import date
+        day = date.fromisoformat(str(slots["date"]))
+        return f"{kind} {slots.get('from')} → {slots.get('to')}, {day:%a %d %b}"
+
+    def _watch(self, chat: str, kind: str, slots: dict, target: str | None, now_opt: dict, now: float | None = None) -> str:
+        """Start watching: the price seen now is the first point of its history. Reminders already due (a trip in 2
+        days gets no '7 days left') are marked done."""
+        from datetime import date
+        now = now or self.now()
+        left = (date.fromisoformat(str(slots["date"])) - date.fromtimestamp(now)).days
+        with self.lock:
+            self.db.execute("INSERT INTO watches (chat, channel, kind, slots, target, history, reminded, next, active) "
+                            "VALUES (?,?,?,?,?,?,?,?,1)",
+                            (chat, getattr(self.local, "channel", "whatsapp"), kind, json.dumps(slots), target,
+                             json.dumps([[now, now_opt["price"], now_opt.get("status", "")]]),
+                             json.dumps([d for d in (7, 3, 1) if d >= left]),
+                             now + 3600 * (WATCH_SOON_H if left <= 2 else WATCH_EVERY_H)))
+            self.db.commit()
+        what = now_opt["pick"] if target else f"the best fare (now ₹{now_opt['price']:g})"
+        return (f"Watching {self._route(kind, slots)}: {what}. I'll check every {WATCH_EVERY_H} hours (hourly in the "
+                "last 2 days) and message you when the price drops or rises, when seats run low, and 7, 3 and 1 day "
+                "before if it's still not booked. Say 'stop watching' once you've booked.")
+
+    def _stop_watches(self, chat: str) -> str:
+        with self.lock:
+            n = self.db.execute("UPDATE watches SET active=0 WHERE chat=? AND active=1", (chat,)).rowcount
+            self.db.commit()
+        return f"Stopped watching {n} trip{'s' if n != 1 else ''}." if n else "I'm not watching any trips for you."
+
+    def _list_watches(self, chat: str) -> str:
+        rows = self._read("SELECT kind, slots, target, history FROM watches WHERE chat=? AND active=1", (chat,))
+        if not rows:
+            return "I'm not watching any trips for you. Search one and tap '👀 Watch prices for me'."
+        return "Watching:\n" + "\n".join(
+            f"• {self._route(k, json.loads(sl))}{f' ({tg})' if tg else ''}: ₹{json.loads(h)[-1][1]:g} now"
+            for k, sl, tg, h in rows)
+
+    def check_watches(self, send, now: float | None = None) -> int:
+        """Search every watched trip that's due again and message the owner only when something changed.
+        send(channel, chat, text). Returns how many were checked."""
+        from datetime import date
+        now = now or time.time()
+        rows = self._read("SELECT id, chat, channel, kind, slots, target, history, reminded FROM watches "
+                          "WHERE active=1 AND next<=?", (now,))
+        for wid, chat, channel, kind, slots, target, hist, reminded in rows:
+            slots, hist, reminded = json.loads(slots), json.loads(hist), json.loads(reminded)
+            left = (date.fromisoformat(str(slots["date"])) - date.fromtimestamp(now)).days
+            if left < 0:
+                self._update_watch(wid, hist, reminded, now, active=0)
+                continue
+            route = self._route(kind, slots)
+            r = self._search_trip(kind, slots, n=60)
+            if isinstance(r, str):  # the site didn't answer: try again in an hour, no message
+                self._update_watch(wid, hist, reminded, now + 3600)
+                continue
+            opt = next((o for o in r["top"] if o["key"] == target), None) if target else (r["top"] or [None])[0]
+            notes = []
+            if opt is None:
+                if hist[-1][1] is not None:
+                    notes.append(f"⚠ {route}: {target or 'nothing'} has no bookable seat that fits any more."
+                                 + (f" Others: {r['tail'].split(': ', 1)[-1]}" if r["top"] else ""))
+                hist.append([now, None, "gone"])
+            else:
+                price, status, last = opt["price"], opt.get("status", ""), next((h for h in reversed(hist) if h[1]), None)
+                tail = r["tail"].split(": ", 1)[-1]
+                if last and price <= last[1] * 0.95 or last and last[1] - price >= 200:
+                    notes.append(f"📉 {route}: {opt['pick']}, ₹{price:g} now (was ₹{last[1]:g}). Book now? {tail}")
+                elif last and price >= last[1] * 1.10:
+                    notes.append(f"📈 {route}: up to ₹{price:g} (was ₹{last[1]:g}). Fares usually keep rising as the "
+                                 f"date nears. {tail}")
+                low = self._seats_low(kind, status, last[2] if last else "")
+                if low:
+                    notes.append(f"⚠ {route}: {low} ({opt['pick']}). {tail}")
+                hist.append([now, price, status])
+            for d in (7, 3, 1):
+                if left <= d and d not in reminded:
+                    reminded.append(d)
+                    cheapest = f" Best now: {opt['pick']}." if opt else ""
+                    notes.append(f"⏰ {route} is in {left} day{'s' if left != 1 else ''} and not booked yet.{cheapest} "
+                                 f"{r['tail'].split(': ', 1)[-1]}")
+                    break
+            for text in notes:
+                send(channel, chat, text)
+            self._update_watch(wid, hist, reminded, now + 3600 * (WATCH_SOON_H if left <= 2 else WATCH_EVERY_H))
+        return len(rows)
+
+    @staticmethod
+    def _seats_low(kind: str, now: str, before: str) -> str:
+        """'' or what changed: a train going from available to waitlist, or under 10 seats left; a bus under 6."""
+        m, b = re.match(r"AVL\s*(\d+)", now or "", re.I), re.match(r"AVL\s*(\d+)", before or "", re.I)
+        if kind == "train":
+            if b and not m:
+                return f"seats are gone: {now} now"
+            if m and int(m[1]) < 10 and (not b or int(b[1]) >= 10):
+                return f"only {m[1]} seats left"
+        if kind == "bus":
+            n, p = re.match(r"(\d+) seats", now or ""), re.match(r"(\d+) seats", before or "")
+            if n and int(n[1]) < 6 and (not p or int(p[1]) >= 6):
+                return f"only {n[1]} seats left"
+        return ""
+
+    def _update_watch(self, wid: int, hist: list, reminded: list, next_at: float, active: int = 1) -> None:
+        with self.lock:
+            self.db.execute("UPDATE watches SET history=?, reminded=?, next=?, active=? WHERE id=?",
+                            (json.dumps(hist[-200:]), json.dumps(reminded), next_at, active, wid))
+            self.db.commit()
 
     def _booking_reply(self, chat: str, v: dict) -> str:
         if "error" in v:
@@ -1208,11 +1325,7 @@ class Assistant:
         self._end(chat)
         if v["kind"] == "food":
             return self._compare(chat, r["slots"], tid)
-        if v["kind"] == "train":
-            return self._trains(chat, r["slots"], tid)
-        if v["kind"] == "bus":
-            return self._buses(chat, r["slots"], tid)
-        if v["kind"] == "flight":
-            return self._flights(chat, r["slots"], tid)
+        if v["kind"] in ("train", "bus", "flight"):
+            return self._trip(chat, v["kind"], r["slots"], tid)
         return (f"Got it: {self._summary_line(r['slots'], v['kind'])}. Searching {'buses' if v['kind'] == 'bus' else v['kind'] + 's'} on the sites isn't built "
                 "yet, so I've saved it; food is the part that works end to end today.")

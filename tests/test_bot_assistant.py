@@ -881,7 +881,7 @@ def test_bus_request_searches_real_buses_and_picks_by_code(tmp_path):
     r = say(b, "Bus from Bangalore to Pondicherry on 24 Oct 2099 at night for me and mom, sleeper")
     assert r.startswith("Buses Bangalore → Pondicherry, Sat 24 Oct:\n1. SRS, AC Sleeper (2+1): 22:30→06:00 (7h00m), "
                         "₹899 (₹1798 for 2), 5 seats left, ★4.2\n2. VRL"), r  # Orange: 1 seat for 2; KSRTC: a seater
-    assert r.choices == ["1. SRS 22:30 ₹899", "2. VRL 21:00 ₹1100"]
+    assert r.choices == ["1. SRS 22:30 ₹899", "2. VRL 21:00 ₹1100", A.WATCH]
     r = say(b, "2")
     assert r.startswith("VRL at 21:00, ₹1100 a seat. I can't book buses for you yet; book it on abhibus: "
                         "https://www.abhibus.com/bus_search/Bangalore/7/Pondicherry/77/24-10-2099/O")
@@ -896,3 +896,71 @@ def test_flight_request_searches_real_flights(tmp_path):
                         "BOM), ₹4990\n2. Akasa Air QP 1301: 13:30→12:00 (1h30m, non-stop), ₹5600\nTap one"), r  # 6120: over
     assert say(b, "2").startswith("Akasa Air QP 1301 at 13:30, ₹5600 in all. I can't book flights for you yet; book it "
                                   "on EaseMyTrip: https://flight.easemytrip.com/FlightList/Index?srch=BLR-BLR-India|GOI-GOI-India|30/10/2099")
+
+
+def test_watch_a_trip_alerts_on_changes_and_reminds_before_it_is_too_late(tmp_path):
+    """Owner's first goal: never lose a fare. A fake clock walks a watched train through price and seat changes."""
+    import datetime as dt
+    m = Model(call("task_start", kind="train", slots={"from": "Bangalore", "to": "Chennai", "date": "2099-11-10",
+                                                     "class": "3A", "passengers": ["me"]}))
+    b = bot(tmp_path, m)
+    r = say(b, "train from bangalore to chennai on 10 nov 2099 in 3A")
+    assert r.choices[-1] == A.WATCH and "or I can watch the prices for you" in r
+    r = say(b, "1")  # Mys Mas Exp 3A ₹790, AVL 8
+    assert r.choices == [A.WATCH_ONE]
+    t0 = dt.datetime(2099, 10, 30, 9).timestamp()  # 11 days before
+    b.now = lambda: t0
+    r = say(b, A.WATCH_ONE)
+    assert r.startswith("Watching train Bangalore → Chennai, Tue 10 Nov: Mys Mas Exp (12610), 3A ₹790 a seat, AVL 8.")
+    assert "Say 'stop watching'" in r and "Watching:\n• train Bangalore → Chennai, Tue 10 Nov (12610 3A): ₹790 now" == \
+        say(b, "my watches")
+
+    sent = []
+    send = lambda ch, chat, text: sent.append(text)  # noqa: E731
+    base = b.rail.trains
+
+    def fares(fare, status):
+        def trains(a, c, day):
+            got = base(a, c, day)
+            got[2]["classes"]["3A"].update(fare=fare, status=status)  # 12610's 3A
+            return got
+        return trains
+    assert b.check_watches(send, now=t0 + 3600) == 0  # not due yet (every 3 h)
+    b.rail.trains = fares(790, "AVL 8")
+    assert b.check_watches(send, now=t0 + 3 * 3600) == 1 and sent == []  # nothing changed: no message
+    b.rail.trains = fares(690, "AVL 8")
+    b.check_watches(send, now=t0 + 6 * 3600)
+    assert sent[-1].startswith("📉 train Bangalore → Chennai, Tue 10 Nov: Mys Mas Exp (12610), 3A ₹690 a seat, AVL 8, "
+                               "₹690 now (was ₹790). Book now? https://www.confirmtkt.com/")
+    b.rail.trains = fares(780, "WL 4")
+    b.check_watches(send, now=t0 + 9 * 3600)
+    assert sent[-2].startswith("📈 train Bangalore → Chennai, Tue 10 Nov: up to ₹780 (was ₹690)")
+    assert sent[-1].startswith("⚠ train Bangalore → Chennai, Tue 10 Nov: seats are gone: WL 4 now")
+    n = len(sent)
+    b.check_watches(send, now=dt.datetime(2099, 11, 3, 10).timestamp())  # 7 days left
+    assert len(sent) == n + 1 and sent[-1].startswith("⏰ train Bangalore → Chennai, Tue 10 Nov is in 7 days and not booked")
+    b.check_watches(send, now=dt.datetime(2099, 11, 3, 14).timestamp())
+    assert len(sent) == n + 1  # reminded once
+    assert say(b, "booked it") == "Stopped watching 1 trip."
+    assert b.check_watches(send, now=dt.datetime(2099, 11, 9, 10).timestamp()) == 0  # no more checks or reminders
+
+
+def test_watching_the_best_fare_and_a_site_that_fails(tmp_path):
+    import datetime as dt
+    m = Model(call("task_start", kind="bus", slots={"from": "Bangalore", "to": "Pondicherry", "date": "2099-10-24",
+                                                   "passengers": ["me"], "seat": "sleeper"}))
+    b = bot(tmp_path, m)
+    say(b, "bus from bangalore to pondicherry on 24 oct 2099, sleeper")
+    t0 = dt.datetime(2099, 10, 22, 9).timestamp()  # 2 days before: hourly, and no 7- or 3-day reminder
+    b.now = lambda: t0
+    r = say(b, "watch it")
+    assert "the best fare (now ₹750)" in r
+    sent = []
+    b.bus.buses = lambda a, c, d: (_ for _ in ()).throw(OSError("down"))
+    b.check_watches(lambda ch, chat, text: sent.append(text), now=t0 + 3600)
+    assert sent == []  # a failed search is retried quietly
+    b.bus = FakeBus()
+    b.check_watches(lambda ch, chat, text: sent.append(text), now=t0 + 2 * 3600)
+    assert sent == [] or not sent[0].startswith("⏰")
+    b.check_watches(lambda ch, chat, text: sent.append(text), now=dt.datetime(2099, 10, 23, 12).timestamp())
+    assert sent[-1].startswith("⏰ bus Bangalore → Pondicherry, Sat 24 Oct is in 1 day and not booked yet. Best now: Orange")

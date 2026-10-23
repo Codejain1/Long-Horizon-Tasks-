@@ -206,7 +206,7 @@ def read_flights(body: dict, adults: int = 1) -> list[dict]:
             if not ls or not s.get("TF"):
                 continue
             out.append({"airline": " + ".join(dict.fromkeys(names.get(x["AC"], x.get("FlightName") or x["AC"]) for x in ls)),
-                        "flight": ", ".join(f"{x['AC']} {x['FN']}" for x in ls), "from": ls[0]["OG"], "to": ls[-1]["DT"],
+                        "flight": ", ".join(f"{x['AC']} {str(x['FN']).strip()}" for x in ls), "from": ls[0]["OG"], "to": ls[-1]["DT"],
                         "dep": ls[0]["DTM"], "arr": ls[-1]["ATM"], "stops": len(ls) - 1,
                         "via": [x["DT"] for x in ls[:-1]], "minutes": int(s.get("TotalJyTm") or 0),
                         "total": float(s["TF"]), "fare": round(float(s["TF"]) / max(1, adults))})

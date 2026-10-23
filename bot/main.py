@@ -130,6 +130,16 @@ def serve(chans, bot, sched, once: bool = False, check=chrome_ok, every_s: float
                      "searches work until it's back.", "✅ The language model answers again.")]
     next_check = 0.0
 
+    def watch_trips():  # watched trips: searched again in the background, the owner messaged on changes
+        while True:
+            try:
+                bot.check_watches(lambda channel, chat, text: chans[channel].send(chat, text) if channel in chans else None)
+            except Exception:
+                log.exception("trip watch")
+            time.sleep(300)
+    if hasattr(bot, "check_watches") and not once:
+        threading.Thread(target=watch_trips, daemon=True).start()
+
     while True:
         if time.time() >= next_check:
             next_check = time.time() + every_s
