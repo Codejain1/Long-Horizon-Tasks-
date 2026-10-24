@@ -8,11 +8,11 @@ The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, He
 **Repo split (lab vs product).**
 - **This repo (Long-Horizon):** `memrouter/`, `runner/`, `bench/` (backlog, tickets, web, bench.py — not botsmoke/forms),
   `hermes/`, `claude/`, and their tests. Thesis and multi-system benchmarks stay here.
-- **Owner bot:** sibling folder `../owner-bot` on this Mac (git init locally; remote TBD). Contains `bot/`, `app/`,
-  `deploy/bot/`, `bench/botsmoke.py`, `bench/forms.py`, and bot tests. See `docs/OWNER_BOT.md` and owner-bot
-  `docs/FUEL.md` for the HTTP-only link (`MEMORY_URL`, `/outcome` planned).
+- **Owner bot:** https://github.com/Codejain1/owner-bot (`../owner-bot` locally). See `docs/OWNER_BOT.md` and owner-bot
+  `docs/FUEL.md` (`MEMORY_URL`, `/outcome` from bot corrections).
 - **Server:** unchanged layout — `/opt/embed-memory` from this repo; `/opt/bot` from owner-bot bundles.
-- **Tests after split:** Long-Horizon **163** passed; owner-bot **136** passed (each repo: `uv venv -p 3.12 && uv pip install numpy pytest && .venv/bin/pytest`).
+- **Tests after split:** Long-Horizon **164** passed; owner-bot **143** passed (each repo: `uv venv -p 3.12 && uv pip install numpy pytest && .venv/bin/pytest`).
+- **Epic 1 (fuel):** owner-bot posts `/outcome` on corrections; `tests/test_fuel_hermes_scope.py` in Long-Horizon.
 
 Bot deploy and feature history through 2026-10-23 remains in the sections below (archive).
 
