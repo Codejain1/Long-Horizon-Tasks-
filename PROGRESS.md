@@ -1,541 +1,914 @@
 # Progress
 
-Updated at the end of every session. See `CLAUDE.md` for the working rules and `docs/PROJECT.md` §13 for the build order.
+The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, Hermes setup) is in the git tag
+`snapshot-pre-restructure` (`git show snapshot-pre-restructure:PROGRESS.md`).
 
-## Completed
+## Status (2026-10-24)
 
-- **Session 0 — repo setup (no platform code).**
-  - Moved `PROJECT.md` and `MEMROUTER.md` into `docs/`.
-  - Removed the empty root file `Docs`, which held only a newline. It would clash with the `docs/` folder on case-insensitive filesystems (macOS, Windows).
-  - Added `CLAUDE.md` (session rules) and this `PROGRESS.md`. Merged in PR #1.
-  - Applied two rounds of owner decisions to both docs (see "Decisions made"). PR #1 was merged before round 1 was pushed, so rounds 1 and 2 go in a follow-up PR.
-  - Wrote the Phase 1 spec as `docs/PROJECT.md` §18, including the domains and credentials real runs need.
+**Repo split (lab vs product).**
+- **This repo (Long-Horizon):** `memrouter/`, `runner/`, `bench/` (backlog, tickets, web, bench.py — not botsmoke/forms),
+  `hermes/`, `claude/`, and their tests. Thesis and multi-system benchmarks stay here.
+- **Owner bot:** https://github.com/Codejain1/owner-bot (`../owner-bot` locally). See `docs/OWNER_BOT.md` and owner-bot
+  `docs/FUEL.md` (`MEMORY_URL`, `/outcome` from bot corrections).
+- **Server:** unchanged layout — `/opt/embed-memory` from this repo; `/opt/bot` from owner-bot bundles.
+- **Tests after split:** Long-Horizon **164** passed; owner-bot **143** passed (each repo: `uv venv -p 3.12 && uv pip install numpy pytest && .venv/bin/pytest`).
+- **Epic 1 (fuel):** owner-bot posts `/outcome` on corrections; `tests/test_fuel_hermes_scope.py` in Long-Horizon.
 
-- **Session 1 — Phase 2: MCP skeleton, task state and memrouter step 1.** Built on request, ahead of Phase 1 (see open question 20).
-  - **MCP server** (`src/horizon/server.py`, MCP Python SDK 2.x): `start_task`, `recall_context` and `record_outcome`, with directive descriptions and server instructions. Runs over stdio (local) or streamable HTTP behind a static dev API key.
-  - **Task state** (`src/horizon/taskstate/`): goal (verbatim), constraints, plan, progress, decisions and open issues. It is always returned by `recall_context`, and `record_outcome` appends to it.
-  - **Memrouter step 1** (`src/horizon/memrouter/`):
-    - episodes (MEMROUTER §4 fields, plus `recall_id` and `schema_version`);
-    - the write path: record the episode and compute surprise, with every §5 edge case and the low-confidence fallback from similar episodes;
-    - basic similarity recall: team-isolated, excludes archived episodes, capped by a token budget, and every recall is logged.
-  - **Embeddings:** behind an interface. The default is fastembed (bge-small); the fallback is a deterministic offline hash embedder.
-  - **Storage:** Postgres + pgvector, plus SQLite for zero-setup local use. Both pass the same tests.
-  - **Failure isolation:** task state keeps working when memrouter fails. Tools report `memory_status: "unavailable"`, and memrouter is retried on the next call.
-  - **Claude Code integration** (`docs/CLAUDE_CODE.md`):
-    - SessionStart, PostToolUse (Bash) and Stop hooks;
-    - a CLAUDE.md snippet;
-    - `horizon install-claude-code` (idempotent installer);
-    - `horizon stats` (invocation reliability);
-    - the hook's real test counts override the model's self-report.
-  - Dockerfile and docker-compose (pgvector/pgvector:pg16).
-  - Tidied `CLAUDE.md`: the owner's decision rule is now a proper section, and the session-specific text was removed (the approvals are recorded below).
-  - **Tests:** 119 pass on both SQLite and Postgres 16 + pgvector 0.6. They include:
-    - a real stdio subprocess;
-    - HTTP with and without the API key;
-    - a simulated Claude Code session (stdio server + hook subprocesses sharing one store).
-  - **Real Claude Code check:** `claude mcp list` shows the server as `√ Connected`. No model calls were made.
+Bot deploy and feature history through 2026-10-23 remains in the sections below (archive).
 
-- **Session 2 — Phase 2 follow-ups** (owner round 4):
-  - redaction of decision text (`src/horizon/redact.py`);
-  - quiet Stop hook, with a `nudged_at` column on `test_captures` plus an additive migration;
-  - `MEMROUTER.md` lists `host` as a prediction source;
-  - reliability demo in `demo/reliability/`: 4 tasks, `run.sh`, `report.py`, and a README.
-  - Tests: 157 pass on SQLite and Postgres. `run.sh` is tested end to end with a fake `claude` binary that runs the project's real hooks. No real Claude Code session was run from here; the owner runs `demo/reliability/run.sh`.
+## Status (2026-10-18)
 
-- **Session 2 — Phase 1: benchmark harness (dry run).** In `src/horizon/bench/` and `bench/`; CLI `horizon-bench select | run | evaluate | report`.
-  - **Task selection:** fixed seed; every >4 h task, then 40/35/25% across the other buckets; stratified by repo within each bucket; the first 10 are a stratified smoke set.
-  - **Runner:** mini-SWE-agent's `DefaultAgent` with its SWE-bench templates, a 50-step cap and a $1 cap. Environments are Docker when the daemon answers, otherwise a local checkout at the base commit, and a stub repo in dry run.
-  - **Records:** one JSONL record per task run (schema v1) with success, tokens (input / output / cache write / cache read), cost, steps and wall time, plus `preds.json`, trajectories and run metadata.
-  - **Evaluation:** sb-cli for real runs, a mock evaluator in dry run.
-  - **Reports:** per run and across repeats (mean and stdev of the success rate).
-  - **Dry run is the default:** mock model, stub repos, mock evaluator, and a test that blocks all network access during a dry run. `real_runs: true` in `bench/config.yaml` is the one switch.
-  - A dry-run `--stage full --repeats 2` (100 task runs) takes seconds.
-  - Tests: 20 new; 177 pass in total on SQLite and Postgres.
-  - **Not done:** the committed 50-task list (`bench/tasks/swebench_verified_50.json`). `huggingface.co` is blocked in this session. See open question 26.
+**Live**
+- **Hermes** on AWS (Mumbai `i-0d0e2f600c143e705`). It runs on WhatsApp (self-chat only), with memrouter as its
+  memory (`/opt/embed-memory`) and the rails plugin.
+- **The model:** Qwen3-14B-AWQ on vLLM on a Stockholm g5.xlarge ($1.07/h while on), reached through an SSH tunnel.
+- **Claude Code memory:** memrouter over MCP (`claude/`).
 
-- **Session 3 — Phase 3: checkpoint references and rollback rules** (`PROJECT.md` §8). Stacked on PR #3, which is not merged yet.
-  - **Checkpoint references** (`src/horizon/taskstate/checkpoints.py`): a new `PreToolUse` hook on `recall_context` records, just before each decision:
-    - a **git** snapshot of the working tree (`git stash create`, or `HEAD` when clean). This doesn't touch the working tree, index, HEAD or stash list;
-    - a **Claude Code** checkpoint reference: the latest real user prompt from the session transcript (uuid, time and a redacted snippet), which is what `/rewind` lists.
-    - `recall_context` attaches the checkpoint to the task. Each decision in task state records its `checkpoint_id`.
-  - **Rollback rules** (`src/horizon/taskstate/rollback.py`): when `record_outcome` reports a failure, it returns `rollback`:
-    - **restore:** a `git restore --source=<snapshot>` command, and/or `/rewind` instructions for the user;
-    - **failure reason fed back:** a new `failure_reason` parameter, defaulting to the test summary. `recall_context`'s `task_state.retry` lists every failed approach in the streak;
-    - **retry limit:** `HORIZON_MAX_ATTEMPTS`, default 3;
-    - **escalation:** at the limit the task becomes `escalated`, and the host is told to stop and ask the user. `recall_context(human_guidance=…)` resumes the task.
-  - Installer, CLAUDE.md snippet, tool descriptions and `docs/CLAUDE_CODE.md` are updated.
-  - **Tests:** 12 new ones, plus an extended simulated Claude Code session (real hook subprocesses and the stdio server). **126 pass on SQLite.** The git restore is checked against real repos. The transcript parser was checked against a real Claude Code transcript, which found and fixed one case: `[Request interrupted by user]` entries.
-  - **Not run:** the Postgres variants (48 skipped). This machine has no pgvector or Docker. No real Claude Code session was run either.
+**Results that hold**
+- **Recall engine:** on LoCoMo it beats plain retrieval (the only significant memory-benchmark result). Search takes
+  25 ms, episode writes 21 ms, and `/add` through the Qwen writer 2.7 s (in the background).
+- **Rules:** an owner rule ("from now on…") becomes a standing rule that reaches every runner job.
+- **Runner verification:** when the runner says a job is done, the hidden tests agree 63/64 times
+  (fastbench2 + fastbench3).
 
-- **Session 4 — verification of Phases 1–3** (run locally on the owner's Mac, not in the cloud session).
-  - **Test suite:** 204 pass on SQLite **and** on Postgres 14 + pgvector 0.8.1, with no skips. The Postgres variants had never run outside the cloud session before. pgvector was built from source against Homebrew's Postgres 14, and a throwaway cluster ran on `127.0.0.1:55432`.
-  - **Phase 1 dry run, end to end:**
-    - `select` wrote the **real committed task list** (`bench/tasks/swebench_verified_50.json`, closing open question 26). `huggingface.co` is reachable here. The split is 3 / 19 / 16 / 12 across 9 repos, and re-running `select` reproduces it.
-    - `run --stage smoke`: 10 tasks in 3 s.
-    - `run --stage full`: 50 × 3 in 45 s, with the report showing mean, stdev and range.
-  - **MCP reliability with real Claude Code:** 6 runs × 5 tasks, 30 headless sessions, on Opus 5.5 and Sonnet 5. Details in `demo/reliability/RESULTS.md`.
-    - The tools were called at the right moments in 30/30 sessions, and the hooks fired as expected in 30/30. `outcome_recording_rate` was 1.0 in every run.
-    - Two misses, both fixed and re-tested:
-      - Opus skipped the git restore after a rollback. The instructions are sharper now, and the hook enforces it.
-      - The demo's allowlist blocked `python3 -m pytest`.
-  - **Demo changes:**
-    - a new task 5 (`title_case`) that fails its first attempt, to exercise rollback;
-    - sessions isolated from the user's own hooks and MCP servers;
-    - the report now measures hook firing and rollback compliance;
-    - `CLAUDE_MODEL` selects the host model.
-  - **Gaps against the docs, now fixed:**
-    - recall ranks by `similarity × conditionMatch` (MEMROUTER §6 step 2) and prefers the narrowest scope (§10);
-    - episode `provenance.agent_id` comes from the MCP client info (§4, §11);
-    - `record_outcome` can update the task plan (§8);
-    - `horizon stats` reports checkpoint counts;
-    - the committed task list (§18);
-    - README and bench docs are up to date.
+**Results that don't prove what they seemed to**
+- **Conventions run (housebench):** late-half house-rule checks +64.6 pts [+43.8, +83.3] with memory vs none. But the
+  bench hands memory the exact rule sentence and the none arm gets no feedback, so it shows "told the rules" beats
+  "never told". A notes file would likely match it.
+- **Experience lessons on ordinary tasks:** no benefit. Run 2: +0.0 [−18.8, +15.6]. fastbench3, with silent memory:
+  −6.2 [−21.9, +9.4]. The none arm alone moved 78.1 → 71.9 % on identical tasks, so ±6 pts is noise. What gets
+  through the filter is raw-pytest "advice" notes.
+- **The relevance bar:** memrouter scores are relative (per-query normalised, LoCoMo-trained), so `MIN_SCORE 0.5`
+  does not mean "relevant".
 
-- **Session 5 — owner round 5: zero-centred surprise, and judging outcomes against a baseline.**
-  - **Surprise** (`src/horizon/memrouter/surprise.py`, `MEMROUTER.md` §5): `0.6 × success_error + 0.4 × mean(efficiency_errors)`, where each efficiency error is `clamp((predicted − actual) / predicted, −1, 1)`. Missing or zero predictions are dropped. The ε setting is gone. A new test shows that 20,000 calibrated predictions average under 0.01.
-  - **Baseline** (`src/horizon/taskstate/judge.py`, `PROJECT.md` §9):
-    - The PostToolUse hook now stores failing test ids (pytest, unittest, go, cargo, jest, rspec).
-    - The test runs between `start_task` and the first `recall_context` become the task's baseline.
-    - Outcomes are judged on regressions and target tests. Pre-existing failures are excluded from success and reported in `test_judgement`, and only regressions trigger a rollback.
-    - Output that doesn't name every failure, or a task with no baseline run, falls back to the absolute rule.
-  - **Demo:** task 5 now produces a real regression (the shared `_cap` helper breaks `sentence_case`), and the report measures `baseline_run`.
-  - **Real Claude Code runs 7–10:** run 8 (Sonnet) exposed an ordering gap: it recorded the baseline run before its first recall. Fixed. Runs 9 and 10 (Opus, Sonnet) were clean on every metric, with every outcome judged by the baseline. See `demo/reliability/RESULTS.md`.
-  - **Tests:** 16 new (8 of them run on SQLite and Postgres).
+**The runner's real cost**
+- About half the jobs end on the 10-min budget, and 31 of those had already passed the hidden tests.
+- Contract, tests and spec review take 56–62 % of the time on ~40-line programs.
 
-- **Session 6 — PR #5 and Phase 4: decision layer** (branch `claude/phase-4-decision-layer`, not yet in a PR).
-  - **Merging.** PR #3 and PR #4 had already been merged by the owner, but #4 was merged into #3's branch *after* #3 reached `main`. That left Phase 3, session 4 and round 5 off `main`. Opened and merged **PR #5** (same branch into `main`). `main` passes all 230 tests.
-  - **Plan and acceptance criteria (`PROJECT.md` §5, §13 item 4):**
-    1. Crucial-decision detection, so routine steps skip the flow.
-    2. Scoring with one question per dimension per option, run in parallel. Measurable dimensions are computed in code; judgements come from the scorer.
-    3. Configurable weights and thresholds (clear winner, close call).
-    4. The second-tie rule: the cheaper or more reversible option, or ask a human if stakes are high.
-    5. Memory feeds evidence and fear warnings.
-    6. Jev behind a swappable interface, plus the small-LLM comparison scorer.
-    7. The scorer's prediction is recorded with the outcome (§9).
-    8. The host calls the tool at a crucial choice.
+## Architecture review (2026-10-18)
+Evidence from the code and from the live Hermes memory (read-only):
+- **Experience isn't wired to Hermes:** 0 episodes and 0 credited recalls in 214 memories since 5 Sep. Only the
+  benchmark records outcomes.
+- **Wrong standing rules are injected into every reply:** "The assistant can find Japanese, Mexican or Italian
+  dessert options" and 3 similar capability statements are stored as rules. A profile entry is a question ("which is
+  better, paddu or idli").
+- **The writer drops numbers or names in 35 of 59 writes** (`checked = mismatch`).
+- **Credit uses the runner's own step results:** the hidden-test outcome is sent without a `recall_id`, so it never
+  reaches the memories that were recalled.
+- **Consolidated "strategies" are the retry label** ("build via first try succeeded in 5/6"), with no content.
+- **One SQLite connection shared across server threads,** with reads outside the lock (the flaky test).
+- **The memory service also does geocoding, food search, mood and location.**
+- **Hermes, the writer and every benchmark stream share one A10G.**
 
-    **All eight are met.** Criterion 6 is met with mocked transports only: there are no API keys. See open questions 37 and 38.
-  - **Built:**
-    - `src/horizon/decision/`:
-      - `scorers.py`: `JevScorer` on the official `typesafe-sdk`, `LLMScorer` on the official `anthropic` SDK with structured outputs, both behind one `Scorer` interface;
-      - `layer.py`: the questions, composite, rules and fallback.
-    - The **`evaluate_options`** MCP tool. The tool description, server instructions, SessionStart text and CLAUDE.md snippet all tell the host to call it before a crucial choice.
-    - The `[decision]` extra, settings (`HORIZON_SCORER`, weights, thresholds), and docs in `docs/CLAUDE_CODE.md`.
-  - **Real Claude Code:** a new demo task 6 contains a crucial choice. Opus 5.5 and Sonnet 5 both called `evaluate_options` before their first edit, with four sensible options each. One finding, now fixed: `unscored` must not name a `chosen` option (details in `demo/reliability/RESULTS.md`).
-  - **Tests:** 258 pass on SQLite and Postgres (16 new for Phase 4). The Jev and LLM adapters are tested through the real SDKs over a mocked HTTP transport, which checks the request shape and response parsing.
+## Long-horizon parts 1-5 (2026-10-18, design in docs/LONG_HORIZON.md)
+1. **Design doc:** written.
+2. **Judge (`runner/judge.py`):** built.
+   - Backfill over 250 past jobs, job_done verdicts held out: Brier raw 0.323 (worse than the base rate 0.250, ECE
+     0.32: overconfident), calibrated 0.220, ECE 0.004. **The acceptance criterion is met.**
+   - Benchmarks now label every job's verdict with its hidden result.
+3. **Research jobs:** `--kind research`, the evidence check (each quote must be on its page) and `bench/web.py`
+   (versions / places / flight prep, scored against independent truth). Live run `/home/hermes/web1` (plain vs
+   runner, 2 reps) has started; results pending.
+4. **Big-model arm:** per-role endpoints (`--planner/--spec/--judge URL,MODEL,KEY_ENV`, `--api-key-env`), tokens
+   per model, backlog `--label/--extra`, retries on rate limits.
+   - **Owner OK'd the free OpenRouter model.** Running in `/home/hermes/backlog-smoke-e` next to plain / runner / mem
+     (rental tickets 1–3): `big` = nvidia/nemotron-3-ultra-550b-a55b:free alone (plain loop), `bigplan` = runner +
+     memory with that model as planner only.
+   - The judge stays on local Qwen in every arm.
+5. **World model (`runner/forecast.py`):** v0 was weak: AUC 0.44 early, 0.61 mid (no better than test pass rate
+   alone), no task knowledge, and it read "more failed checks" as good. **v1 (owner: "do it")** adds a task prior,
+   rate features, per-phase fits and calibration, gated on held-out tasks. Gain over the base rate +0.041 (TF-IDF)
+   / +0.049 (our encoder); AUC 0.70–0.71 from minute 2 (target 0.75, not met yet). The doom stop now fires (17 jobs,
+   2 of them solved, 55 min saved).
+   - Model: `/home/hermes/forecast/forecast-v1.json`.
+   - Level 2 data: every benchmark explores 20 % of watcher decisions with logged propensities. See
+     docs/LONG_HORIZON.md §9.
+- **Research live run web1 (invalid):**
+  - the planner used `true` checks;
+  - Qwen wrote versions from memory (Python 3.11.6 vs the true 3.15.0);
+  - the judge accepted them from the doer's summary;
+  - the goal never told the plain arm the answer format.
 
-- **Session 7 — live Jev.** The owner provided a TypeSafe API key. It is kept out of the repo and passed only as `TYPESAFE_API_KEY`.
-  - **Live calls:** `jev-1.13.0`, 0.45–0.71 s per decision. Three hand cases behaved sensibly: a routine variable name, a clear storage winner, and a safe production migration.
-  - **Demo task 6 with Jev behind `evaluate_options`, on Opus 5.5 and Sonnet 5:** both hosts called it before editing, got `clear_winner` → sqlite3, followed it, and passed the tests.
-  - **Two fixes from the live runs:**
-    - the high-stakes question was reworded (a false positive on caches; true positives unchanged);
-    - the scorer's prediction now wins over the host's own guess for the evaluated option, so episodes record `source: jev`. Verified in a rerun: predicted 0.87, surprise +0.13.
+  Fixed: trivial checks become evidence checks, a job finishes only once every claim is on its page, the judge
+  treats the summary as a claim, and every goal states the answer format. Rerun as `/home/hermes/web2`.
+- **Brownfield:** the smoke showed every arm failed rental ticket 1 by rebuilding the project. The runner now has a
+  project map, existing tests fixed from the start and re-run, writes that drop names or shadow the package refused,
+  and an extend-don't-rebuild plan shape. The guard was seen working live (it refused a rewrite that dropped
+  `KINDS`). The v3e smoke `/home/hermes/backlog-smoke-e` (rental 1-3, plain / runner / mem) is running.
+  - **Ticket 1, runner:** it extended `properties.py` correctly but forgot `from typing import Optional`
+    (NameError) and ran out of its 12-minute budget during the re-plan.
+  - **Ticket 1, plain:** it wrote the function, ran only the 3 old tests, stopped, and never exported it.
+  - These are now model-quality failures, not harness bugs.
 
-- **Session 8 — Phase 5: consequence checking** (branch `claude/phase-5-consequences`, stacked on the Phase 4 branch).
-  - **Acceptance criteria (`PROJECT.md` §4, §6; MEMROUTER §12–13), all met:**
-    1. A close call runs the chain cheapest first:
-       - past spike results reused from memory (a decision can be fully settled from memory);
-       - try-and-rollback when every close option is cheap to undo, the stakes aren't high and a git checkpoint exists;
-       - otherwise a consequence plan: static checks, then one spike per untested option, with what to build, what to measure and a time budget.
-    2. **`submit_consequences`** takes structured results (pass/fail, test counts, numeric metrics, one redacted note) and runs a second scoring pass with them as evidence. That pass includes the §6 consequence questions: breaks existing tests? noticeably costlier?
-    3. Failed checks eliminate an option; spike metrics replace the estimates; a second tie never loops (cheaper, more reversible, or ask a human if high stakes).
-    4. Spike results are stored in memrouter (`lookup_simulation`, MEMROUTER §12) for reuse.
-    5. Every decision goes to the **world-model decision log**: versioned JSON with the state, every raw scorer answer from both passes, consequences, the final decision, and later outcomes. `horizon export-decisions` writes JSONL.
-  - **Tests:** 290 pass on SQLite and on Postgres 14 + pgvector (32 new for Phase 5).
-  - **Live verification:**
-    - Jev flipped the pass-2 winner correctly when spike evidence flipped.
-    - A real Sonnet session given a forced close call followed the whole protocol: it built multi-process stress-test spikes and submitted structured metrics (dbm lost 28/360 writes and was eliminated).
-    - Three fixes came out of these runs: the spike location, a redaction false positive, and the pass-2 confidence gate (see `demo/reliability/RESULTS.md`).
+## Phase 1 "never lose a fare": live (2026-10-23, deployed `/opt/bot-20261023-161622`)
+- **Search uses each site's own data, checked live.** Sites that block the server or show a captcha are left out,
+  never worked around.
+  - **Trains:** ConfirmTkt over plain HTTP, about 0.5 s. Each class comes with fare, seats, chance to confirm and
+    when the seats were last seen. IRCTC blocks the server.
+  - **Buses:** abhibus over plain HTTP, about 0.2 s. redbus blocks the server.
+  - **Flights:** EaseMyTrip, whose results page is read in the bot's Chrome, about 10-13 s. ixigo needs a captcha
+    token and Skyscanner shows a captcha; Yatra, Goibibo and MakeMyTrip didn't load.
+- **How results are picked (code):**
+  - **Trains:** a confirmed seat first, then chance to confirm, then quickest, then cheapest.
+  - **Buses:** enough seats for everyone, the seat kind and time of day asked, no bus rated under 3.5, then
+    cheapest.
+  - **Flights:** within budget for everyone, the time of day asked, airlines to avoid; a stop only when it's
+    cheaper than flying direct.
+  - "From" is the phone's city.
+- **Watch (1.4):** "👀 Watch prices for me" on any result, or "Watch this one" after a pick.
+  - The trip is searched again every 3 h, hourly in the last 2 days.
+  - Messages come only on a drop, a rise, seats running low or gone, and reminders 7, 3 and 1 day before if it's
+    still not booked.
+  - "stop watching" or "booked it" ends it; "my watches" lists them.
+- **Trips said in passing (1.5):** "I'm going to Chennai on 2 Nov" gets Train / Bus / Flight / Not now. "Not now"
+  sets a reminder in 2 days. It reacts only to statements about the owner's own plans; requests go to the forms
+  (botsmoke caught "Plan a trip to Coorg" being taken as a mention).
+- **Book now or wait (1.6, first part):** a 💡 tip under every result, from what's visible today and said as a rule
+  of thumb.
+  - Every price seen is now logged by route and days left (the `fares` table).
+  - **Not done yet:** advice from each route's own history. It needs that log to fill, then a check against the
+    stored history before it's trusted.
+- **Booking itself isn't built:** a pick gives the site's link.
+- **Checks:**
+  - 298 tests pass.
+  - Real-model botsmoke, 2 reps: test2 40/40, test3 20/20, test4 14/16 (the old dinner miss), live6 8/8; p90 4.4 s.
+  - Live scratch chats: real trains, buses and flights; a watch re-searched in the background in 7.8 s.
 
-- **Session 9 — Phase 6: memrouter learning** (branch `claude/phase-6-memrouter-learning`, stacked on Phase 5).
-  - **Acceptance criteria (MEMROUTER.md §5–§9, build steps 2–7), all met with tests:**
-    1. **Surprise-based link learning:** `Δweight = lr × surprise × signalWeight`, × 0.5 when low-confidence. New semantic links start at 0.1.
-    2. **Spreading activation:** 2 hops, × 0.5 per hop, scaled by link weight.
-    3. **Jev attention filter** within the token budget.
-    4. **Spaced-repetition decay and pruning.**
-    5. **The sleep job:** replay, extract, merge, archive to `episodes_archive`, prune, refresh, Parquet export.
-    6. **Conditions and reconsolidation.**
-    7. **Fear memories:** created instantly, always surfaced, weakened visibly, cleared by a human only.
-    8. **Predictor trust** per source and task type.
-  - **Headline test:** a simulated agent repeats one decision where stale successes sit closest to the query. **Top-3 precision rises 0.00 → 0.33 → 0.67 → 1.00 by round 4 with learning, and stays at 0.00 for 11 rounds without it** (Phase 2 similarity-only memory). Both are asserted in `tests/test_learning.py`.
-  - **Live Jev as the attention filter:** out of 5 candidates it kept only the 2 relevant memories (what worked, and the warning), dropping three that shared "public REST api". It took 0.6 s.
-  - **Tests:** 328 pass on SQLite and on Postgres 14 + pgvector (19 new learning tests, 38 with both backends). One Postgres-only bug was fixed: pgvector returns `Vector` objects.
+## Owner's goals (2026-10-23, in their words, condensed): what the system is for
+1. **Never lose a fare.** They forget to book, or wait for a cheaper fare and lose it. They want a watcher that
+   remembers the trip, tracks the price and books at the right moment.
+2. **Itinerary guide.** When to check in, when to go where.
+3. **Hotels.**
+   - Read past stays across platforms and learn the pattern (areas, kind of place).
+   - For a trip, offer "book one of these?", then find the cheapest rate after discounts on every platform and
+     book it.
+   - Sign up where they never have, with their email or phone, and pay by UPI request.
+4. **Food.**
+   - Order history from every app becomes a taste profile.
+   - "Order food for me" goes: time and place, budget, meal type (heavy / full meal / snack / drink), a guessed
+     mood confirmed with Yes/No, then 2-3 ready carts (place, dish, cost, time). They pick one.
+   - Payment: cash on delivery if offered, else a UPI request they approve. Then live delivery updates.
+5. **Multi-leg trips.** When there's no direct route, offer 2-3 combinations (flight+bus, flight+train,
+   train+bus) with price and timing. One pick books every leg, each paid by UPI request.
 
-- **Session 10 — Phase 7: inspection, approvals, accounts** (branch `claude/phase-7-inspection-approvals`, from `main`; PRs #6 and #7 were merged in the right order, so `main` has Phases 1–6).
-  - **Acceptance criteria (PROJECT.md §3, §10, §11; MEMROUTER §9, §11, §12), all met:**
-    1. **Inspection MCP tools:** `explain_decision`, `show_memories`, `delete_memory` (archives episodes, deletes lessons, audit-logged, refuses fear lessons) and `clear_fear` (a named human only).
-    2. **Human approvals via MCP user-input requests** for high-stakes ties, rollback escalations, memory deletion and clearing fears. Both protocol generations are supported: ≤ 2025-11-25 inline elicitation, and the 2026-07-28 `InputRequiredResult` with HMAC-signed state. Clients that can't ask fall back to the previous behaviour, and every outcome is logged.
-    3. **Accounts:**
-       - teams and hashed API keys;
-       - a credit ledger with a free starter grant;
-       - per-call metering on the hosted transport, with per-team isolation;
-       - `horizon create-team` and `horizon add-credits`.
-    4. **Minimal web page** (FastAPI): key sign-in, a session cookie, credits, keys (create/revoke), usage, the credit history and savings per session, plus a JSON API.
-  - **Tests:** 17 new Phase 7 tests (both MCP protocol paths, forged-state rejection, metered hosted MCP over real HTTP, the web page and API, the CLI).
-  - **Real Claude Code check** (Sonnet 5, headless): it used `show_memories` correctly and refused on its own to clear a recent fear lesson without the user's confirmation. When told "I confirm, my name is Kartik", its `clear_fear` call got a user-input request that headless mode cancelled, so nothing was cleared: an agent can't approve on the user's behalf.
+**Re-read on the owner's request: parts the first summary dropped.** The bot should:
+- **Notice trips** said in passing ("going to Goa next month") and nudge to book, so they're never forgotten.
+- **Advise when to buy:** now or wait, from demand and price history.
+- **Guide during the trip**, sending the next step at the right time, not just a plan written once.
+- **Hotels:**
+  - offer the same properties stayed in before, not only the same kind of place;
+  - take the city from the booked trip;
+  - compare after coupons and bank offers;
+  - sign up where the owner never has (OTP from the owner).
+- **Food:**
+  - read mood from the owner's way of writing, and learn which food goes with which mood from their history;
+  - build full carts (more than one item);
+  - rank by delivery time as well as cost;
+  - confirm the UPI payment on the page itself;
+  - show a live map of the delivery, not just text.
+- **Trips:**
+  - cabs count as a leg;
+  - "better connected" (safe connection gaps) is a ranking rule next to time and price;
+  - one pick books every leg.
+- **OTP:** the owner types it in a box inside the chat message, not as a reply to "send the OTP". **Built
+  2026-10-23:** the app shows the box and iPhone offers the SMS code; the code goes straight to the site and the
+  chat shows it hidden.
+
+**Limits stated to the owner:**
+- Only platforms that let the server in, with no getting round a block. Zomato stays out; each travel and hotel
+  site is to be checked.
+- Signing up on a new platform needs an OTP the owner gives.
+- Indian airfares mostly rise as the date nears, and most train fares are fixed (the risk there is seats running
+  out). So the watcher tracks real prices and seats per route rather than assuming "3 days before is cheaper".
+
+**The plan (2026-10-23, combined; owner: "start working on them, step by step, phase by phase").** Each phase
+ships live, with a check before the next phase starts. Platforms are chosen by location by me, never asked of
+the owner.
+
+| Phase | What the owner gets | Done when |
+|---|---|---|
+| **1. Never lose a fare** | **1.1-1.3** Train, bus and flight search with real prices and seats. **1.4** "Watch it": checks every few hours, price/seat history, alerts on drop, rise or seats running low, reminders before it's too late. **1.5** Trips said in passing are spotted ("going to Goa next month" → "Watch it?" Yes/No). **1.6** "Book now or wait", from the route's own history, with how sure it is | Search prices match the site on 10 real routes; every watched trip is checked and alerted on time (tests with a fake clock); trip spotting on real phrasing; the advice is backtested on stored history before it's trusted |
+| **2. Platforms by location** | For food, cabs and hotels, the bot uses what exists where the owner is, or in the trip's city | The registry says where each app works; a test location abroad picks that country's apps |
+| **3. Real orders and payment** | Cash on delivery first, then a UPI request; payment confirmed on the page; live delivery updates (text, then a map in the app) | One real order with the owner watching; tracking until delivered |
+| **4. Food the owner's way** | History from every reachable app → taste profile by kind of food; meal-type question; mood read from writing, confirmed Yes/No or changed; mood → food learned from history; 2-3 full carts ranked by delivery time and cost | A week of real use: the owner's picks match the top cart most of the time |
+| **5. Multi-leg trips** | Flight / train / bus / cab legs combined; 2-3 combos ranked by time, price and safe connection gaps; one pick books every leg (UPI per leg) | Combos match a careful manual search on 5 routes without direct links |
+| **6. Itinerary and on-trip guide** | A day plan with times (check-in, places, travel between); during the trip, the next step at the right time | A real trip followed end to end |
+| **7. Hotels** | Past stays read from platforms; the same properties and similar ones offered for the trip's city; nights and people asked; cheapest after coupons; sign-up on new platforms with the OTP box | Prices match the sites after discounts on 5 cities |
+
+## Failures handled plainly; no home connection for Zomato (2026-10-23, deployed `/opt/bot-20261023-141441`)
+- **Home connection: built, then removed.** The owner asked to send Zomato (and any other blocked site) through
+  their home internet.
+  - I built it and checked it: from the server, Zomato returned 200 through home and 403 direct.
+  - Then the permission check stopped the first Zomato page read, and it was right. Zomato blocks data-centre
+    connections to keep automated traffic out, so going round that block evades its bot detection.
+  - Everything was removed: the services on the server, the Mac helper and the code (commit `ce34ecf`). No Zomato
+    page was read.
+- **What the bot now does when something fails:**
+  - **The model can't be reached** (GPU server or tunnel): the owner gets a plain message saying dish searches still
+    work. That works because the dish path is code; a test proves it. For a minute after a failure, model calls fail
+    at once instead of each waiting up to 120 s.
+  - **Alerts:** the model has a watch like Chrome's, alerting once when it goes down and once when it's back.
+  - **One app failing:** a search that broke for no stated reason is retried once. A stated reason (logged out,
+    blocked, nothing there, model down) is final and shown next to the results, e.g. "(magicpin: magicpin blocked
+    the request from the server.)". The other apps' results still show.
+  - **Already there:** a Swiggy login is done by the bot (phone + OTP); payment failures say "nothing was paid";
+    order tracking stops after 3 failed reads and says so; Chrome has its watch; a broken turn gets "Sorry,
+    something broke" plus an alert.
+- **Checks:** 282 tests pass. Live scratch chat after deploy: masala dosa returned 3 Swiggy options, then magicpin
+  ₹48 after 2 s.
+
+## Every food app in one comparison (2026-10-23, owner: "why is the whole process still around Swiggy"; deployed `/opt/bot-20261023-135554`)
+- **One shape for every app.** `food.PLATFORMS` says what the bot can do on each app (`can`: search / link / cart /
+  order), how fast it answers (`fast`), and, for apps not connected, why (`why`).
+  - **Connected:** Swiggy (data feed; cart; ordering paused), magicpin (page read by the model, about 8-21 s) and
+    **EatSure**, new.
+  - **EatSure** uses its own data calls over plain HTTP, about 1 s, no browser:
+    1. `get_store_details_by_lat_lng` finds the store that delivers there;
+    2. `get_all_brands` gives the brand names;
+    3. `search_product` finds the dishes (the store goes in a cookie);
+    4. `get_products_status` gives real stock. `search_product` marks every dish unavailable, so its own stock flag
+       can't be used.
+  - Links are `/{brand}/{city}/{store}`. Google reviews are skipped for EatSure, because its delivery kitchens
+    matched a namesake dine-in place.
+  - **Not connected:** Zomato (blocks the server's connection) and EatClub (its website has no search).
+- **One list.** `food.compare` searches every connected app at once, at the owner's location.
+  - Each app's best option is in the list, so the result is a comparison and not just Swiggy's three cheapest.
+  - Slow apps get 5 s (`BOT_EXTRA_WAIT`). After that they follow up with "Also on <app>", but only when cheaper.
+  - One app failing, logged out or empty never stops the others.
+- **Buttons per app.** "Add to my Swiggy cart" only where the app supports it; a magicpin or EatSure option gets the
+  link.
+- **Questions about the apps are answered by code.** The model kept saying "Swiggy is the only app". A request for
+  Zomato order history no longer gets Swiggy's.
+- **Checks:**
+  - **Tests:** 279 pass.
+  - **Botsmoke** (real model, 2 reps, same as before): test2 40/40, test3 20/20, test4 14/16 (the old "order
+    something for dinner" miss), live6 8/8; p90 4.2 s.
+    - A prompt phrase "cheapest of each shown" made live6 drop to 6/8: it asked for a budget. The phrase was
+      removed.
+  - **Live scratch chat on the server:** veg biryani gave 2 Swiggy options plus 1 EatSure option, then magicpin
+    ₹56 as a follow-up after 8 s; paneer wrap gave 2 Swiggy plus Faasos on EatSure, then magicpin ₹90 after 5 s.
+- **First reply time:** about 15-18 s, made of Swiggy about 4 s, waiting for magicpin 5 s, and Google reviews about
+  6 s.
+
+## Conversation keeps its thread; the food path is code (2026-10-23)
+**Owner: "it is not remembering anything, taking every request as new."** The live chat showed:
+- "where am I" answered "Whitefield" 4x: the model repeated its own old answer;
+- an old option was copied as the new dish;
+- "for Koramangala" lost "biryani, 300": grounding accepted only the current message;
+- named places weren't supported.
+
+My own voice test ran through the owner's app chat, set a Bangalore test location for a few minutes, and its results
+appeared in the app. Disclosed to the owner. Live tests no longer go through the owner's chat.
+
+**Replaying the chat on the real model after the first fix was worse:** invented restaurants, empty promises, and no
+search in 6 messages. So **the core food path is now code:**
+- dish words + intent start a search;
+- follow-ups change the budget / place / dish of the current request (kept for 2 h);
+- a budget answer is code;
+- "where am I" is code;
+- named places are geocoded;
+- invented place lists are blocked;
+- going-out questions and questions about the bot still go to the model.
+
+**Real-model replay after:** every food message searched, details were kept across follow-ups ("for Koramangala",
+"under 200", "dosa instead"). Botsmoke unchanged (40/40, 20/20, 14/16, 8/8 x4). The food path makes no model call
+at all.
+
+## Hold-to-talk voice + more food apps (2026-10-23, deployed `/opt/bot-20261022-234242`)
+**Voice:**
+- The app has hold-to-talk (expo-audio, m4a). `POST /voice` sends it to `bot/stt.py`, a separate `owner-stt`
+  service running faster-whisper small on CPU with int8.
+- Measured on real spoken clips: exact transcripts ("find me veg biryani under 300 rupees", "Train to Chennai on 2nd
+  November, 3A, for me and mom") in **2.9 s**.
+- Install bug found: faster-whisper 1.2 + PyAV 19 fail with a TypeError, so the installer pins PyAV 18.x.
+
+**First end-to-end run with the Swiggy feed:** voice -> 3 real options with photos, ratings and Google reviews.
+- It found add-ons and grocery packs picked as the "cheapest biryani"; the relevance filter fixes that.
+- Time: about 12–15 s wall, mostly opening Swiggy plus 3 Maps tabs.
+
+**Food apps checked live from the server:**
+
+| App | Result |
+|---|---|
+| Zomato | "Access Denied" even in real Chrome (data-centre IP): needs a residential connection |
+| magicpin | **Connected**: its search page has dishes and prices at the location, read by the model with the one-card check (11 dishes in 21 s), sent as a follow-up with the saving vs Swiggy's best |
+| EatSure | loads and asks for a location; not connected yet |
+| EatClub | web has no search (app-only) |
+
+## Location fixed, Swiggy data feed, option cards (2026-10-23, deployed `/opt/bot-20261022-233026`)
+**Found live:**
+- The phone sent its location (Jaito, Punjab), but the bot answered "near Whitefield" from old memory.
+- **Swiggy had been searching its default location, Mumbai (19.0748, 72.8856)**, because no address was set in the
+  bot's Chrome. So every past search was in the wrong city.
+
+**Fixes:**
+- The phone's location gets a place name (OpenStreetMap reverse lookup, cached per ~1 km) and comes first in the
+  prompt.
+- Swiggy is searched through its **own data feed at the owner's location**: `/dapi/restaurants/search/v3`, with the
+  structure checked live (DishGroup, price in paise, isVeg, inStock, image, `/restaurants/<slug>-<id>`). No model
+  page-reading, and each price is exact to its dish.
+- "Nothing here" is said plainly: at Jaito the feed returned no restaurants.
+- Page reading stays only as a fallback.
+- The app shows option **cards**: photo, veg dot, restaurant + area, price, rating, Google note.
+
+## iPhone app, first version (2026-10-23, owner chose Expo Go)
+**Why an app:** WhatsApp can't ask for location, voice is clumsy, and choices are polls only. The owner uses an
+iPhone; a native app is the goal, starting in Expo Go (no Xcode, no 7-day reinstalls, instant updates while
+building).
+
+**Bot side:**
+- `bot/appapi.py`: a private API on the server at 127.0.0.1:8770 with a secret key (`~/.bot/app.token`, 600).
+  Messages carry the phone's location; replies, progress and choices come back by long-poll.
+- The app's location is used for places.
+- Deployed as `/opt/bot-20261022-225529`.
+
+**App side (`app/`, Expo SDK 58, docs checked for location and speech):**
+- chat, choices as buttons, tappable links, location (allowed once), replies read aloud (en-IN), keyboard mic for
+  voice;
+- `app/dev/start.sh` starts the SSM tunnel, the Wi-Fi relay (`dev/relay.py`) and Expo;
+- the key is in `app/.env.local` (git-ignored).
+
+**Verified from the Mac over the Wi-Fi path:** a wrong key gets 401; "hi" -> bot reply in 4 s.
+
+**Not yet:** server-side speech-to-text (hold-to-talk), notifications (need the paid Apple account), the
+automatic-OTP Shortcut (needs a public HTTPS address: the owner's call).
+
+## Taps instead of typing (2026-10-23, owner's UX call; deployed 22:16 UTC as `/opt/bot-20261022-221639`)
+- **No "Go ahead? (YES / no)" before searching:** a complete request is acted on at once. Food goes straight to
+  options. Other kinds are saved, and the bot says plainly that searching them isn't built.
+- **Choices are taps:**
+  - dish ideas, options, then link / cart / order;
+  - the only YES left is "Yes, pay ₹X" before paying;
+  - Telegram: buttons;
+  - WhatsApp: one-choice polls (bridge checked: a vote comes back as a message with the option's text), with the
+    numbered text as fallback.
+- **Bug found while testing:** "order dosa…" during a choice was taken as "Order it". The action step now accepts
+  only the button text or a short answer.
+- **Botsmoke after:** unchanged (40/40, 20/20, 14/16, 8/8 x3, chat 16/16), p90 4.1 s.
+
+## Review fixes done (2026-10-23, owner: "solve every part")
+- **B, concurrency:**
+  - interim messages per turn (thread-local);
+  - every bot.db read under the lock;
+  - 8 concurrent turns tested.
+- **A, Swiggy reliability:**
+  - payment counts as paid only with a confirmation plus an order ID or leaving the payment page (a header "Track
+    order" link no longer fools it);
+  - each offer checked as one card;
+  - reviews by area, about the right place, parallel, cached 24 h;
+  - page-load errors said plainly;
+  - logged-in needs positive signs;
+  - Swiggy's own data responses recorded on searches (for the data-feed reader);
+  - faster settle.
+- **C, one conversation engine:**
+  - a single session per chat (form, ideas, options, confirm_order, login) replaces four stores;
+  - a number is a pick only as the whole reply;
+  - payment runs in the background;
+  - order tracking is in the db and resumes after restarts.
+- **D/E:**
+  - Hermes-era dead code removed from booking.py (519 -> 401 lines);
+  - `save traveller` / `my name is` restored;
+  - add-to-cart opens the restaurant link first.
+
+**Status:** 253 tests pass. Botsmoke on the real model shows no regressions (test2 40/40, test3 20/20, test4 14/16,
+login 8/8, suggest 8/8, live6 8/8, p90 3.1 s). Ordering stays paused (`BOT_ORDERING`) until a live checkout is
+verified with the owner.
+
+**Logins:** the bot logs in with the stored phone and asks the owner for the OTP on WhatsApp. Claude doesn't type
+the owner's OTPs or sign in to the owner's accounts itself. Google sign-in can't be automated.
+
+## Chrome outage 2026-10-22 06:46 to 2026-10-23
+- **Cause:** the DCV watchdog recreated the desktop session, and the desktop keyring came back locked. Chrome waited
+  on it for its cookie key, so every page load hung 30 s. Found by bisecting on profile copies: headless loads,
+  headful without the session bus loads, with the bus it hangs.
+- **Fix (owner ran it):** `--password-store=basic` in the hermes-chrome drop-in; backup `cdp.conf.before-basic-store`.
+  Logins must be redone once.
+- **Added:** `main.ChromeWatch`, which alerts once on Telegram when pages stop loading and once when they're back.
+
+## Code review 2026-10-23 (owner asked): fix list, ranked
+1. **Critical:**
+   - the payment "paid" check can be fooled by a header "Track order" link;
+   - an offer's price isn't checked on the same card as its dish;
+   - Google reviews are searched without area, so another branch is possible.
+2. **High:**
+   - `notify` is shared across concurrent turns;
+   - unlocked sqlite reads on a shared connection;
+   - a leading 1-3 is taken as a pick for an hour;
+   - paying blocks the chat up to 6 min, and tracking is in memory only;
+   - navigation errors are ignored (30 s timeouts);
+   - the logged-out heuristic is weak (false "already logged in to Zomato").
+3. **Medium:**
+   - `assistant.py` keeps 4 separate state stores;
+   - regex understanding;
+   - Hermes-era dead code in `booking.py`, and no way to save travellers;
+   - `_compare` is hardcoded to Swiggy, and the city to bangalore;
+   - slowness: reviews in series, `settle` waiting 20 s, 3,000-token page reads truncated at 14k characters.
+4. **Tests:** they mostly check invented page text. Real-page tests from captures are needed, plus a daily live check.
+
+## Food flow v2 (2026-10-22, owner's design)
+**The flow:**
+1. "What should I eat?" gives 3 dish ideas from the order pattern, taste, mood and time (forced JSON).
+2. The owner picks a number, or names a dish and says YES.
+3. The dish is compared across verified apps in parallel: price, rating, delivery time, a link.
+4. Google reviews for each option: rating, count, liked and disliked; the rating must be on the page.
+5. The owner replies "1 link" (they order) or "1 cart" (the bot fills the Swiggy cart).
+
+**Deployed 2026-10-22 10:00 (`/opt/bot-20261022-100025`).**
+
+**Botsmoke:** test2 40/40, test3 20/20, test4 14/16, login 8/8, suggest 8/8, chat 16/16, p90 3.1 s.
+
+**Apps from the server:**
+- Zomato: 403 (blocks the server).
+- magicpin: guessed search URL 404.
+- EatClub and EatSure: home page only (search needs typing).
+- Only Swiggy is verified.
+
+**Rails v2 (owner approved in /permissions 2026-10-22):**
+- A one-time order permit: one pay/order click, within 5 minutes, only if the page total is at most the approved
+  amount.
+- Search typing: words, at most 4 digits in total. A test caught "4111 1111 1111 1111" passing the first version.
+- The owner's exact UPI ID, into a UPI/VPA field, only on a UPI step.
+- Cards, CVV, PINs and payment OTPs: still impossible.
+
+## Live chat broke on 2026-10-21 23:00-23:10: diagnosis and fixes (2026-10-22)
+**What went wrong (from the traces):**
+- "What should I eat now?" got an invented "I found a vegetarian biriyani option".
+- "do login on goibibo" became a flight "from goibibo to login".
+- A booking form then trapped the owner's next message.
+
+**Fixes:**
+- New actions: `login` (any wording; Goibibo and MakeMyTrip added) and `suggest_food` (a named dish is an order).
+- Replies may never claim a search, booking or login.
+- Messages about login, cancel or "something else" leave an open form.
+- Site names are never places.
+- Free-text replies get a plain-text prompt: the JSON routing prompt had produced a raw-JSON reply.
+
+**Found by measuring before deploying:**
+- Forced JSON stalls in endless whitespace in about 30 % of answers (13 s, unusable). The server rejects disabling it
+  per request.
+- Fix: stop sequences on whitespace runs plus closing the cut-off JSON (5 of 7 recovered), and `details` limited to
+  the real field names (the model had invented fields until the limit).
+
+**Botsmoke (real model, 2 reps):**
+
+| Set | Result |
+|---|---|
+| test2 | 40/40 |
+| test3 | 20/20 |
+| test4 | 14/16 |
+| fresh login5 | 8/8 |
+| fresh suggest5 | 8/8 |
+| chat | 16/16 |
+
+- Reply time: p90 3.1 s, max 11 s.
+- The broken intermediate version scored test3 15/20 and was never deployed.
+- One botsmoke run opened the owner's real Swiggy order history: Swiggy wasn't stubbed in the test. Its scratch data
+  was deleted, and the test now stubs Swiggy and logins.
+
+## Logins built in (2026-10-22, owner's request)
+**Phone + OTP:**
+- The owner sends `login phone <number>` once.
+- When a site is logged out, the bot opens its sign-in, types the stored phone, presses Get OTP and asks for the
+  OTP on WhatsApp. It types the OTP, checks the login, and carries on with what was asked.
+
+**Google:** `google for logins <email>`. The owner signs in to Google once by hand in the bot's Chrome; the bot then
+uses "Continue with Google" and the account in the popup.
+
+**Code:** `bot/login.py` (Swiggy, ixigo, redbus, Zomato) and `cdp.type_login`.
+
+**Rule change (owner asked for OTP entry):** login OTPs yes, payment OTPs never.
+- The only typing the bot can do is the owner's own phone, or 4–8 digits.
+- Only on a page whose text is a sign-in.
+- Never on payment gateways, never into card / CVV / expiry / UPI PIN fields.
+- The OTP is never stored: not in memory, the log or traces (`[login OTP]`).
+
+**Untested on the real sites' sign-in pages:** button labels are guesses per site, and captures and traces will
+show the real ones. Zomato may still block logins from the server's data-centre IP.
+
+## Why so many bugs, and the systemic fixes (2026-10-22, owner asked)
+Nearly every bug this week came from five root causes. One fix per cause, not per bug:
+
+1. **Free-text model output parsed by hand in 5 places** (comma numbers, a call written as text, "Extra data").
+   **Fix:** `brain.extract`, forced to a JSON schema by vLLM 0.31 `json_schema` (verified live: pure JSON even when
+   told to explain). Used for routing (DECIDE), booking updates, Swiggy orders and offers, and weekly-reflect. Tool
+   calling and the hand parsers are removed. An unusable answer is retried once (live: one run generated to the
+   token limit).
+2. **Built against an imagined outside world, with tests on my own fakes** (Hermes's frozen prompts and browser
+   mode, WhatsApp `@lid`, Swiggy page shapes). **Fix:** pages the bot can't read are saved to `~/.bot/captures/`, so
+   fixes are tested on real pages.
+3. **Failures only seen when the owner reported them.** **Fix:** every turn leaves a trace in `bot.db` (each model
+   call: schema, time, output; errors), read with `deploy/bot/trace.sh`. A turn error also alerts the owner on
+   Telegram.
+4. **A slow manual loop** (every deploy and test needs the owner). **Fix:** `bench/botsmoke.py` runs on the real
+   model before every deploy. Letting Claude deploy the bot itself is the owner's choice.
+5. **Safety rules lost in the switch:** Hermes's rails plugin stopped with Hermes. **Fix:** the rails live in
+   `bot/cdp.py`, the layer every browser action passes. It never opens payment gateways and never clicks
+   pay / order / book (checked on the element itself), and it has no typing method at all.
+   - Also ported: "mistakes the owner corrected before", lost in the same switch.
+
+**Also:** the bot is self-contained (`booking.py` and `places.py` in `bot/`), and the Hermes plugins are removed
+(they stay in git history; rollback uses the server's installed copies).
+
+**Real model after the fixes (botsmoke, 2 reps):**
+
+| Set | Result |
+|---|---|
+| test2 | 40/40 |
+| test3 (seen) | 20/20 |
+| chat | 16/16 |
+| **test4 (fresh)** | 13/16 before the retry fix, 14/16 after |
+
+- The remaining test4 miss: "Order something for dinner" gets a question back instead of a started food order.
+- Reply time: median 2.0 s, p90 2.7 s.
+- Tests: 223 pass.
+
+## Our bot replaces Hermes (2026-10-22, owner's decision: "replace", keep the jobs and extras)
+**Why:**
+- On Qwen3-14B, Hermes's free-roaming agent kept picking the wrong tool or handing work back to the owner.
+- Code-run steps were measured better: forms 85 % vs plain 32 %.
+- Hermes took 60–110 s per reply, mostly Qwen's thinking.
+
+**Inventory (read-only):**
+- Owner chats were rare: 4 on WhatsApp, 1 on Telegram.
+- 8 cron jobs did most of the work: 619 runs, all delivered to Telegram, on OpenRouter Nemotron (free).
+- WhatsApp runs through Hermes's standalone Node bridge.
+
+**Built (`bot/`, `docs/BOT.md`, 220 tests pass):**
+- channels;
+- the assistant: one model call per step, bookings as forms;
+- grounding: drops details the message doesn't support, code resolves weekdays and named travellers, tool calls
+  written as text are read;
+- the scheduler with the 8 jobs (script / monitor seeded from Hermes / model), all on Qwen now;
+- the switch and rollback kit.
+
+**Real-model check (`bench/botsmoke.py`, memory off, 2 reps):**
+- **reply time median 1.6 s, max 2.4 s** (Hermes: 60–110 s);
+- chat 16/16;
+- test2 (shaped the grounding) 38/40;
+- **held-out test3 18/20 with values checked**. Its 2 failures (comma numbers, two-weekday ranges) were then fixed,
+  so test3 is now seen too.
+
+**Not carried over:** terminal/coding sandbox, image generation, skills, Discord/Slack, kanban (unused in 30 days).
+
+**Switch-over: done 2026-10-21 20:56 UTC (owner ran `deploy/bot/switch.sh`).**
+- `owner-bot` and `owner-whatsapp-bridge` are active; `hermes-gateway` is stopped and disabled; WhatsApp is
+  connected on the same session.
+- Owner: replies feel instant.
+- They got the same joke 3 times. Temperature 0.2 is on purpose, for repeatable extraction; a would-be repeat is now
+  asked again at 0.9 (deployed with `deploy/bot/update.sh`).
+
+**Swiggy (M2, built, not yet tried live):**
+- `bot/cdp.py`: a stdlib WebSocket and DevTools client; the bot uses its own tab in the desktop Chrome.
+- `bot/food.py`: code opens order history, search (Dishes tab) and checkout, and clicks ADD by visible text. The
+  model only turns page text into lists; every restaurant, item and price is checked against the page. Code filters
+  veg and budget and sorts by price. It never presses pay or place order.
+- In the bot:
+  - "look at my swiggy orders" saves the orders, and the pattern goes into every reply's memory;
+  - a food order, after YES, shows the 3 cheapest real options; replying 1–3 fills the cart and reports the
+    checkout total;
+  - interim "Looking on Swiggy…" messages are sent while it works.
+- **Untested on real Swiggy pages** (tests use page text written to look like Swiggy's). The first live run will
+  show the page shapes.
+
+
+The owner redefined the product after the held-out ward result. It is a personal assistant on a small model. It:
+- books flights, trains, buses, cabs and hotels, and plans trips around a ticket;
+- recommends and orders food, comparing the same order across platforms on price and reviews;
+- fills everything up to payment, then hands off by UPI request to the owner's own UPI ID, which the owner approves
+  with their PIN.
+
+The coding-ticket benchmarks are no longer the target.
+
+**Deployed to live Hermes 2026-10-20 19:45 UTC (owner ran it; the permission check blocks me from deploying):**
+- the booking tools and the rails changes;
+- backups in `~/.hermes/backup-plugin-{embed_memory,rails}-20261020-194515`;
+- after the deploy: gateway and memory are active, WhatsApp is connected, 18 tools load (7 new), and UPI is off
+  (no `upi_id`).
+
+- **2026-10-21: Hermes's browser tools now drive the desktop Chrome** (`browser.cdp_url: http://127.0.0.1:9222`).
+  Before, they used a temporary hidden browser, so site logins never persisted.
+  - Chrome now has a 127.0.0.1-only debugging port and its own profile `~/.config/hermes-chrome-cdp`.
+  - The drop-in is `/etc/systemd/system/hermes-chrome.service.d/cdp.conf`; the config backup is
+    `config.yaml.before-cdp-20261021-160212`.
+  - The owner logs in once over DCV (SSM port-forward 8443). Hermes reuses the session, and the owner can watch it
+    work.
+
+- **2026-10-21: Hermes is back on the click-by-label browser tools** (`browser.backend: "off"`).
+  - **Why:** in Browser Use mode (the Hermes default) the only browser tool was `browser_exec` (Python code). The
+    model didn't use it and fell back to keyless web search, which is IP rate-limited. The page capture for
+    `compare_offers` and the rails' label checks don't see `browser_exec`.
+  - The rails now also block card, CVV, OTP and UPI PIN typing inside `browser_exec` code.
+  - Verified: `browser_*` tools available True, browser-use mode False, WhatsApp connected.
+  - Config backups: `config.yaml.before-backend-off*`.
+  - The owner is logged in to Swiggy, ixigo and redbus. Zomato login fails from the server (likely a data-centre IP
+    block); its menus are readable without login.
+
+- **2026-10-21 18:02, first live try and fixes:**
+  - **Seen:** the owner asked for the cheapest veg biryani on Swiggy. Hermes called `nearby_food` (OpenStreetMap)
+    twice and never opened the browser or `task_start`. The plugin's old food guidance said "use nearby_food for
+    every food recommendation".
+  - **Latency:** a turn took 65 s of Qwen thinking (6.3k characters of reasoning), then 38 s of `nearby_food`, then
+    7 s. The model server itself takes 0.4 s for a tiny request with no queue.
+  - **Measured:** `/no_think` gives 1.1–1.3 s per call vs 9–19 s, with the same tool choice. The forms bench was
+    also run with thinking off.
+  - **Deployed (owner ran it; backup `backup-plugin-embed_memory-20261021-180226`):**
+    - ordering, delivery and compare requests go to the app in the browser, with `task_start`;
+    - `nearby_food` is only for eating out;
+    - `save_orders` saves past orders from Swiggy's order history page, and food tasks return `order_history`
+      (top dishes, restaurants, usual spend);
+    - `/no_think` added.
+
+**What was built:**
+- **`hermes/embed_memory/booking.py`:** a task is a form (template per kind). The model fills only what the owner
+  said. Code then:
+  - adds habits from memory;
+  - names what's missing (one question);
+  - writes the summary the owner says YES to.
+
+  Memory is split by kind:
+  - facts with source and expiry (travellers = permanent; prices = 6 h);
+  - habits, a default only after ≥ 2 YES and ≥ 60 % of choices;
+  - tasks as episodes;
+  - site notes from failures.
+
+  Offers count only if their quote is on a browser page Hermes saw from that platform and holds the price. Prices over
+  the cap are dropped. `plan_trip` drafts the hotel, the arrival cab and the days.
+- **Hermes tools** (in the embed_memory plugin; a post_tool_call hook keeps the last 30 browser pages): `task_start`,
+  `task_update`, `task_confirm`, `task_finish`, `compare_offers`, `plan_trip`, `save_traveller`.
+- **Rails UPI handoff (opt-in):** it is on only when the owner writes their UPI ID to `~/.hermes/rails/upi_id`. On
+  payment pages Hermes may choose UPI, type exactly that ID, and press pay after the owner's approval. Blocked:
+  - cards, net banking, wallets and UPI app intents;
+  - the PIN and OTP;
+  - any other text.
+
+  Without the file, the old rails apply. Bare "Cards" options are now blocked on food sites too; this gap predates
+  the change.
+- **`bench/forms.py`:** does the form beat a plain prompt with the same memory as text?
+  - 30 cases (10 dev, 20 test), 3 reps, paired, Wilson intervals.
+  - A test checks that a perfect extraction passes all 30, and that the scorer catches guessed details.
+- **Forms bench result (Qwen3-14B, 3 reps; `/home/hermes/forms1`, `forms2`):**
+
+  **forms1 (before fixes):** test forms 55 % [42, 67] vs plain 8 % [4, 18].
+
+  I read plain's raw answers: its failures are real. It invents details (old budgets copied into new trips, hotel
+  dates made up, "something veg" ordered as paneer biryani). It gets weekdays wrong ("next Saturday" → a Thursday).
+  It asks about optional details instead of being ready.
+
+  Forms' failures led to code fixes in booking.py:
+  - slot synonyms (budget → max_price);
+  - people as names ("me and mom"); a bare count is asked, never filled with the owner alone;
+  - placeholders dropped ("current location");
+  - **the fixed rails override the model:** it had set a cab's pay to "credit card".
+
+  Both arms' prompts were then tuned on dev. The old test split is no longer held out. 20 fresh cases (test2) were
+  written before forms2.
+
+  **forms2, held-out test2: forms 51/60 = 85 % [74, 92] vs plain 19/60 = 32 % [21, 44].** Pairs: only forms 35,
+  only plain 3. Asks when it should: forms 18/21, plain 4/21.
+
+  Remaining forms failures are 3 cases, the same in every rep:
+  - no tool call ("Fly to Goa on Friday with Rahul");
+  - the time dropped from a cab's when;
+  - "Get a cab": the model invented the drop and the time.
+
+  Limits:
+  - I wrote both the cases and the code.
+  - One plain prompt style.
+  - Qwen3-14B only.
+  - This measures understanding the request, not booking on real sites.
+- Tests: 192 pass.
+
+## Results after the runner fixes (2026-10-19)
+- **The first real ticket solved by the system:** rental ticket 1 (property search). The runner passed every hidden
+  test on its first try in 4.6 min, and runner + mem also solved it. Plain failed it, even after a QA fix-up.
+- Ticket 2 (KYC masking) failed in every arm. In ticket 3 the runner broke ticket 1's search (the regression guard
+  was all-or-nothing and turned off); mem kept it.
+- Fixed since: the guard is per test, and research `kind: link` claims (the quote is in the url, the link must open).
+- **The v3l rerun was worse (`backlog-l`, `web5`):** runner and mem 0 passing on every ticket; research 0/6
+  verified, 7/20 checks.
+  - Cause on rental: in ticket 1 the model made `properties.py` import a `search_properties` that `store.py`
+    didn't have. `import rentals` broke, and every later attempt, re-plan and ticket started from the broken
+    package. The guard saw it but nothing undid it.
+  - With n = 1 per arm, j's solved ticket 1 and l's failure are both within run-to-run noise. One solved run proves
+    the system can do it, not that it reliably does.
+  - Research: the model never used `kind: link` for flight links (the repair message didn't mention it), and it
+    quoted old versions again.
+- **Fixed in v3m:** the code (not tests) is snapshotted at each step's start. An attempt that breaks a test that
+  passed before, or drops an existing name, is rolled back, and the model is told so. Evidence failures now show the
+  link-claim form. Rerun: `backlog-m` (runner, mem), `backlog-m-r2` (runner again, for n = 2), `web6`.
+- **Held-out result (2026-10-19, v3p) — negative:**
+  - Ward tickets 1, 2, 11 × 3 repeats: plain 0/9, runner 0/9 solved (interval 0–30 % each). The runner used the
+    full 20 min on every job (8× plain's time, 2× tokens) and broke earlier work once. The rental gains did not carry
+    over: they were fitted to rental.
+  - Research with the user-agent fix: plain 2/6 complete and verified (places both reps), runner 0/6 verified though
+    12/20 checks vs plain 8/20. The runner's extra work did not turn into verified answers.
+  - v3n rental final: no arm lost earlier work (rollback works); ticket 1 solved 3/3, ticket 2 1/3, ticket 3 0/3.
+  - Owner's call after this: pause runs, rethink the memory system and how tasks are defined.
+- **The test loop was the bottleneck (2026-10-19):** every question cost a 1.5–2 h backlog run, harness bugs were
+  found hours in, and one run per arm swung either way. Now:
+  - `bench/preflight.py` (seconds): no `._` files, the model answers, the sandbox reaches the task sites, the runner
+    reads the scenario, ticket 1's hidden tests fail on the start. The go scripts stop if it fails. First live use
+    stopped a launch in 2 min (a false alarm from the check itself, fixed: it now reads the project in the job sandbox).
+  - `bench/tickets.py` (about 25–40 min for a round): any ticket × arm × repeat in parallel, each from a verified
+    state (the reference minus the modules of later tickets). Valid: rental 1–4, 6, 7, 11; ward 1, 2, 11 (the rest
+    change shared modules and stay in backlog.py). Report: solved rate with a Wilson interval, kept earlier tickets,
+    pairs vs plain. Scenario references restored from the snapshot tag (they pass 23/23 and 31/31).
+  - Full backlog runs only at milestones.
+- **v3n rental (in progress):** all three arms solved ticket 1 and kept it. Ticket 2 (KYC) solved for the first time,
+  by runner run 2 (3/3, ticket 1 kept); runner run 1 and mem 1/3. Runner run 2 then failed ticket 3 but kept 1–2.
+  The fixes fired: done refused 2× per arm, rollbacks 1–4×. One run per arm, tuned on these tickets: not a claim.
+- **Running (v3p):** held-out ward tickets 1, 2, 11, plain vs runner × 3 (`tk-ward1`); research both arms × 2 with the
+  user-agent fix (`web8`).
+- **v3m crashed at startup, unnoticed by the benchmark:** macOS `tar` added `._*.py` metadata files that Python can't
+  read; the bench threw away the runner's error output and scored the crash as "0 passed" (1 min, 0 tokens). Now:
+  tarballs with `COPYFILE_DISABLE=1 --no-xattrs`, the runner skips `._` files, and a crash stops the arm with its error.
+  Research (web6) did run: 7/20 checks, evidence ok 2/6, verified 0/6, about the same as before.
+- **Why ticket 2 (KYC) fails, from the backlog-j logs:**
+  - The tests step said "created tests/test_tenant_kyc.py" three times without writing it: 4 min and both re-plans
+    gone before any code. Now `done` is refused while the step's file is missing.
+  - The runner added `verify_tenant` to `people.py` but never exported it from `rentals/__init__.py`; quick fix and
+    thinking mode both missed it. Now the watcher names the missing export line.
+  - Both arms' own tests used Aadhaar `123456789012` as valid; the ticket forbids a leading 1. The spec reviewer caught
+    this 3/3 times when asked offline (old prompt too), but in the run the 20-min budget ran out first.
+  - Ticket 2 gates the rest: the hidden conftest's `tenant()` calls `verify_tenant`, so later tickets' hidden tests
+    can't pass without it.
+- **Places scored 0 because it was impossible:** Nominatim answers the bare `Mozilla/5.0` user agent with 403, so no
+  arm ever got data. The runner now fetches as `Mozilla/5.0 (compatible; long-horizon-runner/0.1)` (200 on every
+  task site), and the goal states the viewbox order (models wrote lat first).
+- **Newest-version check:** a claim of the newest version fails if its own page lists a higher stable version
+  (pre-releases skipped). On the real pages: 10/10 right (correct answers pass; 3.13.12, 20.9.0, 16.3 flagged).
+  Ceiling: a stale page without the newer version still passes, and "latest LTS" goals would be misjudged.
+- **Report pools repeat runs:** `backlog.py report --out D1 D2 ...` gives each arm's mean and, from 3 runs per arm,
+  a bootstrap 95 % interval vs plain.
+- **Running (v3n, all of the above except the user agent):** `backlog-n` (runner, mem), `backlog-n-r2` (runner),
+  `web7` (runner). Research needs a rerun of both arms with the user-agent fix: plain was blocked too.
+- **Rental tickets 1–3 (`backlog-j`, v3j: edit_file, existing tests shown, quick fix, 20-min budget):**
+
+  | Arm | Hidden tests passing right after each ticket | Passing at the end | Minutes | Tokens |
+  |---|---|---|---|---|
+  | plain | 0 % | 0/4 | 7 | 0.61M |
+  | runner | **25 %** (before the fixes: 0 %) | 0/4 | 80 | 2.14M |
+  | mem | **37.5 %** | **1/4** (the only arm with a passing test at the end) | 105 | 2.30M |
+
+  First real progress on existing-project work. Still no ticket fully solved and kept, and the cost is about 10×
+  plain.
+- **Research (`web4`, v3k: fetch tool, Nominatim):** complete and verified 0/6 in both arms; checks runner **9/20** vs
+  plain 2/20.
+  - The runner found the **true** Node.js version (26.12.0) with a verified quote. It left Python and PostgreSQL
+    blank rather than invent them.
+  - The plain agent's quotes were real but for **old** versions (Python 3.13.12): the evidence check proves a quote
+    exists, not that it is the newest.
+  - Flight links: runner 4/4 and 3/4 checks (links resolve, route and date right). The evidence check fails because
+    Google Flights is a JavaScript page with no quotable text.
+  - Places: 0 in both arms.
+
+## Latest live results (2026-10-18, Qwen3-14B)
+- **Brownfield rental, tickets 1–3 (backlog-smoke-e):** plain 0/4 hidden at the end (5.6 min, 0.14M tokens);
+  runner 0/4 (64 min, 1.21M tokens); runner + memory: package import broken, 0/0 (40 min, 0.56M tokens). No arm
+  solved a ticket. The runner costs about 10× more with no gain yet.
+- **Research tasks (web3):** complete and verified 0/4 in both arms; checks plain 3/14 vs runner 6/14. Qwen invented
+  versions (3.11–3.12 vs the true 3.15.0) and a place at the owner's exact coordinates; the evidence check caught
+  every one. The places task can't be scored (Overpass unreachable from the server): replace its truth source.
+- **Free frontier model:** blocked by the 50 requests/day free-tier limit.
 
 ## In progress
-
-- Nothing. Phases 1–3 are complete in dry-run form. What remains needs owner action: real benchmark runs (API credits and keys).
+- **New memory deployed to live Hermes (2026-10-18, owner's OK):** v3 memory service (pending directives,
+  failures/corrections, concurrency fix, food search moved to the plugin) and the plugin (`confirm_rule`,
+  `confirm_preference`, `forget_preference`, mistakes block, `places.py`).
+  - Before it: a dry run on a copy of the live DB (214 memories, 1 rule, 4 tastes, search 45 ms, no errors).
+  - After it: both services active, the plugin prefetch returns the rule, tastes and location, and the WhatsApp
+    bridge is `connected`.
+  - Backups: `/opt/embed-memory/backup-20261017-230031/`, `~/.hermes/backup-plugin-embed_memory-20261017-230031`.
+- **Hermes container cleanup:**
+  - The stopped and created `hermes-*` containers (195 of 265) were removed.
+  - Removing the running ones older than a day (about 70, idle `sleep infinity`, from `container_persistent: true`)
+    was blocked by the permission check: the owner runs it.
+- **Wrong live rules removed (2026-10-18, owner's instruction):** rules 3–6 and profile 5 are deactivated; live
+  Hermes now has 1 rule and 4 taste entries. The backup is `memory.db.bak-20261017-203609`.
+- **Step 0 (stop the harm):**
+  - **Concurrency fix (done):** every SQLite statement runs under one lock with its rows fetched whole, and the
+    HTTP accept queue went from 5 to 128. A new stress test (8 threads × 60 requests) passes; the old flaky test
+    passed 10/10.
+  - **Wrong live rules (not done):** removing rules 3–6 and profile 5 on live Hermes was approved by the owner but
+    blocked by the permission check. The owner runs it (command in the session summary). A backup exists:
+    `/home/hermes/.embed-memory/memory.db.bak-20261017-203609`.
+- **Step 1, measurement (built, smoke running):**
+  - `bench/backlog.py` runs the rental and ward multi-ticket scenarios in one repo, with hidden tests after each
+    ticket and QA fix-up rounds.
+  - Arms: plain / runner / notes / mem. The runner gained `--plain` and token accounting.
+  - The scenarios are checked: rental's 23 and ward's 31 hidden tests pass on the reference and fail on the start.
+  - Smoke runs (rental tickets 1–2): `/home/hermes/backlog-smoke` (v3a = the system before the redesign) and
+    `backlog-smoke-b` (v3b = after). Check with `bash bench/backlog_progress.sh backlog-smoke backlog-smoke-b [report]`.
+- **Step 2, memory redesign (built):**
+  - Directives inferred by a model wait as pending; Hermes asks the owner (`confirm_rule`, `confirm_preference`).
+  - `failures.py` replaces `experience.py`: failing checks from real outcomes, per scope, become warnings, credited by
+    `warning_id`.
+  - The runner reads rules, warnings and what the owner said, and writes nothing back.
+  - Not yet deployed to live Hermes. The food/location move waits for that deploy.
+- **Step 3, lean runner (built):** it finishes when every fixed test passes, reviews the spec only when stuck, and
+  thinks only on escalation.
+- **housebench2 (stopped at ~60 %, old memory design):**
+  - mem vs none solved +38.9 [+16.7, +61.1], house checks +42.6 [+20.4, +64.8];
+  - rules-only vs none solved +15.8 [+0.0, +31.6], house checks +33.3 [+17.5, +49.1].
+  - Rules alone carry most of the rule-following. Full memory solved more, likely via the feedback naming failing
+    checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-24: split owner assistant into sibling **owner-bot** repo; Long-Horizon remains lab + memrouter; connect
+  only over HTTP (`MEMORY_URL`), no cross-imports.
+- 2026-10-23: travel sources are ConfirmTkt (trains), abhibus (buses) and EaseMyTrip (flights): each one's own data,
+  and each loads for the server without a block or a captcha.
+- 2026-10-23: flights don't ask for a budget (the search shows prices); the forms bench gold was updated to match.
+- 2026-10-23: "book now or wait" stays a stated rule of thumb until route history exists and has been checked.
+- 2026-10-23: no home or residential connection to get past a site's block on the server (Zomato). It
+  evades the site's bot detection, so it isn't done even on request. Zomato stays unconnected.
+- 2026-10-23: slow food apps (magicpin takes about 21 s) get 5 s to join the first list, then follow up. The
+  first answer stays fast (Swiggy takes about 5 s), and a later result is sent only if it's cheaper.
+- 2026-10-23: Qwen reasoning stays off for routing. Measured on the real model (botsmoke, 2 reps), reasoning on vs off:
+  - test2: 35/40 vs 40/40;
+  - test3: 16/20 vs 20/20;
+  - test4: 12/16 vs 14/16;
+  - the owner's live failures (live6): 8/8 vs 8/8;
+  - reply time: median 6.4 s vs 2.2 s, max 116 s vs 5 s.
 
-**Repo conventions**
-- Project docs live in `docs/`. The two docs refer to each other by bare filename, and that still works because they sit in the same folder.
-- `docs/PROJECT.md` wins over `docs/MEMROUTER.md` wherever they conflict.
-- Unclear or contradictory spec points go in "Open questions" below. They are not resolved by guessing during a build session.
-
-**Owner decisions, round 1**
-1. **`ARCHITECTURE.md` is retired.** `PROJECT.md` replaces it. All references to it were removed from both docs.
-2. **MCP-first is confirmed.** The MCP server is the product. `MEMROUTER.md` §12 now maps its interfaces to MCP tools, and the Python SDK moves to "Later".
-3. **Basic memory moves to Phase 2.** Memrouter build step 1 (episodes, write path, basic similarity recall) now ships in Phase 2 with the MCP skeleton. Phase 6 adds the learning features: surprise-based links, spreading activation, decay, consolidation and fear memories.
-   - In the docs, Phase 6 also covers MEMROUTER steps 3 (Jev attention filter) and 7 (predictor trust, simulation reuse). See open question 3.
-4. **Surprise is a signed prediction error** (`MEMROUTER.md` §5; the formula below is superseded by round 5, decision 23):
-   - `outcome_score = 0.6 × success + 0.4 × efficiency`
-   - `success` = test pass rate (0 to 1)
-   - `efficiency` = average of `min(1, predicted/actual)` over tokens, cost and latency
-   - `predicted_score = 0.6 × predicted_success_probability + 0.4`
-   - `surprise = outcome_score − predicted_score` (−1 to 1)
-   - The sign sets the direction of the link update and the magnitude sets its size. The weights are configurable.
-5. **Episodes are never deleted.** The sleep job archives low-value episodes to cold storage, which is excluded from retrieval but kept as world-model training data. Pruning applies only to links and the retrieval index.
-6. **Tech stack** (`PROJECT.md` §17):
-   - Python 3.12 with the official MCP Python SDK.
-   - Streamable HTTP transport for the hosted server (API key auth); stdio for local development.
-   - FastAPI for the API key, credits and usage endpoints.
-   - Postgres + pgvector, pytest, and Docker, with everything containerised. Hosting is decided at launch.
-
-**Owner decisions, round 2**
-7. **Surprise edge cases** (`MEMROUTER.md` §5; superseded by round 5, decision 23):
-   - **Actual value is 0:** the ratio is 1, computed as `min(1, predicted / max(actual, ε))`.
-   - **Predicted value missing:** drop that metric from the efficiency average. If all three are missing, score on success only (weights renormalised).
-   - **No success probability:** use the historical success rate of similar episodes, or 0.5 if there are none. Mark the episode `lowConfidence` and halve its learning rate.
-8. **Cold storage:** a separate Postgres table, `episodes_archive`, in the same database, plus a periodic Parquet export for world-model training. Move to object storage only when size requires it.
-9. **Embeddings:** `BAAI/bge-small-en-v1.5` via fastembed, behind the embedding interface so it can be swapped.
-10. **Phase 1 baseline:**
-    - mini-SWE-agent with `claude-sonnet-5` via the Anthropic API.
-    - Claude Code headless is added later as a second baseline.
-    - The baseline and all later platform runs must use the same agent and model.
-11. **Phase 1 tasks:**
-    - SWE-bench Verified, not Lite.
-    - 50 tasks chosen with a fixed seed, stratified across repos, and weighted toward the longer difficulty buckets.
-    - The task list is committed to the repo.
-12. **Phase 1 budget and execution:**
-    - Caps of 50 steps and $1 per task.
-    - A 10-task smoke run, then the full 50, then the full baseline 3 times to measure variance.
-    - Agent runs happen in the cloud session, with evaluation via sb-cli rather than local Docker.
-    - Record success, tokens, cost, steps and time per task.
-13. **No API credits yet:**
-    - Build the full harness with a mock-model dry-run mode, but make no real runs and no paid API calls.
-    - Real-run settings stay in config behind one flag.
-    - The domains and credentials for real runs are listed in `PROJECT.md` §18.
-    - Proceed to Phase 2 once the harness PR is merged.
-
-**Owner decisions, round 3**
-14. **Phase 1 defaults approved** (were open questions 6–9):
-    - Docker when available, with per-task local setup as the fallback.
-    - The proposed difficulty weights.
-    - The first 10 of the 50 tasks form the smoke run.
-    - Per-token prices go in config if litellm lacks `claude-sonnet-5`.
-15. **Decision rule** added to `CLAUDE.md`: choose reasonable defaults and log them, and stop only for credentials or money, hard-to-reverse changes, contradictions with the docs, or true blockers.
-
-**Owner decisions, round 4** (answers to Phase 2 questions)
-16. **Defaults approved:** open questions 4, 5, 14, 18 and 19 keep the defaults used in Phase 2.
-17. **Phase 1 is next:** build the harness (dry run, no paid calls).
-18. **Reliability measurement:** Claude Code cloud sessions run on the owner's subscription, so no API credits are needed. A demo repo with 3–5 small tasks and a script measure how reliably the tools get called. Built as `demo/reliability/` (4 tasks).
-19. **`host` is a valid fourth prediction source.** `MEMROUTER.md` §4 and §5 are updated.
-20. **Basic redaction:** strip code blocks and code-like lines from decision descriptions and cap their length. We promise not to store raw code.
-    - Built as `src/horizon/redact.py`. It covers `situation`, `chosen`, `alternatives`, `reason`, `progress_note`, `open_issues`, `plan`, `constraints` and string condition values.
-    - The caps are: situation 500 characters, options 200, notes 300, condition values 100.
-    - The **goal stays verbatim** (`PROJECT.md` §8). It is the one host-written field that is not redacted.
-21. **Embedding fallback stays.** To download `BAAI/bge-small-en-v1.5`, fastembed 0.8 pulls the Hugging Face repo `Qdrant/bge-small-en-v1.5-onnx-Q` through `huggingface_hub` with `hf_xet`. The domains to allow are:
-    - `huggingface.co` (API and file resolution);
-    - `*.hf.co` (file CDN and Xet storage: `cas-bridge.xethub.hf.co`, `cas-server.xethub.hf.co`, `transfer.xethub.hf.co`, `cdn-lfs.hf.co`);
-    - `cdn-lfs.huggingface.co` and `cdn-lfs-us-1.huggingface.co` (the older LFS CDN, used when Xet is off).
-    - This model has no Google Cloud Storage source in fastembed 0.8.
-22. **Stop hook is quiet.** It triggers only when an active task has an unrecorded outcome: a test run from **this session**, after the task started, that no `record_outcome` has used. It nudges at most **once per test run** and never loops.
-
-**Phase 1 decisions (defaults chosen under the decision rule)**
-- **The harness lives in the same package** (`horizon.bench`, CLI `horizon-bench`) with an optional `[bench]` extra (mini-swe-agent, sb-cli, datasets), so the MCP server doesn't depend on litellm.
-- **Built on the Phase 2 branch and PR (#3):** this session is limited to that branch.
-- **Cost comes from `model.prices` in `bench/config.yaml`** ($2 / $10 / $2.50 / $0.20 per MTok for input / output / cache write / cache read, the `claude-sonnet-5` list prices). litellm 1.102 does list the model at the same prices; its figure is recorded as `litellm_cost_usd` for cross-checking. One source drives both the cap and the reports.
-- **The caps are mini-SWE-agent's own `step_limit` and `cost_limit`.** Both are checked before each call, so a task can overrun $1 by at most one call.
-- **mini-SWE-agent's stock SWE-bench prompts and settings** (`swebench.yaml`) are used unchanged, apart from the caps. This keeps the baseline standard and comparable.
-- **Local fallback:** `git clone` at `base_commit`, then `pip install -e . pytest` into a venv. This is best effort, and the result is recorded per task (`env_setup`). The SWE-bench per-repo install specs are not used.
-- **Dry run without a committed list** uses a synthetic 500-task pool shaped like SWE-bench Verified (same bucket sizes and repo mix). Real runs refuse to start without the committed list and both API keys.
-- **Mock model:** tokens imitate a SWE-bench trajectory with a growing, mostly cached prompt. Every 4th task never submits, so the caps get exercised. The **mock evaluator** is deterministic with some per-repeat variance, and reports are marked "DRY RUN".
-- **Repeats:** the full stage defaults to 3 repeats (`execution.repeats`) and the smoke stage to 1.
-- **Result records are the world-model log format** (open question 17): one JSON line per task run, `schema_version: 1`.
-- **`PROJECT.md` §18 domain table updated:** the sb-cli host is `api.swebench.com`, and a row was added for Docker Hub (`registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`) for the task images.
-
-**Phase 2 decisions (defaults chosen under the decision rule)**
-- **Package and SDK:** package `horizon` in `src/`, with the CLI `horizon`. The MCP Python SDK is 2.x (`MCPServer`), since 2.2 is current.
-- **SQLite backend alongside Postgres:** makes local Claude Code prototyping zero-setup. Both run the same tests. Postgres + pgvector remains the hosted store.
-- **Task state and memory storage** (default for open question 4): same database, separate tables and separate connections. Memrouter is created lazily and retried, so a memrouter failure never blocks task state.
-- **Auth before Phase 7** (default for open question 5): stdio has no auth. HTTP needs `HORIZON_DEV_API_KEY` as a Bearer token or `X-API-Key`.
-- **Host scope** (default for open question 19): Claude Code only, as requested.
-- **Embedded text is the situation plus conditions, not the chosen option:** at recall time the choice isn't known yet, so this keeps the write side and the read side symmetric.
-- **Offline hash embedder fallback:** Hugging Face is blocked in the cloud session, so the bge model can't download. Each episode stores `embedding_model`, and recall only compares vectors from the same model, so the two embedders never mix.
-- **Recall parameters:** top-50 candidates by cosine similarity, a minimum similarity of 0.2, at most 8 items, and a 1,500-token budget estimated at about 4 characters per token.
-  - There is no condition-match scoring yet (open question 16). Conditions are stored and embedded as text.
-- **"Similar episodes" for the fallback success rate:** the top 10 in the team with similarity ≥ 0.5, excluding archived episodes.
-- **Surprise in Phase 2:** computed and stored on every episode (write path step 2). Link updates wait for Phase 6.
-  - The surprise weights are normalised to sum to 1, which keeps the range at −1..1.
-  - When predicted and actual are both 0, the ratio is 1 (default for open question 14; it follows the "actual is 0 → ratio 1" rule).
-- **`predicted.source` gains a `"host"` value:** in Phase 2 there is no Jev or simulation, so predictions come from the host LLM or the memory fallback (`"memory"` is not set yet; see open question 22).
-- **Test results are stored as counts only** (default for open question 18): passed, failed, total and runner, plus the command truncated to 300 characters. Raw output is never stored.
-- **Hook-captured test counts override the host's own report.** A capture belongs to a task when it comes from the same project directory after the task started. All pending captures are consumed on `record_outcome`.
-- **Flat tool parameters** (`predicted_success`, `tests_passed`, …) instead of nested objects: these are easier for host LLMs to fill in correctly.
-- **`record_outcome` also updates task state:** it appends a decision and a progress line, can replace the open issues, and marks the task done with `task_complete`.
-- **Every recall is logged** (`recall_log`) **and every tool call is logged** (`tool_calls`). The recall log supports Phase 6 link learning; the call log feeds `horizon stats`.
-- **Stop hook blocks at most once per stop** (it respects `stop_hook_active`) and only when an active task has unrecorded test runs.
-- **Installer:** uses the absolute Python path in hooks and `.mcp.json`, and adds `enabledMcpjsonServers`.
-  - Claude Code still asks for one-time approval of project `.mcp.json` servers. The docs show `claude mcp add -s local` as the prompt-free alternative.
-- **No `episodes_archive` table yet:** the sleep job that fills it is Phase 6. The `archived_at` column exists, and recall excludes archived episodes.
-- **World-model logging** (open question 17, partly): each episode carries `schema_version: 1`.
-
-**Phase 3 decisions (defaults chosen under the decision rule)**
-- **Checkpoints are captured by a hook, not the model:** `PreToolUse` with matcher `mcp__horizon__recall_context`, the moment before each decision. This matches the Phase 2 test-capture pattern: the hook writes to a `checkpoints` table and the next `recall_context` for that directory claims it. The server never reads the repository (§12); only commit ids are stored.
-- **Git snapshot = `git stash create`, falling back to `HEAD`.** It captures uncommitted tracked changes without modifying anything. Untracked files aren't captured.
-- **Restore = `git restore --source=<snapshot> --staged --worktree -- :/`.** It resets tracked files, deletes tracked files added since, and leaves HEAD, history and untracked files alone. It is non-destructive to commits, and the failed attempt stays in Claude Code's own checkpoints.
-- **Snapshot commits aren't pinned under `refs/`**, so `git gc` could prune one after about 2 weeks. That's fine for in-task rollback. (`ponytail:` note in the code.)
-- **Claude Code checkpoint = the latest real user prompt** in the transcript. `/rewind` can only be run by the user, so it is given as an instruction; git is what the host runs itself.
-- **Failure = test pass rate below 1.0** (`HORIZON_ROLLBACK_BELOW`). See open question 29.
-- **Retry limit = 3 consecutive failed attempts per task** (`HORIZON_MAX_ATTEMPTS`): two rollbacks, then escalation. Streaks are counted per task, not per situation, because the host words the situation differently each time.
-- **Every rollback in a streak targets the checkpoint from before the first failure.** If the host skips a restore, the broken tree can't become the new baseline.
-- **Escalation = task status `escalated` plus a human-guidance resume on `recall_context`.** No new tool was added; MCP approvals (elicitation) are Phase 7. Escalated tasks still count as open for the SessionStart and Stop hooks, and SessionStart flags them.
-- **`task_complete: true` wins over a failing pass rate:** there is no rollback when the host says the task is done.
-- **At most 20 checkpoints are kept per task**, plus the rollback target.
-- **No data migration:** the new table is created if missing, and the new task-state fields have defaults, so existing stored tasks load unchanged.
-
-**Session 4 decisions (defaults chosen under the decision rule)**
-- **Postgres tests run against a throwaway local cluster** (Postgres 14 + pgvector 0.8.1 built from source). Docker isn't installed on this Mac.
-- **Reliability sessions are isolated** (`--setting-sources project,local --strict-mcp-config`). Otherwise the owner's own hooks and MCP servers (such as a user-scope memory server) would confound the measurement.
-- **Restore enforcement lives in the existing PreToolUse hook**, not in new hooks on Edit/Write. That hook already snapshots git, so it compares the snapshot's tree with the rollback target. It denies one recall at most per rollback, so a host that can't restore is never stuck. It checks git only, because a Claude Code `/rewind` can't be verified.
-- **conditionMatch default:** current conditions are treated as facts and stored ones may be predicates. A key is compared when one side is `=`. The factor is 1.0 when every comparable key matches, 0.25 when none do and 0.75 when nothing is comparable. Two predicates on the same key are skipped (this settles the mixed-operator part of open question 16). It ranks results and never filters them out.
-- **Scope preference:** an episode from another project in the team scores × 0.85. Same-project episodes are preferred but never exclusive.
-- **Episode provenance** is `client_info` `name/version` from the MCP initialize handshake (for example `claude-code/2.1.283`). It is client-supplied, so it's for tracing, not identity. Subagents share one connection, so they can't be told apart yet.
-- **`plan` on `record_outcome` replaces the plan**, like `open_issues`, and is redacted the same way.
-
-**Owner decisions, round 5**
-23. **Open question 34 (surprise bias):** replaced by the zero-centred formula above. `MEMROUTER.md` §5 and §14 are updated. The low-confidence rule for a missing success probability is unchanged.
-24. **Open questions 29 and 35 (pre-existing failures):** snapshot the failing tests at the start as a baseline. Success excludes baseline failures, rollback triggers only on regressions, and pre-existing failures are reported separately. Added to `PROJECT.md` §9.
-25. **Open questions 11–13:** my defaults are approved unless they contradict the docs. They are set in the Phase 4 plan.
-26. **Merge PR #3 and PR #4 once tests pass, then start Phase 4 on a new branch.**
-
-**Session 5 decisions (defaults chosen under the decision rule)**
-- **The baseline comes from the host's own test run**, which `start_task`'s `next`, the tool description and the CLAUDE.md snippet all ask for: "run the full suite once, before any edit". The server never runs tests itself (§12), and the hook doesn't know the project's test command.
-- **Baseline window = test runs after `start_task` and before the first `recall_context`.** Whichever of `recall_context` or `record_outcome` comes first takes it. Run 8 showed that hosts sometimes record the baseline run itself. This relies on recall coming before the first edit, which held in 50/50 real sessions.
-- **Target tests = `start_task`'s `target_tests` plus test files named in the goal** (a regex for test file paths). Target tests always count, even though they fail at the baseline. Without targets, a task's own failing tests would be excluded and success would look perfect.
-- **Regression = failing now and not failing at the baseline.** This includes new tests the host wrote that fail: only failing ids are visible in test output, so "passed at baseline" can't be checked.
-- **Absolute fallback** when the output didn't name every failure (for example `| tail -1`), when counts were host-reported, or when there's no baseline. `HORIZON_ROLLBACK_BELOW` now applies only there.
-- **Target tests still failing without a regression is not a rollback**, per rule 24. It lowers success and shows up under `target_tests_failing`, but nothing is restored.
-- **Test ids are stored with captures** (at most 500 per run) as names only, never output. `test_captures.failing` is an additive, nullable column, with the same migration pattern as `nudged_at`.
-- **Surprise ε removed** (`HORIZON_SURPRISE_EPSILON`): the new formula divides by the prediction, and zero predictions are dropped.
-- **Known flake:** one full-suite run on macOS aborted at interpreter exit (`libc++abi … recursive_mutex lock failed`), most likely onnxruntime (fastembed) tearing down. Three reruns were clean, and it doesn't come from test logic.
-
-**Phase 4 decisions (defaults under the decision rule; open questions 11–13 approved in round 5)**
-- **Open question 11:** the **small-LLM comparison scorer is built alongside Jev** behind the same interface, and `HORIZON_SCORER` picks `jev`, `llm` or `none`. The default is `none` until the owner enables one; then options are ranked on estimates only and nothing is chosen.
-- **Open question 12, thresholds:**
-  - **crucial** if any of *hard to reverse*, *shapes many later steps* or *real cost* is ≥ 0.5 (an "any serious signal" rule, not a weighted average);
-  - **clear winner** if the composite lead is ≥ 0.10 and the leader's scorer confidence is ≥ 0.5;
-  - otherwise a **close call**.
-- **Open question 12, weights:** success 0.30, compatibility 0.20, architecture fit 0.20, cost 0.15, tokens 0.10, latency 0.05. They are renormalised over the dimensions available. Measured dimensions count only when every option has an estimate: best = 1, others = best / value.
-- **Open question 13, high stakes:** the scorer's *would any option spend money, message people, or delete or overwrite data* ≥ 0.5 (the §9 examples), **or** a severe past failure among the recalled memories. High stakes only matters on a close call: a clear winner doesn't need a human.
-- **One scorer request per decision**, including the crucial-detection questions. §16 worries about per-decision overhead, but the host calls this tool only at decision points, and one parallel request is faster than two sequential ones.
-- **Accuracy is scored as a Noul**, *will this option work?*, so it doubles as the calibrated predicted success probability recorded on the episode (source `jev` or `llm`). The prediction is used when `record_outcome`'s `chosen` matches the evaluated option (case-insensitive containment). **It wins over the host's own `predicted_success`** (session 7: hosts always send one), because §9 asks to record what Jev predicted and Phase 6 predictor trust needs Jev's forecasts.
-- **`llm` is a new prediction source** (`MEMROUTER.md` §4 updated), so Jev's predictor trust (Phase 6) is never mixed with the comparison scorer's.
-- **The LLM scorer model is `claude-haiku-4-5`**, overridable: §5 asks for a *small* LLM. It answers through a JSON-schema structured output and gives no confidence, so its answers never block a clear winner.
-- **A scorer failure or missing key degrades to `unscored`**, the same failure isolation as memrouter. The scorer is created lazily, and creation is retried on the next call.
-- **Demo has 6 tasks**, one more than the owner's "3–5": task 6 is the only one with a crucial choice. Run it alone with a one-task `tasks.json`, as done here.
-
-**Phase 5 decisions (defaults under the decision rule)**
-- **Spike format** (§15 "spike format, measurements, structured result schema"):
-  - **A plan spike** is `{option, build, measure[], budget_minutes}`.
-  - **A submitted result** is `{option, static_checks[{name, passed}], spike{ran, passed, tests_passed, tests_failed, metrics{name: number}, duration_s}, notes}`.
-  - Numbers and pass/fail only, plus one note that is redacted and capped. Metric names are capped at 40 characters.
-- **Static checks are generic and host-chosen:** the dependency resolves, licence and platform fit, lint/type config. The host doesn't know the options' code yet, and the server never sees the repo (§12).
-- **Spikes run under `.horizon/spikes/`** in the project, which the installer adds to `.gitignore`. The host needs no extra permission, and git and checkpoints never see the files. Seen live: `/tmp` cost 10 permission denials.
-- **Try-and-rollback is used only when all three hold:** every close option's reversibility is ≥ 0.7, the task has a git checkpoint (so Phase 3 can actually restore), and the stakes aren't high. The host then implements the top option, and a regression rolls back to the next option in `try_order`.
-- **High stakes no longer asks a human at pass 1.** §4's flow checks consequences first and asks only if the options are still tied.
-- **Hard evidence overrides scores.** An option that failed a static check or its spike is eliminated, unless every option failed; then all stay in, so the decision is never stuck.
-- **Pass 2 re-asks the per-option questions with `consequences` in the state**, plus two consequence Nouls. They become the `no_regressions` (weight 0.20) and `relative_cost` (0.10) dimensions. Pass 1 lacks them, so its weights are renormalised.
-- **After evidence, a lead of at least twice the clear margin stands even when a Score confidence is below 0.5.** In pass 1, low confidence means "go check"; in pass 2 there is nothing left to check (seen live: a 0.30 lead with confidence 0.47).
-- **Spike reuse needs situation+option similarity ≥ 0.85 and a matching option label.** Metric: `settled_by: "memory"` counts toward §14 "share of close calls settled from memory".
-- **`submit_consequences` runs once per decision.** A second call is rejected (§5: don't loop). The decision must belong to the task.
-- **Decision log in the task store's database** (table `decisions`): it's task-scoped and must keep working when memrouter is down. Spike results live in memrouter (`spike_results`), because MEMROUTER §12 assigns `lookupSimulation` there.
-- **An outcome is attached to the decision when the implemented option is any of the decision's options**, not only the chosen one, with `followed_decision` recorded. Training data then includes overrides. Unrelated later outcomes aren't attached.
-- **JSONL, not Parquet, for now.** MEMROUTER §14 ties the Parquet export to the Phase 6 consolidation run.
-- **Redaction (Phase 2 bug found live):** the symbol-ratio rule needs at least 3 symbols, so labels like `dbm (stdlib)` survive.
-
-**Phase 6 decisions (defaults under the decision rule; these settle open question 15 and the mixed-operator part of 16)**
-- **Strength and stability are kept for every memory** (episodes too, not only lessons and strategies) in `memory_state`, so the same learning ranks all three kinds. Strength starts at 0.5 and stability at 1.
-- **Candidate score** = similarity × conditionMatch × scope × (0.2 + 0.8 × strength). The strength factor is bounded, so learning can reorder memories but never erase a highly similar one. (An unbounded base-level term swamped relevance in the owner's earlier memrouter experiments.)
-- **Credit assignment:** only recalled memories about the **option the host implemented** "fed" the decision and learn from its surprise. Other recalled memories had a usage opportunity and didn't help: strength − 0.02 / stability.
-- **"Helpful" (open question 15)** = surprise ≥ 0 **and** success ≥ 0.5. A helpful recall multiplies stability by 1.5 (capped at 20, so nothing is permanent).
-- **Strength change** = lr × signal × surprise, the same rule as links. A loss is divided by √stability, so proven memories decay slower.
-- **Hebbian co-success links** join the fed memories and the new episode. They start at the semantic weight (0.1) and move by the same Δ. Links with weight 0 or below never spread activation. Pruning happens in the sleep job.
-- **Spreading activation** traverses semantic, co-success and derived-from links in both directions, never `contradicts`. Memories reached only through links get the condition and scope factors too. Archived episodes drop out.
-- **Attention filter:** one Jev Noul per shortlisted memory ("would it help decide `situation` well?"), kept at ≥ 0.5 in descending order. Without Jev, or on failure, the activation order stands.
-- **Sleep job:**
-  - replays the last 1,000 episodes and clusters them by same option plus similarity ≥ 0.8;
-  - 3+ episodes at ≥ 80 % success become a strategy, and at ≤ 30 % a failure lesson; mixed clusters are left to reconsolidation;
-  - conditions = those shared by every episode in the cluster;
-  - merges into an existing lesson at similarity ≥ 0.85, keeps the newest 3 evidence episodes in retrieval and archives the rest;
-  - runs inline every 200 episodes (failure-isolated), or from `horizon consolidate` or cron.
-- **Reconsolidation:** a contradicting outcome on a recalled lesson or strategy about the same option looks for a condition that every supporting episode shares and the new one doesn't:
-  - for numbers, the bound becomes `<=` the maximum or `>=` the minimum;
-  - for categories, it becomes `=` the shared value.
-  - With no such condition, contradictions are counted, and at 2 the lesson's strength halves and it gets a `contradicts` link.
-- **Fear lessons:**
-  - created at strength 1.0 and maximum stability;
-  - surfaced when similarity ≥ 0.5 and conditions don't rule them out, even beyond the token budget or the attention filter's choice;
-  - a success of ≥ 0.8 with the same option under matching conditions multiplies strength by 0.7 and records it;
-  - cleared only through `horizon clear-fear --by <name>`, a CLI a human runs. The MCP `clear_fear` tool is Phase 7.
-- **Predictor trust:** after every episode with a prediction, per source and `task_type` (a condition; default "general"): calibration (mean predicted − mean actual), accuracy (1 − mean absolute error) and Brier score. When memory's history stood in for a missing prediction, memory is the source scored.
-- **Parquet** needs the new `[export]` extra (pyarrow). One flat row per episode, archived ones included, plus the full JSON.
-
-**Phase 7 decisions (defaults under the decision rule)**
-- **`delete_memory` never deletes an episode.** "Episodes are never deleted" (round 1, decision 5) wins, so an episode is archived (out of retrieval, kept as training data) and its links are removed. Lessons and strategies are deleted, with a snapshot kept in `memory_removals`. Hard deletion for privacy would be hard to reverse and would contradict decision 5, so it's an open question (47).
-- **Human-only actions are enforced by where the answer comes from.** `clear_fear` accepts only a confirmation that arrives through the client's user-input request. Tool arguments can't carry it (the agent writes those), and a client that can't ask gets an error pointing to the `horizon clear-fear` CLI.
-- **The 2026-07-28 round trip keeps round 1's result in `request_state`, HMAC-signed.** The tool body would otherwise run twice and redo work (a second `submit_consequences` is rejected). The state is bound to the tool, the team and the arguments, and the secret is per process unless `HORIZON_STATE_SECRET` is set.
-- **Approvals Horizon asks for:** high-stakes ties after consequence checks (§4 and §9: money, messages, data), rollback escalations (§8), memory deletion, and clearing fears. The user's choice becomes the decision (`human_choice`, with the approver in the decision log), and the episode still records Jev's prediction for that option.
-- **Accounts share the task store's database.** Only SHA-256 hashes of keys and session tokens are stored. Keys look like `hzn_` + 32 random bytes, and a key is shown once. The web session is an HttpOnly, SameSite=Strict cookie (Secure over https), valid for 7 days.
-- **Credit prices are placeholders** (§15 leaves pricing open): 1 per call for `start_task`, `recall_context` and `record_outcome`; 5 for `evaluate_options` and `submit_consequences` (Jev plus orchestration); inspection and approvals free; 1,000 free starter credits. There are no payments (they would need money and a provider), so operators top up with `horizon add-credits`.
-- **There's no sign-up page.** An operator creates teams with `horizon create-team` until hosting and pricing are decided at launch (§17).
-- **Metering applies to the hosted HTTP transport only.** Local stdio is free and unauthenticated (the user runs everything), and the static dev key stays unmetered for local HTTP.
-- **Savings per session are counted events only**, with no invented token savings. "Tokens saved" is reported only where past spikes recorded their token cost. With 2026-07-28 (stateless HTTP, no `mcp-session-id`), a Horizon task stands in for the session.
-- **The web page is server-rendered HTML** with no JavaScript and a dark-mode style. It needs the `[web]` extra (FastAPI, python-multipart). The MCP app is mounted under it, and its lifespan runs the MCP session manager.
-
-**My interpretations while editing the docs (please confirm)**
-- **`MEMROUTER.md` §12 tool mapping:**
-  - `recall` → `recall_context`; `record` → `record_outcome`.
-  - `lookupSimulation` is used inside `evaluate_options` / `submit_consequences`.
-  - `predictorTrust` and `consolidate` are internal.
-  - `clearFear` → `clear_fear`, human only.
-- **Data model:**
-  - `predicted.success` is the predicted success probability.
-  - `actual.success` is the test pass rate.
-  - `Episode` gains `surprise`, `lowConfidence` and `archivedAt` fields.
-- **Defaults I picked** (`MEMROUTER.md` §14):
-  - ε = 1e-9.
-  - The Parquet export runs with each consolidation run.
-- **"Similar episodes"** for the fallback success probability means the Phase 2 basic similarity recall (§6 step 2), over episodes that aren't archived.
+  With reasoning on, the model asked questions in free text instead of starting forms, and dropped details. The
+  live failures were fixed by the capability facts, the yes-inside-a-sentence rule and the no-promise rule, not by
+  reasoning.
+- 2026-10-22: the bot may place a food order paid by a UPI request to the owner's own UPI ID (owner's decision,
+  approved in /permissions). It needs the owner's YES to the exact item, total and address read from the checkout
+  page. Cap ₹1,500 per order until the owner changes it.
+- 2026-10-22: the bot may type the owner's phone and a login OTP the owner sends (owner's request). Payment OTPs,
+  cards, CVV and UPI PIN stay impossible, enforced in `bot/cdp.py`.
+- 2026-10-22: Hermes is replaced by our bot (owner's call). The bot keeps Hermes's WhatsApp session, env file,
+  scripts and memory files, and copies the bridge to `/opt/bot-bridge`, so Hermes's install can be removed later.
+- 2026-10-22: the cron jobs run on the local Qwen instead of free OpenRouter Nemotron (rate-limited in the logs, and
+  one model to keep alive).
+- 2026-10-22: WhatsApp owner filtering is the bridge's own (LID-aware) allowlist. A phone-number check in the bot
+  would drop the owner's `@lid` messages.
+- 2026-10-21: the target is the booking assistant (owner's spec). Tasks are forms with code-checked slots, not open
+  goals, because the measured small-model failures were mostly misreading the task or what "done" means.
+- 2026-10-21: only habit slots become defaults (from, passengers, class, seat, cab type, diet...). Destination,
+  dish, dates and budgets are said each time or asked.
+- 2026-10-21: the UPI handoff is opt-in through a file only the owner writes. Live Hermes is unchanged until the owner
+  says deploy.
+- 2026-10-21: the forms bench is the first gate (minutes). Live-site rehearsals up to payment come next, and only if
+  forms beat plain on the test split.
+- 2026-10-19: ward is the held-out scenario: no runner fix was made from ward runs. Rental results after this
+  date's fixes are tuned-on-test and don't count as evidence.
+- 2026-10-19: fast loop first (preflight, tickets.py); a full backlog run only for a milestone decision.
+- 2026-10-19: the spec reviewer prompt stays as is: offline, Qwen caught the invalid Aadhaar 3/3 with it, so the
+  ticket 2 failure was time, not review.
+- 2026-10-19: the places goal names Nominatim's viewbox order: documentation every arm gets, not a hint for one.
+- 2026-10-19: a failed attempt that broke earlier work is rolled back to the step's start, not built on: building on a
+  broken package cost the whole v3l rental run.
+- 2026-10-19: deploy presigns need `--region ap-south-1` (the default region gives a 301 redirect, which the md5
+  check caught).
+- 2026-10-18: repo restructured to only what runs. Everything else is in the tag `snapshot-pre-restructure`;
+  `IDEAS.md` lists what is worth reusing from it, with evidence and paths.
+- 2026-10-18: the runner no longer writes Horizon events (`--events-db` removed): nothing read them.
+- 2026-10-18: `stall.py` trimmed to `Run` + `stuck`, the only parts the runner uses.
+- 2026-10-18: LoCoMo loading for training is now `memrouter/locomo_data.py`. Training scripts use fastembed
+  directly instead of `horizon.memrouter.embedding`.
+- 2026-10-17: runner lessons are silent by default: rules always; beyond them only advice, lessons and fears with
+  score ≥ 0.5, at most 3.
 
 ## Open questions
+- **owner-bot remote:** https://github.com/Codejain1/owner-bot — point server bundles at that tree.
+- **Zomato:** not connected (see Decisions). Possible next step: a Zomato search link next to the results, for
+  the owner to open in their own Zomato app.
+- **UPI request reachability:** NPCI stopped person-to-person UPI collect requests in 2025. Merchant checkouts that
+  take a UPI ID likely still work, but some sites offer only QR or app intent. Check per site in rehearsals.
+- **Logins:** IRCTC, Swiggy, Zomato and Uber need OTP logins, which Hermes must not enter. Default: the owner logs in
+  once in Hermes's browser and the session is reused.
+- **Flaky test:** `test_experience_loop_through_memrouter` fails about 1 in 5 full-suite runs, never alone. It's
+  likely concurrent memory writes on one SQLite connection. Default: leave as is until it bites.
+- **Stockholm GPU billing** ($1.07/h): default is to keep it on while housebench2 runs.
 
-Items marked **(blocks Phase 1)** need an answer or a decision during the Phase 1 build.
+## Next step (2026-10-21)
+1. Done: forms beat plain on held-out cases (85 % vs 32 %).
+2. Next (deploy done): the owner logs in to Swiggy/Zomato in Hermes's browser (DCV desktop). Then rehearse food comparison (Swiggy vs Zomato)
+   and one train search up to payment, without paying. If they don't: the form idea is wrong for this model, so
+   rethink before building more.
+3. Owner: the deploy to live Hermes, writing `upi_id`, and logging in to the sites.
 
-### Background
-
-1. **Existing memrouter project.** `PROJECT.md` §15 says to "reconcile with the existing memrouter project (results not yet shared)". Where is that project? Should it shape Phase 2 and Phase 6?
-2. **Name clash.** Another GitHub project is already called MemRouter (§15). Should the component keep the name `memrouter` for now?
-
-### Build-order details
-
-3. **Memory in Phases 4 and 5.** Proposal: Phases 4 and 5 use the Phase 2 basic similarity recall for "memory feeds Jev evidence" and "memory lookup". Full simulation reuse, predictor trust and the Jev attention filter arrive in Phase 6. OK?
-4. **(Resolved: owner approved the default — same Postgres, separate tables, failure-isolated code path.) Task state and memory storage.** Task state must keep working if memrouter is down (MEMROUTER §11). Should it be a separate service or database, or the same Postgres with separate tables and a failure-isolated code path?
-5. **(Resolved: owner approved the default — stdio without auth, static dev key for HTTP.) When does API key auth start?** Key, credits and usage endpoints are Phase 7. Should Phases 2–6 use stdio locally with no auth, plus a single static dev key for HTTP?
-
-### Phase 1: benchmark harness
-
-6. **(Resolved: owner approved (a) with (b) as fallback.) Where does the agent execute task code?** mini-SWE-agent's SWE-bench mode normally runs each task inside that task's SWE-bench Docker image. The cloud session may not have Docker. The options are:
-   - (a) Docker in the session, if available (pulls images from Docker Hub, so that domain would be needed);
-   - (b) a local environment per task (clone the repo and install its dependencies; slower and can differ from the evaluation environment);
-   - (c) a remote sandbox provider (a new service and credential).
-
-   sb-cli only covers evaluation, not the agent's own runs. Proposal: support (a) with (b) as a fallback, and check which one works when real runs are enabled. This doesn't block the dry-run build.
-7. **(Resolved: weights approved.) Difficulty weighting.** SWE-bench Verified has four difficulty buckets (<15 min, 15 min–1 h, 1–4 h, >4 h), and the longest has very few tasks. Proposal:
-   - take every >4 h task;
-   - then roughly 40% from 1–4 h, 35% from 15 min–1 h and 25% from <15 min;
-   - stratify by repo within each bucket.
-
-   Are those weights OK?
-8. **(Resolved: first 10 of the 50.) Smoke run selection.** Should the 10 smoke tasks be the first 10 of the committed 50 (keeping the same stratification), or a separate set?
-9. **(Resolved: per-token prices in config.) Model pricing.** mini-SWE-agent tracks cost through litellm. If litellm doesn't yet list `claude-sonnet-5` prices, the $1 cap can't be enforced. Proposal: set per-token prices in harness config and use them for both the cap and the reports.
-10. **"Benchmark after every phase".** Phases 2–3 don't change agent behaviour much. Is a no-regression check enough for those phases?
-
-### Decision layer and Jev
-
-11. **(Default approved in round 5.)** **Jev access is unverified** (§15). Should the small-LLM comparison scorer (§5) be built first as a fallback behind the same interface?
-12. **(Default approved in round 5; values are set in the Phase 4 plan.)** **Thresholds undefined.** There are no values yet for the "clear winner" and "close call" thresholds, the score weights, or crucial-decision detection.
-13. **(Default approved in round 5; the rule is set in the Phase 4 plan.)** **"Ask human if high stakes."** A concrete rule is needed beyond the examples given.
-
-### Memrouter spec gaps
-
-14. **(Resolved: owner approved ratio 1.) Surprise when predicted and actual are both 0.** With `max(actual, ε)`, the ratio comes out as 0 instead of 1 (for example, a predicted cost of $0 when the actual cost is $0). Should this case count as a ratio of 1?
-15. **Decay maths is undefined.** No formulas are given for how `strength` and `stability` change per recall or per "usage opportunity", and "helpful" isn't defined.
-16. **Undefined terms.** "Condition match" scoring for mixed operators is not defined. Neither is who classifies a failure as "severe".
-
-### Outcomes, privacy and data
-
-17. **Undefined specs.** "Heavy testing" and the world-model logging format are both undefined. The logging format is needed from Phase 1/2 ("from day one"). Proposal: Phase 1 writes one JSON Lines record per task run with a versioned schema, and the Phase 2 episode format builds on it.
-18. **(Resolved: counts only for test results, plus redaction of decision text; see round 4.) Raw code could be stored.** Test output and `testResults` can contain code, stack traces and file paths. What sanitisation or redaction is required?
-
-### Host integration
-
-19. **(Resolved: Claude Code only.) Which hosts first?** Should Phase 2 target Claude Code only, or also Codex and Cursor? What target invocation rate counts as "reliable"?
-
-### Raised in Phase 2 (non-blocking; the default used is in brackets)
-
-20. **(Resolved: build Phase 1 next, dry run, no paid calls.) Phase 1 was skipped.** The harness isn't in the repo yet, but this session was asked to build Phase 2. §13 says to benchmark after every phase, so Phase 2 has no benchmark run. [Built Phase 2 as asked. Phase 1 is still to do, dry run first, with no paid calls.]
-21. **(Resolved: cloud Claude Code sessions run on the owner's subscription; reliability demo built in `demo/reliability/`.) Real host invocation rate is not measured yet.** This needs real Claude Code sessions, which cost API usage. [The machinery is in place: hooks plus `horizon stats` → `outcome_recording_rate`. The owner runs a few real tasks when ready.]
-22. **(Resolved: `host` approved as a fourth source; `MEMROUTER.md` updated.) `predicted.source`.** MEMROUTER §4 lists `jev | sim | memory`. Phase 2 adds `host`. Should the fallback prediction be tagged `memory`? [Today a missing prediction keeps `source: "host"`, and the fallback is marked by `lowConfidence`.]
-23. **(Resolved: basic redaction built.) Situation text can still contain code.** `situation`, `chosen` and `reason` are free text from the host. [No redaction yet. The tool descriptions ask for short summaries.]
-24. **(Resolved: keep the fallback; domains listed in round 4.) Embedding model download.** `huggingface.co` must be reachable wherever the server runs, or it falls back to the weaker hash embedder. [Fallback with a warning. `huggingface.co` is already on the §18 domain list.]
-25. **(Resolved: keep it, but quiet.) Stop-hook pushiness.** Blocking a stop once to ask for `record_outcome` could annoy users. [Enabled. Removing the `Stop` hook from `.claude/settings.json` turns it off.]
-
-### Raised in Phase 1 (the default used is in brackets)
-
-26. **(Resolved in session 4: generated and committed from the owner's Mac.) `huggingface.co` is blocked in the cloud session**, so `horizon-bench select` can't read SWE-bench Verified. [Everything else is built and tested on a synthetic pool. Allowing `huggingface.co` and `*.hf.co` (the same domains as the fastembed download) unblocks it: then run `horizon-bench select` and commit `bench/tasks/swebench_verified_50.json`.]
-27. **Verify on the first real smoke run:**
-    - litellm's Anthropic usage fields: the harness assumes `prompt_tokens` includes cache reads and writes;
-    - the key sb-cli uses for resolved ids in its report: the harness reads `resolved_ids`, falling back to `resolved`.
-    [Both are handled defensively, and the smoke run exists to catch exactly this.]
-28. **Real-run spend.** The caps bound the worst case at $10 for the smoke run and $150 for the full 50 × 3. [No real runs until the owner sets `real_runs: true` and provides the keys.]
-
-### Raised in Phase 3 (the default used is in brackets)
-
-29. **(Resolved in round 5; see decisions 23–24.)** **Repos with failing tests before the task starts** would trigger a rollback on every attempt at the 1.0 threshold. [Threshold 1.0, configurable. The better rule is "worse than the pass rate at the checkpoint", but that needs a test run at checkpoint time.]
-30. **Hosts without hooks get no checkpoints.** [Claude Code only, per decision 19. A `checkpoint` parameter on `recall_context` would cover Codex and Cursor later.]
-31. **Should a `severe` outcome escalate immediately** instead of after N attempts? [No. It follows the normal limit.]
-32. **We don't verify that the host actually restored.** [Streaks always target the first good checkpoint, which limits the damage. A hook could compare the tree with the snapshot on the next recall.]
-33. **Phase 3 has no benchmark run** (§13). [Same as open question 10: it doesn't change the baseline agent, which is mini-SWE-agent without MCP.]
-
-### Raised in session 4 (the default used is in brackets)
-
-34. **(Resolved in round 5; see decisions 23–24.)** **Surprise is biased negative by design.** `efficiency = min(1, predicted/actual)` can't go above 1, but `predicted_score` assumes efficiency = 1. Coming in under budget earns nothing and any overrun is penalised, so even a perfectly calibrated predictor averages below 0, and Phase 6 links would slowly weaken. [Implemented exactly as `MEMROUTER.md` §5 says, because changing it would contradict the doc. Proposal: use the expected efficiency (for example, the running mean) in `predicted_score`, or let the ratio go above 1 with a cap.]
-35. **(Resolved in round 5; see decisions 23–24.)** **Hook-captured test counts can include unrelated failures.** In the demo, a host sometimes ran the whole suite, which included other tasks' stubs, before its targeted run. If that were the last run, `record_outcome` would see a pass rate below 1 and trigger a rollback. [This is the same root cause as open question 29. The default keeps the latest capture. The fix is to compare against the pass rate at the checkpoint.]
-36. **Provenance can't tell subagents apart** (MEMROUTER §11). [It uses `client_info` only. An optional `agent_id` parameter on `record_outcome` would cover it when subagents arrive.]
-
-### Raised in Phase 4 (the default used is in brackets)
-
-37. **(Partly resolved in session 7: key provided, Jev verified live; pricing and rate limits still unpublished.)** **Jev has never been called for real.** This needs a `TYPESAFE_API_KEY` from console.typesafe.ai. The docs publish no pricing or rate limits (§15 "test Jev access for real" is still open). [Built and tested against the SDK over a mocked transport; `HORIZON_SCORER=none` by default.]
-38. **(Needs credentials and spend.) The LLM scorer has never been called for real.** It needs Claude API credentials. [Same as above.]
-39. **Weights and thresholds are untuned.** §5's experiment (Jev against the small LLM on real decisions, then against real outcomes) is what should set them. [Defaults above. Every raw dimension is returned, so re-weighting doesn't need re-scoring.]
-40. **Phase 4 has no benchmark run.** mini-SWE-agent doesn't speak MCP (same as open question 10). [The demo measures invocation instead.]
-
-### Raised in Phase 5 (the default used is in brackets)
-
-41. **Jev rarely produces close calls.** Three real library choices all came out as clear winners (margins 0.17–0.24), so consequence checking may seldom run at the 0.10 margin. [Kept 0.10. The decision log will show how often close calls happen; the §6 experiment ("on a sample of ties, run all options for real") needs ties, so a larger margin may be worth it for the experiment.]
-42. **Possible high-stakes false positive:** "Celery with Redis vs RQ vs APScheduler" scored as high stakes. [Only matters on a second tie (then a human is asked). Watch it in the decision log.]
-43. **Spikes cost the host's tokens and time** (about 6 extra tool calls per option in the live runs). [The plan caps each spike at `HORIZON_SPIKE_BUDGET_MINUTES` (10), static checks can skip a spike, and memory reuse avoids repeats.]
-
-### Raised in Phase 6 (the default used is in brackets)
-
-44. **The headline improvement comes from one constructed scenario.** The owner's earlier memrouter experiments (open question 1: `~/Desktop/memrouter`) found that on real data, scoped walls plus a shared schema tier beat activation-based routing, and that the working-set cap did most of the work. They also found bugs that only a live use log exposed. [Built to spec, with a bounded strength factor. Next evidence: repeated real benchmark runs (§15) and a comparison with a standard memory layer such as mem0.]
-45. **Predictor trust is tracked but doesn't yet change scoring.** [Reported in `horizon stats` and the consolidation report. Shrinking a poorly calibrated source's predictions needs samples first.]
-46. **Past spike results aren't yet part of the recall slice** (§6 step 6 lists them). [They're used where they matter, in the decision layer's memory lookup (Phase 5).]
-
-### Raised in Phase 7 (the default used is in brackets)
-
-47. **(Needs the owner: data deletion.) Privacy hard-delete.** A user may want a memory erased, not archived (e.g. under GDPR), which conflicts with "episodes are never deleted". [Archive plus audit snapshot. Hard delete would need an owner decision and a way to purge Parquet exports too.]
-48. **Pricing, the free tier and payments** (§15 "credit pricing, free tier limits"). [Placeholder prices and 1,000 free credits; operator top-ups; no payment provider.]
-49. **Interactive approval UX is untested with a human in Claude Code.** Headless runs prove the safe path (cancel → nothing happens), but not how the choice or guidance form looks. [Try `evaluate_options` on a high-stakes tie in an interactive session.]
-
-## Next step
-
-1. **Owner:** to use Jev in your own projects, set `TYPESAFE_API_KEY` and `HORIZON_SCORER=jev` in the environment Claude Code starts from. Optionally set `HORIZON_SCORER=llm` with Claude API credentials to run the Jev-vs-small-LLM comparison (open question 39).
-2. Review the Phase 4 branch and open its PR when ready (the owner asked for PRs in batches).
-3. Phase 7 is on `claude/phase-7-inspection-approvals` (from `main`). Next is **Phase 8: launch**: publish the repo, benchmarks and a write-up. That needs the real benchmark runs (API credits) and the owner's call on hosting (§17), pricing (48) and public release (hard to reverse).
-4. Schedule `horizon consolidate` nightly where Horizon runs (cron) if 200-episode batches are too infrequent.
-4. When credits and keys exist, run the Phase 1 real benchmark (smoke run first).
+## Earlier plan (2026-10-18, coding direction, kept for history)
+0. **Stop the harm (≤ 1 day):**
+   - remove the 4 wrong live rules and the wrong profile entry (owner's yes needed);
+   - fix SQLite concurrency (connection per request + WAL);
+   - finish housebench2.
+1. **Measurement loop (largest, ~4–5 days):**
+   - a real benchmark: the ward and rental multi-ticket projects adapted to the runner;
+   - the metric is cost to working software (fix-up rounds until the hidden tests pass);
+   - arms: plain Qwen loop, runner, runner + notes file, runner + memrouter;
+   - benchmarks run only when Hermes is idle.
+2. **Memory redesign (~4 days):**
+   - directives: owner-confirmed, scoped, revocable;
+   - experience: keyed by failure signature, written only from ground truth with the recall link, shown as
+     concrete warnings;
+   - conversation recall unchanged;
+   - food and location move into their own Hermes tool.
+3. **Lean runner (~2 days):** code and tests written together; stop when the deliverable passes; spec review only
+   when stuck.
+4. **Hermes outcomes (~1 day, after 2):** owner accepts or corrects a reply → an experience record.
+5. **Model and compute only where 1 shows a need:** a stronger writer or spec model, or a second GPU for benchmark
+   days.

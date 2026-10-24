@@ -1,0 +1,160 @@
+"""The backlog benchmark: tickets in one repo, hidden tests after each, QA fix-ups, the notes arm, the report."""
+
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "bench"))
+import backlog as BL  # noqa: E402
+
+
+def scenario(root: Path) -> None:
+    """Ticket 1 adds price(); its note says prices are in whole rupees. Ticket 2 adds total(), which needs that rule."""
+    d = root / "scenarios" / "shop"
+    (d / "start" / "shop").mkdir(parents=True)
+    (d / "start" / "shop" / "__init__.py").write_text("")
+    (d / "hidden").mkdir()
+    (d / "hidden" / "test_s1.py").write_text("import shop\n\ndef test_price():\n    assert shop.price(3) == 30\n")
+    (d / "hidden" / "test_s2.py").write_text("import shop\n\ndef test_total_is_whole_rupees():\n"
+                                             "    assert shop.total([1, 2]) == 30\n")
+    (d / "scenario.json").write_text(json.dumps({
+        "sessions": ["Ticket #1: price(n) = 10 per item. Note for later: totals are whole rupees.",
+                     "Ticket #2: total(items) sums price over the items."],
+        "rule_checks": {"test_total_is_whole_rupees": "whole rupees"}}))
+
+
+def args(tmp_path, arm, **kw):
+    return SimpleNamespace(scenario="shop", arm=arm, out=str(tmp_path / "out"), model_url="x", tickets=99, fixups=2,
+                           max_minutes=1, image=None, local=True, port=0, memrouter_cmd="", label="", extra="", explore=0.2, **kw)
+
+
+def test_tickets_score_hidden_tests_and_qa_fixups_count(tmp_path, monkeypatch):
+    scenario(tmp_path)
+    monkeypatch.setattr(BL, "HERE", tmp_path)
+    goals = []
+
+    def job(goal, repo, logs, tag, a, port):  # gets ticket 1 right; forgets ticket 2 until QA says what fails
+        goals.append((tag, goal))
+        code = "def price(n):\n    return 10 * n\n"
+        if "fix" in tag:
+            code += "def total(items):\n    return sum(price(n) for n in items)\n"
+        (repo / "shop" / "__init__.py").write_text(code)
+        return {"minutes": 1.0, "ok": True, "tokens": 100, "by_model": {"local": {"prompt_tokens": 90, "completion_tokens": 10}}}
+    rows = BL.run(args(tmp_path, "runner"), job=job)
+    assert [(r["ticket"], r["after_build"], r["final"], r["total"], r["fixup_rounds"]) for r in rows] == \
+        [(1, 1, 1, 1, 0), (2, 1, 2, 2, 1)]
+    assert rows[1]["rules_passed"] == ["test_total_is_whole_rupees"]
+    qa = goals[-1][1]
+    assert qa.startswith("QA report after ticket #2") and "test_total_is_whole_rupees" in qa
+    assert "test_s2" not in qa and "whole rupees" not in qa  # names the failing check, never the test code or old ticket
+    out = BL.report(str(tmp_path / "out"))
+    assert "runner  tickets  2  hidden at the end  2/ 2  rule checks 1/1" in out and "fix-up rounds  1" in out
+
+
+def test_notes_arm_keeps_every_ticket_and_report_in_the_repo(tmp_path, monkeypatch):
+    scenario(tmp_path)
+    monkeypatch.setattr(BL, "HERE", tmp_path)
+    seen = []
+
+    def job(goal, repo, logs, tag, a, port):
+        seen.append(goal)
+        return {"minutes": 0.5, "ok": False, "tokens": 0, "by_model": {}}
+    BL.run(args(tmp_path, "notes"), job=job)
+    notes = (tmp_path / "out" / "notes" / "repo" / "NOTES.md").read_text()
+    assert "Ticket #1" in notes and "whole rupees" in notes and "QA report after ticket #2" in notes
+    assert all(g.endswith(BL.NOTES_HINT) for g in seen)
+
+
+def test_real_scenarios_are_whole_and_start_unsolved(tmp_path):
+    for name in ("rental", "ward"):
+        sdir, sc = BL.scenario(name)
+        assert len(list(sdir.glob("hidden/test_s*.py"))) == len(sc["sessions"])
+        passed, failed, _ = BL.hidden(sdir, len(sc["sessions"]), sdir / "start", tmp_path / name, None)
+        assert passed == [] and len(failed) >= 23 and set(sc["rule_checks"]) <= set(failed), name
+
+
+def test_mem_arm_stores_each_ticket_after_its_job_and_real_outcomes(tmp_path, monkeypatch):
+    import threading
+    import time
+    sys.path[:0] = [str(Path(__file__).parent.parent / "memrouter"), str(Path(__file__).parent)]
+    import memory_service as M
+    from test_memory_service import KeywordRanker, fake_encode
+    scenario(tmp_path)
+    monkeypatch.setattr(BL, "HERE", tmp_path)
+    mem = M.Memory(tmp_path / "m", fake_encode, KeywordRanker())
+    threading.Thread(target=M.serve, args=(mem, 18831), daemon=True).start()
+    time.sleep(0.3)
+    monkeypatch.setattr(BL.B, "start_memrouter", lambda cmd, home, port: SimpleNamespace(terminate=lambda: None))
+    monkeypatch.setattr(BL, "HERE", tmp_path)
+    stored = []
+
+    def job(goal, repo, logs, tag, a, port):
+        stored.append([r[0] for r in mem.db.execute("SELECT text FROM turns")])
+        return {"minutes": 0.1, "ok": True, "tokens": 0, "warning_id": None, "by_model": {}}
+    a = args(tmp_path, "mem")
+    a.port, a.fixups = 18831, 1
+    BL.run(a, job=job)
+    assert stored[0] == []  # ticket 1's job did not get its own ticket back from memory
+    assert any("price(n) = 10" in t for t in stored[1])  # ticket 2's job can recall ticket 1
+    assert {x["check"] for x in mem.fails.stats("shop")} == {"test_price", "test_total_is_whole_rupees"}
+
+
+def test_a_labelled_variant_passes_its_runner_flags(tmp_path, monkeypatch):
+    scenario(tmp_path)
+    monkeypatch.setattr(BL, "HERE", tmp_path)
+    cmds = []
+
+    class P:
+        returncode = 0
+
+        def __init__(self, cmd, **kw):
+            cmds.append(cmd)
+
+        def wait(self, timeout=None):
+            return 0
+    a = args(tmp_path, "plain")
+    a.label, a.extra, a.tickets, a.fixups = "big", "--model frontier-1 --api-key-env BIG_KEY", 1, 0
+    with monkeypatch.context() as m:
+        m.setattr(BL.subprocess, "Popen", P)
+        (tmp_path / "repo").mkdir()
+        BL.run_job("ticket", tmp_path / "repo", tmp_path / "logs", "t01", a, None)
+    assert cmds[0][-4:] == ["--model", "frontier-1", "--api-key-env", "BIG_KEY"] and "--plain" in cmds[0]
+    rows = BL.run(a, job=lambda *x: {"minutes": 0, "ok": True, "tokens": 0, "by_model": {}})
+    assert rows[0]["arm"] == "big" and (tmp_path / "out" / "big.jsonl").exists()
+
+
+def test_repeat_runs_pool_with_an_interval_only_from_three_runs(tmp_path):
+    def run_dir(i, arm, finals):
+        d = tmp_path / f"r{i}"
+        d.mkdir(exist_ok=True)
+        rows = [{"ticket": t + 1, "final": f, "total": t + 1} for t, f in enumerate(finals)]
+        (d / f"{arm}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return str(d)
+    dirs = [run_dir(i, "plain", [0, 0, 0]) for i in range(3)]
+    for i, finals in enumerate(([1, 2, 3], [1, 1, 2], [1, 2, 2])):
+        run_dir(i, "runner", finals)
+    out = BL.pooled(dirs)
+    assert "runner  runs 3" in out and "runner vs plain, at the end" in out and "(interval above 0)" in out
+    assert "no interval below 3 runs" in BL.pooled(dirs[:2])
+    assert abs(BL.run_scores([{"final": 1, "total": 1}, {"final": 1, "total": 3}])[0] - 2 / 3) < 1e-9
+
+
+def test_a_runner_crash_stops_the_arm_instead_of_scoring_zero(tmp_path, monkeypatch):
+    a = args(tmp_path, "runner")
+    a.label, a.extra = "", ""
+    (tmp_path / "repo").mkdir()
+
+    class P:
+        returncode = 1
+
+        def __init__(self, cmd, stderr=None, **kw):
+            stderr.write("UnicodeDecodeError: 'utf-8' codec can't decode byte 0xa3\n")
+            stderr.close()
+
+        def wait(self, timeout=None):
+            return 1
+    monkeypatch.setattr(BL.subprocess, "Popen", P)
+    import pytest
+    with pytest.raises(RuntimeError, match="(?s)crashed on t01.*0xa3"):
+        BL.run_job("ticket", tmp_path / "repo", tmp_path / "logs", "t01", a, None)

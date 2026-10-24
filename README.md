@@ -1,48 +1,49 @@
-# Long-Horizon Tasks
+# Long-Horizon
 
-An MCP server that gives coding agents task state and outcome-learning memory. See `docs/PROJECT.md` (source of truth) and `docs/MEMROUTER.md` (memory spec). Build status is in `PROGRESS.md`.
+A small model (Qwen3-14B) doing long, multi-step work, with **memrouter** as its memory. This repo is the **lab**:
+runner, benchmarks, judge, world model, and memory service. The owner's WhatsApp / app assistant lives in a sibling
+repo — **`owner-bot`** (see `docs/OWNER_BOT.md`). Memrouter is shared **fuel** on the server (`MEMORY_URL`).
 
-## What's here
+## What's in the repo
 
-**Phase 1 — benchmark harness** (`src/horizon/bench/`, `bench/`): mini-SWE-agent + `claude-sonnet-5` on 50 fixed SWE-bench Verified tasks. Dry run by default; see `bench/README.md`.
+| Folder | What it is | Where it runs |
+|---|---|---|
+| `memrouter/` | The memory service: `memory_service.py` (HTTP API on 127.0.0.1, SQLite store, fine-tuned bge-small encoder + learned MLP ranker, Qwen memory writer; directives = standing rules and taste profile, pending until the owner confirms ones a model inferred), `failures.py` (experience: checks that failed in real outcomes, per scope, shown as warnings, with whether each warning helped), the recall engine (`fast_recall.py`, `learned_recall.py`), `dates.py`, `writer.py`, and the training scripts (`finetune_embed.py`, `locomo_data.py`) | Hermes server `/opt/embed-memory`; one fresh instance per benchmark stream; Claude Code (via `claude/`); **owner-bot** (read-only client) |
+| `runner/` | The long-horizon runner `longrun.py`: plan → contract (SPEC.md) → tests (locked) → build → verify, with a watcher that runs every check and decides retry / escalate / revise spec / re-plan / stop. `stall.py` and `testparse.py` are its helpers. Talks to memrouter for rules and lessons. | Hermes server, inside podman sandboxes, against the Stockholm GPU |
+| `bench/` | `backlog.py`: real multi-ticket projects (`scenarios/rental`, `scenarios/ward`) worked in one repo, hidden tests after each ticket, QA fix-up rounds (cost to working software), arms plain / runner / notes / mem. The fast benchmark: `tasks.py` (basic and house-convention task sets), `bench.py` (paired seeded streams: mem / rules / none, paired bootstrap). `preflight.py`, `tickets.py`, `web.py`. `progress.sh` (check a run over SSM) | Hermes server `/opt/longrun/...`, results in `/home/hermes/<run>` |
+| `hermes/` | Server scripts that outlived Hermes: `install.sh` (the memory service), `stockholm_model.sh` (the GPU model server), `container_cleanup.sh`. The Hermes plugins were removed 2026-10-22 (in git history) | Hermes server |
+| `claude/` | `embed_memory_mcp.py`: memrouter as Claude Code's memory over MCP (`.mcp.json`) | This Mac |
+| `tests/` | pytest for memrouter, runner, and benches | `.venv/bin/pytest` |
 
-**Phase 2 — MCP server and basic memory:**
+## How the pieces connect
 
-- **MCP tools:** `start_task`, `recall_context` and `record_outcome` (`src/horizon/server.py`), over stdio or streamable HTTP with a dev API key.
-- **Task state** (`src/horizon/taskstate/`): goal (verbatim), constraints, plan, progress, decisions and open issues.
-- **Memrouter step 1** (`src/horizon/memrouter/`): episodes, the write path with surprise scoring, and basic similarity recall.
-- **Claude Code integration:** hooks, a CLAUDE.md snippet and an installer. See `docs/CLAUDE_CODE.md`.
-- **Storage:** SQLite for zero-setup local use, or Postgres + pgvector.
+```
+owner-bot (separate repo) ──MEMORY_URL──► memrouter (/add, /search, /outcome)
+        │                                        ▲
+        └─ BOT_MODEL_URL ──► Qwen3-14B-AWQ on vLLM (Stockholm g5, tunnel 127.0.0.1:8000)
+                                        │
+bench.py ─► runner/longrun.py (one job) ──┘──► podman sandbox
+     │            │  before planning and each step: /search → rules, warnings, prior owner text
+     │            │  (runner writes nothing back)
+     └► hidden tests score the job ─► /outcome (failing checks + warning_id), /add, /rule
+```
 
-**Phase 4 — decision layer** (`src/horizon/decision/`): the `evaluate_options` tool scores the host's options for a crucial choice. It uses Jev (or the small-LLM comparison scorer) plus the host's cost estimates, with weights and thresholds in code. See `docs/CLAUDE_CODE.md`.
-
-**Phase 7 — inspection, approvals, accounts:**
-- **Inspection tools:** `explain_decision`, `show_memories`, `delete_memory` and `clear_fear`.
-- **Human approvals** through MCP user-input requests, for high-stakes ties, escalations, deleting a memory and clearing a fear.
-- **The hosted server** (`horizon serve --transport http`): team API keys and metered credits for MCP at `/mcp`, and an account page at `/` for keys, credits, usage and savings per session.
-
-**Phase 6 — memrouter learning** (`src/horizon/memrouter/`):
-- **learning:** links learnt from surprise (Hebbian), spaced-repetition decay and pruning;
-- **recall:** 2-hop spreading activation, then the Jev attention filter within a token budget;
-- **sleep job** (`horizon consolidate`): distils lessons and strategies, archives episodes to cold storage, exports Parquet;
-- **conditions** refined when a lesson is contradicted (reconsolidation);
-- **fear memories**, cleared only by a human (`horizon clear-fear`);
-- **predictor trust** per source.
-
-**Phase 5 — consequence checking**: close calls are checked cheapest first (past spike results from memory, try-and-rollback, static checks and local spikes run by the host). `submit_consequences` re-scores with the results as evidence. Every decision goes to a world-model decision log (`horizon export-decisions`).
-
-**Phase 3 — checkpoints and rollback** (`src/horizon/taskstate/checkpoints.py`, `rollback.py`): a hook records a git and Claude Code checkpoint reference before each decision. A failed outcome returns a rollback (restore, the failure reasons fed back, a retry limit), and the task is escalated to the user after the limit. See `docs/CLAUDE_CODE.md`.
-
-## Quick start
+## Run
 
 ```bash
-uv venv -p 3.12 && uv pip install -e ".[dev,embeddings,bench,decision,export,web]"
-.venv/bin/pytest                                   # SQLite tests
-HORIZON_TEST_PG_URL=postgresql://user:pass@localhost/db .venv/bin/pytest   # also Postgres + pgvector
-
-.venv/bin/horizon install-claude-code --dir /path/to/project   # wire into Claude Code
-.venv/bin/horizon stats                                        # invocation reliability
-HORIZON_DEV_API_KEY=change-me docker compose up --build        # Postgres + HTTP server
-.venv/bin/horizon-bench run --stage smoke                        # Phase 1 harness, dry run
-demo/reliability/run.sh /tmp/rel1                              # host reliability demo (real Claude Code)
+uv venv -p 3.12 && uv pip install numpy pytest     # + torch transformers for the real encoder
+.venv/bin/pytest                                     # all tests use stand-in encoders; no model needed
+python runner/longrun.py "build a todo CLI with tests" --model-url http://127.0.0.1:8000/v1 --workdir /tmp/lr1 \
+    --memory-url http://127.0.0.1:8765 --max-minutes 10
+python bench/bench.py run --out DIR --streams mem:1,none:1 --n 16 --model-url URL [--set house]
+python bench/bench.py report --out DIR
+bash bench/progress.sh <run-dir> [report]            # a run on the Hermes server (needs aws login)
 ```
+
+## History
+
+Up to 2026-10-18 this repo also held Horizon v1/v2: an MCP server and Claude Code hooks, a Postgres memrouter with
+spreading activation, the Jev decision layer, a world model, a SWE-bench harness and the memory benchmark harnesses
+(LoCoMo, LongMemEval, BEAM). None of it was running, so it was removed. All of it is in the git tag
+`snapshot-pre-restructure`: `git checkout snapshot-pre-restructure -- <path>` brings any file back. `IDEAS.md` lists what in it is
+worth reusing, with the evidence.
