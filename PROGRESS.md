@@ -3,6 +3,19 @@
 The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, Hermes setup) is in the git tag
 `snapshot-pre-restructure` (`git show snapshot-pre-restructure:PROGRESS.md`).
 
+## Status (2026-10-24)
+
+**Repo split (lab vs product).**
+- **This repo (Long-Horizon):** `memrouter/`, `runner/`, `bench/` (backlog, tickets, web, bench.py — not botsmoke/forms),
+  `hermes/`, `claude/`, and their tests. Thesis and multi-system benchmarks stay here.
+- **Owner bot:** sibling folder `../owner-bot` on this Mac (git init locally; remote TBD). Contains `bot/`, `app/`,
+  `deploy/bot/`, `bench/botsmoke.py`, `bench/forms.py`, and bot tests. See `docs/OWNER_BOT.md` and owner-bot
+  `docs/FUEL.md` for the HTTP-only link (`MEMORY_URL`, `/outcome` planned).
+- **Server:** unchanged layout — `/opt/embed-memory` from this repo; `/opt/bot` from owner-bot bundles.
+- **Tests after split:** Long-Horizon **163** passed; owner-bot **136** passed (each repo: `uv venv -p 3.12 && uv pip install numpy pytest && .venv/bin/pytest`).
+
+Bot deploy and feature history through 2026-10-23 remains in the sections below (archive).
+
 ## Status (2026-10-18)
 
 **Live**
@@ -801,6 +814,8 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-24: split owner assistant into sibling **owner-bot** repo; Long-Horizon remains lab + memrouter; connect
+  only over HTTP (`MEMORY_URL`), no cross-imports.
 - 2026-10-23: travel sources are ConfirmTkt (trains), abhibus (buses) and EaseMyTrip (flights): each one's own data,
   and each loads for the server without a block or a captcha.
 - 2026-10-23: flights don't ask for a budget (the search shows prices); the forms bench gold was updated to match.
@@ -858,6 +873,7 @@ The coding-ticket benchmarks are no longer the target.
   score ≥ 0.5, at most 3.
 
 ## Open questions
+- **owner-bot remote:** create a GitHub (or Cursor) repo and push `../owner-bot`; point server bundles at that tree.
 - **Zomato:** not connected (see Decisions). Possible next step: a Zomato search link next to the results, for
   the owner to open in their own Zomato app.
 - **UPI request reachability:** NPCI stopped person-to-person UPI collect requests in 2025. Merchant checkouts that

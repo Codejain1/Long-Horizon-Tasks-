@@ -9,10 +9,8 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).parent.parent
-sys.path[:0] = [str(ROOT / "memrouter"), str(ROOT / "bot")]
+sys.path[:0] = [str(ROOT / "memrouter")]
 import memory_service as M  # noqa: E402
-
-import places as PL  # noqa: E402
 
 
 def fake_encode(texts, max_len=96):  # bag of hashed words: enough to make "rent" find "rent"
@@ -82,23 +80,14 @@ def test_rule_applies_to_unrelated_requests_and_can_be_forgotten(tmp_path):
     assert mem.forget_rule(rid) and mem.search("anything", 100)["rules"] == []
 
 
-def fake_fetch(url, data=None, timeout=20):
+def _fake_fetch_geocode(url, data=None, timeout=20):
     if "nominatim" in url:
         return {"address": {"road": "80 Feet Road", "suburb": "Koramangala", "city": "Bengaluru"}}
-    return {"elements": [
-        {"type": "node", "lat": 12.9360, "lon": 77.6140, "tags": {"name": "Burger Barn", "amenity": "fast_food",
-                                                                   "cuisine": "burger"}},
-        {"type": "node", "lat": 12.9400, "lon": 77.6200, "tags": {"name": "Sattvam", "amenity": "restaurant",
-                                                                   "cuisine": "indian;north_indian",
-                                                                   "diet:vegetarian": "only"}},
-        {"type": "way", "center": {"lat": 12.9370, "lon": 77.6150}, "tags": {"name": "Tokyo Table",
-                                                                              "amenity": "restaurant",
-                                                                              "cuisine": "japanese"}},
-        {"type": "node", "lat": 12.95, "lon": 77.62, "tags": {"amenity": "cafe"}}]}  # no name: skipped
+    return {}
 
 
-def test_profile_mood_area_and_real_nearby_places(tmp_path):
-    mem = M.Memory(tmp_path, fake_encode, KeywordRanker(), fetch=fake_fetch)
+def test_profile_mood_area_and_location_in_search(tmp_path):
+    mem = M.Memory(tmp_path, fake_encode, KeywordRanker(), fetch=_fake_fetch_geocode)
     assert M.is_profile("I am vegetarian") and M.is_profile("I love Japanese and Mexican food")
     assert M.is_profile("I don't eat mushrooms") and not M.is_profile("Where is the meeting?")
     assert M.mood_of("I'm feeling really tired today") == "tired" and M.mood_of("feeling stressed about work") == "stressed"
@@ -108,32 +97,8 @@ def test_profile_mood_area_and_real_nearby_places(tmp_path):
     mem.note_mood("ugh I'm so exhausted")
     loc = mem.note_location("[Live location: 12.9353,77.6134]")
     assert loc["area"] == "80 Feet Road, Koramangala, Bengaluru"
-    loc = mem.current()["location"]
-    r = PL.nearby_food(loc, fetch=fake_fetch)
-    assert r["near"] == "80 Feet Road, Koramangala, Bengaluru" and r["count"] == 3
-    assert r["places"][0]["name"] == "Sattvam"  # vegetarian-only first, then nearest
-    assert [p["name"] for p in PL.nearby_food(loc, cuisine="japanese", fetch=fake_fetch)["places"]] == ["Tokyo Table"]
-    assert "maps" in r["places"][0] and r["places"][1]["km"] < r["places"][2]["km"]
     cur = mem.search("food", 50)["current"]
     assert cur["mood"]["mood"] == "tired" and cur["profile"][0]["text"].startswith("Vegetarian")
-
-
-def test_nearby_falls_back_to_nominatim_when_overpass_is_down(tmp_path, monkeypatch):
-    monkeypatch.setattr(PL.time, "sleep", lambda s: None)
-
-    def fetch(url, data=None, timeout=20):
-        if "interpreter" in url:
-            raise TimeoutError("overpass overloaded")
-        if "reverse" in url:
-            return {"address": {"suburb": "Koramangala"}}
-        return [{"name": "Adaa Restaurant", "lat": "12.9360", "lon": "77.6140", "type": "restaurant",
-                 "extratags": {"cuisine": "indian"}},
-                {"name": "Far Away Diner", "lat": "13.2000", "lon": "77.9000", "type": "restaurant"}]
-
-    mem = M.Memory(tmp_path, fake_encode, KeywordRanker(), fetch=fetch)
-    mem.note_location("[Location: 12.9353,77.6134]")
-    r = PL.nearby_food(mem.current()["location"], 1500, fetch=fetch)
-    assert [p["name"] for p in r["places"]] == ["Adaa Restaurant"] and r["places"][0]["cuisine"] == "indian"
 
 
 def test_program_text_is_stored_as_is_with_its_kind_and_search_scores_items(tmp_path):
@@ -185,7 +150,3 @@ def test_concurrent_requests_lose_nothing(tmp_path):
     assert mem.db.execute("SELECT COUNT(*) FROM turns WHERE chat LIKE 'c%'").fetchone()[0] == 120
     assert mem.db.execute("SELECT COUNT(*) FROM failures").fetchone()[0] == 120
     assert len(mem.rules(1000)) == 120
-
-
-def test_nearby_without_location():
-    assert "no location" in PL.nearby_food(None, fetch=lambda *a, **k: {})["error"]

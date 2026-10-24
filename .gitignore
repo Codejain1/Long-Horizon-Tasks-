@@ -9,3 +9,5 @@ build/
 *.db
 bench/runs/
 .env
+# leftover local Expo tree after bot split (see docs/OWNER_BOT.md)
+app/

@@ -1,7 +1,7 @@
 [project]
 name = "long-horizon"
 version = "0.3.0"
-description = "memrouter (memory service), the long-horizon runner, its benchmark, and the Hermes integration."
+description = "memrouter, the long-horizon runner, and benchmarks (lab). Owner assistant: sibling owner-bot repo."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
