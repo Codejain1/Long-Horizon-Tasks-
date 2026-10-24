@@ -8,7 +8,7 @@ The personal assistant — WhatsApp, Telegram, iPhone app, travel, food, deploy 
 | Machine | Path |
 |---|---|
 | This Mac (sibling folder) | `../owner-bot` |
-| Git | Create/push when ready; history before the split lives in this repo's git log |
+| Git | https://github.com/Codejain1/owner-bot (history before the split lives in this repo's git log) |
 
 ## Shared server pieces
 

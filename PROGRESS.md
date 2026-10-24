@@ -873,7 +873,7 @@ The coding-ticket benchmarks are no longer the target.
   score ≥ 0.5, at most 3.
 
 ## Open questions
-- **owner-bot remote:** create a GitHub (or Cursor) repo and push `../owner-bot`; point server bundles at that tree.
+- **owner-bot remote:** https://github.com/Codejain1/owner-bot — point server bundles at that tree.
 - **Zomato:** not connected (see Decisions). Possible next step: a Zomato search link next to the results, for
   the owner to open in their own Zomato app.
 - **UPI request reachability:** NPCI stopped person-to-person UPI collect requests in 2025. Merchant checkouts that
