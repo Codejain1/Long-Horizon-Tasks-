@@ -12,7 +12,9 @@ The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, He
   `docs/FUEL.md` (`MEMORY_URL`, `/outcome` from bot corrections).
 - **Server:** unchanged layout — `/opt/embed-memory` from this repo; `/opt/bot` from owner-bot bundles.
 - **Tests after split:** Long-Horizon **164** passed; owner-bot **143** passed (each repo: `uv venv -p 3.12 && uv pip install numpy pytest && .venv/bin/pytest`).
-- **Epic 1 (fuel):** owner-bot posts `/outcome` on corrections; `tests/test_fuel_hermes_scope.py` in Long-Horizon.
+- **Epic 1 (fuel):** owner-bot posts `/outcome` on corrections; live smoke `fuel_ok` on memrouter (2026-10-25); `tests/test_fuel_hermes_scope.py`.
+- **Epic 3 (lab):** `tickets.py` rental t1 plain+runner running on server `/home/hermes/epic3` (2026-10-25); see `docs/BENCHMARK_NEXT.md`.
+- **Git:** `v3/lean-repo` merged to `main` (PR #12).
 
 Bot deploy and feature history through 2026-10-23 remains in the sections below (archive).
 
