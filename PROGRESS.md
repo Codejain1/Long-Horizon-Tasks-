@@ -3,7 +3,7 @@
 The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, Hermes setup) is in the git tag
 `snapshot-pre-restructure` (`git show snapshot-pre-restructure:PROGRESS.md`).
 
-## Status (2026-10-24)
+## Status (2026-10-25)
 
 **Repo split (lab vs product).**
 - **This repo (Long-Horizon):** `memrouter/`, `runner/`, `bench/` (backlog, tickets, web, bench.py — not botsmoke/forms),
@@ -11,10 +11,14 @@ The full log up to 2026-10-18 (1,300 lines: Horizon v1/v2, memory benchmarks, He
 - **Owner bot:** https://github.com/Codejain1/owner-bot (`../owner-bot` locally). See `docs/OWNER_BOT.md` and owner-bot
   `docs/FUEL.md` (`MEMORY_URL`, `/outcome` from bot corrections).
 - **Server:** unchanged layout — `/opt/embed-memory` from this repo; `/opt/bot` from owner-bot bundles.
-- **Tests after split:** Long-Horizon **164** passed; owner-bot **143** passed (each repo: `uv venv -p 3.12 && uv pip install numpy pytest && .venv/bin/pytest`).
+- **Tests after split:** Long-Horizon **164** passed; owner-bot **145** passed (each repo: `uv venv -p 3.12 && uv pip install numpy pytest && .venv/bin/pytest`).
 - **Epic 1 (fuel):** owner-bot posts `/outcome` on corrections; live smoke `fuel_ok` on memrouter (2026-10-25); `tests/test_fuel_hermes_scope.py`.
-- **Epic 3 (lab):** `tickets.py` rental t1 plain+runner running on server `/home/hermes/epic3` (2026-10-25); see `docs/BENCHMARK_NEXT.md`.
+- **Epic 3 (lab, done):** `/home/hermes/epic3` — preflight pass; rental **ticket 1**, 1 rep, arms `plain` vs `runner`:
+  plain **0/1** solved (0.5 min, Wilson [0, 79]); runner **1/1** (8.1 min, [21, 100]); pairwise “only runner” 1/1 —
+  **too few reps to claim significance** (n=1). Artifacts: `out/`, `report.txt`. See `docs/BENCHMARK_NEXT.md`.
 - **Git:** `v3/lean-repo` merged to `main` (PR #12).
+
+**Next step (lab):** longer rental bench **running** on Hermes (`/home/hermes/epic3-long`: tickets 1–3, reps 2, arms plain/runner/mem). Owner logins + Expo OTP flow documented in owner-bot `PROGRESS.md`.
 
 Bot deploy and feature history through 2026-10-23 remains in the sections below (archive).
 
@@ -816,6 +820,7 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-25: Epic 3 smoke used rental t1, n=1 per arm — directional only (runner solved, plain did not); no milestone claim.
 - 2026-10-24: split owner assistant into sibling **owner-bot** repo; Long-Horizon remains lab + memrouter; connect
   only over HTTP (`MEMORY_URL`), no cross-imports.
 - 2026-10-23: travel sources are ConfirmTkt (trains), abhibus (buses) and EaseMyTrip (flights): each one's own data,
