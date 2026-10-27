@@ -47,3 +47,5 @@ spreading activation, the Jev decision layer, a world model, a SWE-bench harness
 (LoCoMo, LongMemEval, BEAM). None of it was running, so it was removed. All of it is in the git tag
 `snapshot-pre-restructure`: `git checkout snapshot-pre-restructure -- <path>` brings any file back. `IDEAS.md` lists what in it is
 worth reusing, with the evidence.
+
+> **Moved (2026-10-28):** this lab now lives in [Codejain1/small-model-long-horizon-agent](https://github.com/Codejain1/small-model-long-horizon-agent), with its full history. This repo is archived.
