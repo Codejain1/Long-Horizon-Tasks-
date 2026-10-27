@@ -179,7 +179,7 @@ def test_owner_corrections_become_hermes_experience_and_reach_the_next_reply(tmp
     mem.add("no, I said under 200 rupees", "Kartik", "c", 1_700_000_000, owner=True)
     mem.add("again too expensive, under 200!", "Kartik", "c", 1_700_000_100, owner=True)
     mem.add("the assistant was wrong, says the friend", "Riya", "c", 1_700_000_200)  # not the owner: no verdict
-    assert [(s["check"], s["seen"]) for s in mem.fails.stats("hermes")] == [("food picks: budget", 2)]
+    assert [(s["check"], s["seen"]) for s in mem.fails.stats("owner")] == [("food picks: budget", 2)]
 
-    r = mem.search("suggest dessert near me", scope="hermes")  # the bot shows these as "mistakes corrected before"
+    r = mem.search("suggest dessert near me", scope="owner")  # the bot shows these as "mistakes corrected before"
     assert any("under ₹200" in (w["error"] or w["check"]) and w["seen"] == 2 for w in r["warnings"])

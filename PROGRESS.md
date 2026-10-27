@@ -820,6 +820,7 @@ The coding-ticket benchmarks are no longer the target.
     checks, which is what `failures.py` now does on purpose.
 
 ## Decisions made
+- 2026-10-27: memory failure/warning scope `hermes` → `owner` (Hermes removed from the server; the bot runs as user `owner`, see owner-bot PROGRESS). Live `/opt/embed-memory/memory_service.py` matches this commit; the server keeps no lab benchmark folders (archived to `s3://embed-memory-deploy-861330781142/cleanup-20261027/`).
 - 2026-10-25: Epic 3 smoke used rental t1, n=1 per arm — directional only (runner solved, plain did not); no milestone claim.
 - 2026-10-24: split owner assistant into sibling **owner-bot** repo; Long-Horizon remains lab + memrouter; connect
   only over HTTP (`MEMORY_URL`), no cross-imports.
