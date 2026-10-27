@@ -5,6 +5,8 @@
   what a careful engineer would build without Jev).
 - `rag`: the top candidates by meaning, unjudged (the standard baseline).
 - `full`: the whole history in the prompt.
+- `mem0`: Mem0 open source as the whole memory (its own extraction and search), same answer model and budget
+  (`mem0_arm.py`; LoCoMo only so far).
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import math
 import os
 
 ARMS = ["horizon", "hybrid", "rag", "full"]
+EXTERNAL_ARMS = ["mem0"]  # other memory products as the whole memory; LoCoMo only so far
 KEEP = 12  # memories given to the reader, the same for every retrieval arm
 RERANKER = "Xenova/ms-marco-MiniLM-L-6-v2"  # the standard passage reranker; bge-reranker-base was ~9x slower on CPU
 

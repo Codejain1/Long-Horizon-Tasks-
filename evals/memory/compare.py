@@ -17,7 +17,7 @@ from math import comb
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from arms import ARMS  # noqa: E402
+from arms import ARMS, EXTERNAL_ARMS  # noqa: E402
 
 
 def value(r: dict) -> bool:
@@ -44,7 +44,7 @@ def gap_interval(a: list[bool], b: list[bool], draws: int = 10000, seed: int = 0
 
 
 def compare(folder: Path, suffix: str = "") -> str:
-    arms = {arm: load(folder / f"{arm}{suffix}.jsonl") for arm in ARMS if (folder / f"{arm}{suffix}.jsonl").exists()}
+    arms = {arm: load(folder / f"{arm}{suffix}.jsonl") for arm in ARMS + EXTERNAL_ARMS if (folder / f"{arm}{suffix}.jsonl").exists()}
     if not arms:
         return f"{folder}: no arms"
     shared = sorted(set.intersection(*(set(rows) for rows in arms.values())))

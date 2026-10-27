@@ -23,7 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from locomo_scoring import score_locomo  # noqa: E402
-from arms import ARMS, KEEP, make_judge  # noqa: E402
+from arms import ARMS, EXTERNAL_ARMS, KEEP, make_judge  # noqa: E402
+import mem0_arm  # noqa: E402
 from longmemeval import (  # noqa: E402
     QuotaExhausted,
     codex_complete,
@@ -35,6 +36,7 @@ from longmemeval import (  # noqa: E402
     openai_complete,
 )
 
+MEM0 = None  # mem0_arm.Mem0Stores, set in main for the mem0 arm
 DATA = Path.home() / ".cache" / "horizon-bench" / "locomo" / "locomo10.json"
 URL = "https://raw.githubusercontent.com/snap-research/LoCoMo/main/data/locomo10.json"
 
@@ -113,7 +115,7 @@ def locomo_sessions(conv: dict) -> list[tuple[str, list[dict]]]:
         for t in conv[f"session_{i}"]:
             speaker = t.get("speaker", a)
             role = "user" if speaker == a else "assistant"
-            turns.append({"role": role, "content": t.get("text", "")})
+            turns.append({"role": role, "content": t.get("text", ""), "name": speaker})
         out.append((date, turns))
         i += 1
     return out
@@ -171,6 +173,11 @@ def build_context(item: dict, arm: str, embedder, scorer) -> tuple[str, dict]:
     sessions = item["sessions"]
     if arm == "full":
         return item["header"] + history_text(sessions), {"units": sum(len(s) for _, s in sessions)}
+    if arm == "mem0":
+        t = time.monotonic()
+        hits = MEM0.search(item["sample_id"], sessions, item["question"], KEEP)
+        info = {"kept": len(hits), "retrieval_s": round(time.monotonic() - t, 2)}
+        return item["header"] + (mem0_arm.context_body(hits) or "(no relevant history)"), info
     from horizon.factmem import FactMemory
 
     mem = FactMemory(embedder)
@@ -262,7 +269,7 @@ def rejudge(path: Path, by_id: dict, judge_model: str, complete, workers: int) -
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", choices=ARMS, required=True)
+    ap.add_argument("--arm", choices=ARMS + EXTERNAL_ARMS, required=True)
     ap.add_argument("--n", type=int, default=80)
     ap.add_argument("--out", required=True)
     ap.add_argument("--backend", choices=["claude", "openai", "gemini", "auto", "cursor"], default="claude")
@@ -310,7 +317,10 @@ def main(argv=None) -> int:
     done = {json.loads(line)["id"] for line in path.read_text().splitlines()} if path.exists() else set()
     from horizon.memrouter.embedding import make_embedder
 
-    embedder = make_embedder("fastembed") if args.arm != "full" else None
+    embedder = make_embedder("fastembed") if args.arm not in ("full", "mem0") else None
+    if args.arm == "mem0":
+        global MEM0
+        MEM0 = mem0_arm.Mem0Stores(out / "mem0-store", complete, args.model)
     scorer = make_judge(args.arm)
     todo = [q for q in items if q["id"] not in done]
     print(
